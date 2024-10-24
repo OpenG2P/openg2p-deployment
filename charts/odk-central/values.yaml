@@ -373,6 +373,11 @@ frontend:
       gzip_http_version 1.1;
       gzip_types text/plain text/css application/json application/x-javascript text/xml text/csv;
 
+      location /client-config.json {
+      include /usr/share/odk/nginx/common-headers.conf;
+      add_header Cache-Control no-cache;
+      }
+
       location = /robots.txt {
         add_header Content-Type text/plain;
         return 200 "User-agent: *\nDisallow: /\n";
