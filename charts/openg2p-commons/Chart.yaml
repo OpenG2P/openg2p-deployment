@@ -1,0 +1,64 @@
+apiVersion: v2
+name: openg2p-commons
+description: A Helm chart for OpenG2P Commons
+type: application
+version: 2.0
+dependencies:
+- name: mail
+  version: 1.2.0
+  repository: https://openg2p.github.io/openg2p-helm
+  condition: mail.enabled
+- name: minio
+  version: 12.12.2
+  repository: oci://registry-1.docker.io/bitnamicharts
+  condition: minio.enabled
+- name: odk-central
+  version: v2024.2.2
+  repository: https://openg2p.github.io/openg2p-helm
+  condition: odk-central.enabled
+- name: opensearch
+  version: 1.2.0
+  repository: oci://registry-1.docker.io/bitnamicharts
+  condition: opensearch.enabled
+- name: kafka
+  repository: oci://registry-1.docker.io/bitnamicharts
+  version: 29.x.x
+  condition: kafka.enabled
+- name: artifactory
+  version: 12.0.2
+  repository: https://openg2p.github.io/openg2p-helm
+  condition: artifactory.enabled
+- name: keymanager
+  version: 12.0.2
+  repository: https://openg2p.github.io/openg2p-helm
+  condition: keymanager.enabled
+- name: reporting
+  version: 1.3.0
+  repository: https://openg2p.github.io/openg2p-helm
+  condition: reporting.enabled
+- name: superset
+  version: 0.12.11
+  repository: https://apache.github.io/superset
+  condition: superset.enabled
+- name: redis
+  alias: supersetRedis
+  version: 19.x.x
+  repository: oci://registry-1.docker.io/bitnamicharts
+  condition: superset.enabled
+- name: esignet
+  version: 1.4.2
+  repository: https://openg2p.github.io/openg2p-helm
+  condition: esignet.enabled
+- name: redis
+  alias: esignetRedis
+  version: 19.x.x
+  repository: oci://registry-1.docker.io/bitnamicharts
+  condition: esignet.enabled
+- name: mock-identity-system
+  version: 0.9.4
+  repository: https://openg2p.github.io/openg2p-helm
+  condition: mock-identity-system.enabled
+icon: https://openg2p.github.io/openg2p-helm/openg2p-logo.png
+annotations:
+  catalog.cattle.io/display-name: "OpenG2P Social Registry"
+  openg2p.org/add-to-rancher: ""

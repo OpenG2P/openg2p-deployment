@@ -1,0 +1,45 @@
+{{- if .Values.kafka.enabled  }}
+{{- if .Values.kafkaUi.enabled  }}
+{{- if .Values.kafkaUi.istio.enabled  }}
+{{- if .Values.kafkaUi.istio.gateway.enabled  }}
+{{- $istioGatewayHostname := include "common.tplvalues.render" (dict "value" .Values.kafkaUi.istio.gateway.host "context" $) }}
+{{- $mainHostname := include "common.tplvalues.render" (dict "value" .Values.kafkaUi.hostname "context" $) }}
+{{- $hostname := default $mainHostname $istioGatewayHostname }}
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: {{ include "common.names.fullname" .Subcharts.kafka }}-ui
+  labels: {{ include "common.labels.standard" (dict "customLabels" .Values.kafkaUi.commonLabels "context" .Subcharts.kafka) | nindent 4 }}
+  {{- if .Values.kafkaUi.commonAnnotations }}
+  annotations: {{ include "common.tplvalues.render" (dict "value" .Values.kafkaUi.commonAnnotations "context" $) | nindent 4 }}
+  {{- end }}
+spec:
+  selector:
+    {{ toYaml .Values.kafkaUi.istio.gateway.ingressController | nindent 4 }}
+  servers:
+  {{- if .Values.kafkaUi.istio.gateway.httpEnabled }}
+  - port:
+      name: http2
+      number: 8080
+      protocol: HTTP2
+    hosts:
+      - {{ $hostname | quote }}
+    {{- if .Values.kafkaUi.istio.gateway.httpTlsRedirect }}
+    tls:
+      httpsRedirect: true
+    {{- end }}
+  {{- end }}
+  {{- if .Values.kafkaUi.istio.gateway.httpsEnabled }}
+  - port:
+      name: https
+      number: 8443
+      protocol: HTTPS
+    hosts:
+      - {{ $hostname | quote }}
+    tls:
+      {{ toYaml (omit .Values.kafkaUi.istio.gateway.tls "enabled") | nindent 6 }}
+  {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

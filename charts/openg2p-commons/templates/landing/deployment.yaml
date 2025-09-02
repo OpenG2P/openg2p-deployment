@@ -1,0 +1,96 @@
+{{- if .Values.landing.enabled }}
+apiVersion: {{ include "common.capabilities.deployment.apiVersion" . }}
+kind: Deployment
+metadata:
+  name: {{ include "common.names.fullname" . }}-landing
+  labels: {{ include "common.labels.standard" (dict "customLabels" .Values.landing.commonLabels "context" $) | nindent 4 }}
+  {{- if .Values.landing.commonAnnotations }}
+  annotations: {{ include "common.tplvalues.render" (dict "value" .Values.landing.commonAnnotations "context" $) | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.landing.replicaCount }}
+  {{- if .Values.landing.updateStrategy }}
+  strategy: {{- toYaml .Values.landing.updateStrategy | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels: {{- include "common.labels.matchLabels" (dict "customLabels" .Values.landing.podLabels "context" $) | nindent 6 }}
+  template:
+    metadata:
+      labels: {{ include "common.labels.standard" (dict "customLabels" .Values.landing.podLabels "context" $) | nindent 8 }}
+      {{- if .Values.landing.podAnnotations }}
+      annotations: {{ include "common.tplvalues.render" (dict "value" .Values.landing.podAnnotations "context" $) | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- /* Using Odoo Service Account name for now */}}
+      serviceAccountName: {{ include "odoo.serviceAccountName" .Subcharts.odoo }}
+      {{- include "common.images.pullSecrets" (dict "images" (list .Values.landing.image) "global" .Values.global) | nindent 6 }}
+      {{- if .Values.landing.hostAliases }}
+      hostAliases: {{- include "common.tplvalues.render" (dict "value" .Values.landing.hostAliases "context" $) | nindent 8 }}
+      {{- end }}
+      {{- if .Values.landing.affinity }}
+      affinity: {{- include "common.tplvalues.render" ( dict "value" .Values.landing.affinity "context" $) | nindent 8 }}
+      {{- else }}
+      affinity:
+        podAffinity: {{- include "common.affinities.pods" (dict "type" .Values.landing.podAffinityPreset "context" $) | nindent 10 }}
+        podAntiAffinity: {{- include "common.affinities.pods" (dict "type" .Values.landing.podAntiAffinityPreset "context" $) | nindent 10 }}
+        nodeAffinity: {{- include "common.affinities.nodes" (dict "type" .Values.landing.nodeAffinityPreset.type "key" .Values.landing.nodeAffinityPreset.key "values" .Values.landing.nodeAffinityPreset.values) | nindent 10 }}
+      {{- end }}
+      {{- if .Values.landing.nodeSelector }}
+      nodeSelector: {{- include "common.tplvalues.render" ( dict "value" .Values.landing.nodeSelector "context" $) | nindent 8 }}
+      {{- end }}
+      {{- if .Values.landing.tolerations }}
+      tolerations: {{- include "common.tplvalues.render" (dict "value" .Values.landing.tolerations "context" $) | nindent 8 }}
+      {{- end }}
+      {{- if .Values.landing.priorityClassName }}
+      priorityClassName: {{ .Values.landing.priorityClassName | quote }}
+      {{- end }}
+      {{- if .Values.landing.podSecurityContext.enabled }}
+      securityContext: {{- omit .Values.landing.podSecurityContext "enabled" | toYaml | nindent 8 }}
+      {{- end }}
+      {{- if .Values.landing.initContainers }}
+      initContainers:
+        {{- include "common.tplvalues.render" (dict "value" .Values.landing.initContainers "context" $) | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: landing-page
+          image: {{ include "common.images.image" (dict "imageRoot" .Values.landing.image "global" .Values.global) }}
+          imagePullPolicy: {{ .Values.landing.image.pullPolicy }}
+          {{- if .Values.landing.lifecycleHooks }}
+          lifecycle: {{- include "common.tplvalues.render" (dict "value" .Values.landing.lifecycleHooks "context" $) | nindent 12 }}
+          {{- end }}
+          {{- if .Values.landing.containerSecurityContext.enabled }}
+          securityContext: {{- omit .Values.landing.containerSecurityContext "enabled" | toYaml | nindent 12 }}
+          {{- end }}
+          {{- if .Values.landing.command }}
+          command: {{- include "common.tplvalues.render" (dict "value" .Values.landing.command "context" $) | nindent 12 }}
+          {{- end }}
+          {{- if .Values.landing.args }}
+          args: {{- include "common.tplvalues.render" (dict "value" .Values.landing.args "context" $) | nindent 12 }}
+          {{- end }}
+          env:
+            {{- include "socialRegistry.landing.envVars" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.landing.containerPort }}
+          {{- if .Values.landing.resources }}
+          resources: {{- toYaml .Values.landing.resources | nindent 12 }}
+          {{- end }}
+          {{- if .Values.landing.startupProbe.enabled }}
+          startupProbe: {{- include "common.tplvalues.render" (dict "value" (omit .Values.landing.startupProbe "enabled") "context" $) | nindent 12 }}
+          {{- end }}
+          {{- if .Values.landing.livenessProbe.enabled }}
+          livenessProbe: {{- include "common.tplvalues.render" (dict "value" (omit .Values.landing.livenessProbe "enabled") "context" $) | nindent 12 }}
+          {{- end }}
+          {{- if .Values.landing.readinessProbe.enabled }}
+          readinessProbe: {{- include "common.tplvalues.render" (dict "value" (omit .Values.landing.readinessProbe "enabled") "context" $) | nindent 12 }}
+          {{- end }}
+          {{- if .Values.landing.extraVolumeMounts }}
+          volumeMounts: {{- include "common.tplvalues.render" (dict "value" .Values.landing.extraVolumeMounts "context" $) | nindent 12 }}
+          {{- end }}
+        {{- if .Values.landing.sidecars }}
+        {{- include "common.tplvalues.render" ( dict "value" .Values.landing.sidecars "context" $) | nindent 8 }}
+        {{- end }}
+      {{- if .Values.landing.extraVolumes }}
+      volumes: {{- include "common.tplvalues.render" (dict "value" .Values.landing.extraVolumes "context" $) | nindent 8 }}
+      {{- end }}
+{{- end }}

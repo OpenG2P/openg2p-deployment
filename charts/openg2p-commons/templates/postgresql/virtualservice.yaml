@@ -1,0 +1,29 @@
+{{- if .Values.odoo.enabled }}
+{{- if .Values.odoo.postgresql.enabled }}
+{{- if .Values.odoo.postgresql.istio.enabled }}
+{{- if .Values.odoo.postgresql.istio.virtualservice.enabled }}
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: {{ include "postgresql.v1.primary.fullname" .Subcharts.odoo.Subcharts.postgresql }}
+  labels: {{- include "common.labels.standard" (dict "customLabels" .Values.odoo.postgresql.commonLabels "context" .Subcharts.odoo.Subcharts.postgresql) | nindent 4 }}
+  {{- if .Values.odoo.postgresql.commonAnnotations }}
+  annotations: {{- include "common.tplvalues.render" (dict "value" .Values.odoo.postgresql.commonAnnotations "context" $) | nindent 4 }}
+  {{- end }}
+spec:
+  hosts:
+  - {{ default .Values.hostname .Values.odoo.postgresql.istio.virtualservice.host | quote }}
+  gateways:
+  - {{ default (include "postgresql.v1.primary.fullname" .Subcharts.odoo.Subcharts.postgresql) .Values.odoo.postgresql.istio.virtualservice.gateway }}
+  tcp:
+  - match:
+    - port: {{ .Values.odoo.postgresql.istio.virtualservice.matchPort }}
+    route:
+    - destination:
+        host: {{ include "common.tplvalues.render" (dict "value" .Values.odoo.postgresql.istio.virtualservice.destination "context" .Subcharts.odoo.Subcharts.postgresql) }}
+        port:
+          number: {{ include "common.tplvalues.render" (dict "value" .Values.odoo.postgresql.istio.virtualservice.destinationPort "context" .Subcharts.odoo.Subcharts.postgresql) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

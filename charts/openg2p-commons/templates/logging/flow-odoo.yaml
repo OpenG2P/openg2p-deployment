@@ -1,0 +1,31 @@
+{{- if .Values.loggingFlow.enabled }}
+{{- if .Values.odoo.enabled }}
+apiVersion: logging.banzaicloud.io/v1beta1
+kind: Flow
+metadata:
+  name: {{ include "common.names.fullname" .Subcharts.odoo }}
+  labels: {{- include "common.labels.standard" (dict "customLabels" .Values.odoo.commonLabels "context" .Subcharts.odoo) | nindent 4 }}
+  {{- if .Values.odoo.commonAnnotations }}
+  annotations: {{- include "common.tplvalues.render" (dict "value" .Values.odoo.commonAnnotations "context" $) | nindent 4 }}
+  {{- end }}
+spec:
+  filters:
+  - parser:
+      {{- include "common.tplvalues.render" (dict "value" .Values.loggingFlow.parser "context" $) | nindent 6 }}
+  {{- if .Values.loggingFlow.extraFilters }}
+  {{- include "common.tplvalues.render" (dict "value" .Values.loggingFlow.extraFilters "context" $) | nindent 2 }}
+  {{- end }}
+  localOutputRefs:
+  - {{ include "common.tplvalues.render" (dict "value" .Values.loggingFlow.outputRef "context" $) }}
+  {{- if .Values.loggingFlow.extraLocalOutputRefs }}
+  {{- include "common.tplvalues.render" (dict "value" .Values.loggingFlow.extraLocalOutputRefs "context" $) | nindent 2 }}
+  {{- end }}
+  {{- if .Values.loggingFlow.globalOutputRefs }}
+  globalOutputRefs: {{- include "common.tplvalues.render" (dict "value" .Values.loggingFlow.globalOutputRefs "context" $) | nindent 2 }}
+  {{- end }}
+  match:
+  - select:
+      labels:
+        {{- include "common.labels.matchLabels" (dict "customLabels" .Values.odoo.podLabels "context" $.Subcharts.odoo) | nindent 8 }}
+{{- end }}
+{{- end }}

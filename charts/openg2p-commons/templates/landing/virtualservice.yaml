@@ -1,0 +1,40 @@
+{{- if .Values.landing.enabled }}
+{{- if .Values.landing.istio.enabled }}
+{{- if .Values.landing.istio.virtualservice.enabled }}
+{{- $istioVsHostname := include "common.tplvalues.render" (dict "value" .Values.landing.istio.virtualservice.host "context" $) }}
+{{- $mainHostname := include "common.tplvalues.render" (dict "value" .Values.landing.hostname "context" $) }}
+{{- $hostname := default $mainHostname $istioVsHostname }}
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: {{ include "common.names.fullname" . }}-landing
+  labels: {{ include "common.labels.standard" (dict "customLabels" .Values.landing.commonLabels "context" $) | nindent 4 }}
+  {{- if .Values.landing.commonAnnotations }}
+  annotations: {{ include "common.tplvalues.render" (dict "value" .Values.landing.commonAnnotations "context" $) | nindent 4 }}
+  {{- end }}
+spec:
+  hosts:
+  - {{ $hostname | quote }}
+  gateways:
+  - {{ default (include "common.names.fullname" .) .Values.landing.istio.virtualservice.gateway }}
+  http:
+  - headers:
+      request:
+        set:
+          x-forwarded-host: {{ $hostname | quote }}
+          x-forwarded-proto: https
+    match:
+    - uri:
+        prefix: {{ .Values.landing.istio.virtualservice.prefix }}
+    {{- if .Values.landing.istio.virtualservice.rewriteUri }}
+    rewrite:
+      uri: {{ .Values.landing.istio.virtualservice.rewriteUri }}
+    {{- end }}
+    route:
+    - destination:
+        host: {{ include "common.tplvalues.render" (dict "value" .Values.landing.istio.virtualservice.destination "context" $) }}
+        port:
+          number: {{ include "common.tplvalues.render" (dict "value" .Values.landing.istio.virtualservice.destinationPort "context" $) }}
+{{- end }}
+{{- end }}
+{{- end }}

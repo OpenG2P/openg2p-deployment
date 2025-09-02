@@ -1,0 +1,394 @@
+questions:
+# Mail Settings
+- variable: mail.enabled
+  description: This installs Mail server for relaying SMTP requests to preferred backend.
+  type: boolean
+  label: Install Mail SMTP Server?
+  group: Mail Settings
+
+# ODK Central Settings
+- variable: odk-central.enabled
+  description: This installs ODK Central.
+  type: boolean
+  label: Install ODK Central?
+  group: ODK Central Settings
+
+- variable: global.srOdkCentralHostname
+  description: Hostname for ODK Central
+  type: string
+  label: ODK Central Hostname
+  group: ODK Central Settings
+  show_if: "odk-central.enabled=true"
+
+- variable: odk-central.backend.envVars.OIDC_ENABLED
+  description: Enable OIDC Login for ODK Central
+  type: boolean
+  label: Enable OIDC
+  group: ODK Central Settings
+  show_if: "odk-central.enabled=true"
+
+- variable: odk-central.backend.envVars.OIDC_CLIENT_ID
+  description: OIDC Client ID for ODK Central login
+  type: string
+  label: OIDC Client ID
+  group: ODK Central Settings
+  show_if: "odk-central.enabled=true&&odk-central.backend.envVars.OIDC_ENABLED=true"
+
+- variable: odk-central.backend.envVars.OIDC_CLIENT_SECRET
+  description: OIDC Client Secret for ODK Central login
+  type: string
+  label: OIDC Client Secret
+  group: ODK Central Settings
+  show_if: "odk-central.enabled=true&&odk-central.backend.envVars.OIDC_ENABLED=true"
+
+# Minio Settings
+- variable: minio.enabled
+  description: This installs Minio for document store.
+  type: boolean
+  label: Install Minio?
+  group: Minio Settings
+
+- variable: global.srMinioHostname
+  description: Hostname for Minio Console
+  type: string
+  label: Minio Console Hostname
+  group: Minio Settings
+  show_if: "minio.enabled=true"
+
+- variable: minio.oidcClientId
+  description: OIDC Client ID for Minio Console login
+  type: string
+  label: OIDC Client ID
+  group: Minio Settings
+  show_if: "minio.enabled=true"
+
+- variable: minio.oidcClientSecret
+  description: OIDC Client Secret for Minio Console login
+  type: string
+  label: OIDC Client Secret
+  group: Minio Settings
+  show_if: "minio.enabled=true"
+
+# Kafka Settings
+- variable: kafka.enabled
+  description: This installs Kafka along with SR (Required for Reporting and eSignet)
+  type: boolean
+  label: Install Kafka?
+  group: Kafka Settings
+
+- variable: kafkaUi.enabled
+  description: This installs Kafka UI along with Kafka
+  type: boolean
+  label: Install Kafka UI?
+  group: Kafka Settings
+  show_if: "kafka.enabled=true"
+
+- variable: global.srKafkaUiHostname
+  description: Hostname with which Kafka UI should be accessible
+  type: string
+  label: Kafka UI Hostname
+  group: Kafka Settings
+  show_if: "kafka.enabled=true&&kafkaUi.enabled=true"
+
+- variable: kafkaUi.oidcClientId
+  description: OIDC Client ID for Kafka UI login
+  type: string
+  label: Kafka OIDC Client ID
+  group: Kafka Settings
+  show_if: "kafka.enabled=true&&kafkaUi.enabled=true"
+
+- variable: kafkaUi.oidcClientSecret
+  description: OIDC Client Secret for Kafka UI login
+  type: string
+  label: Kafka OIDC Client Secret
+  group: Kafka Settings
+  show_if: "kafka.enabled=true&&kafkaUi.enabled=true"
+
+# OpenSearch Settings
+- variable: opensearch.enabled
+  description: This installs OpenSearch along with SR (Required for Searching, Reporting, and Logs capture)
+  type: boolean
+  label: Install OpenSearch?
+  group: OpenSearch Settings
+
+- variable: global.srOpensearchHostname
+  description: Hostname for OpenSearch Dashboards
+  type: string
+  label: OpenSearch Dashboards Hostname
+  group: OpenSearch Settings
+  show_if: "opensearch.enabled=true"
+
+- variable: opensearch.oidcClientId
+  description: OIDC Client ID for OpenSearch login
+  type: string
+  label: OIDC Client ID
+  group: OpenSearch Settings
+  show_if: "opensearch.enabled=true"
+
+- variable: opensearch.oidcClientSecret
+  description: OIDC Client Secret for OpenSearch login
+  type: string
+  label: OIDC Client Secret
+  group: OpenSearch Settings
+  show_if: "opensearch.enabled=true"
+
+- variable: opensearch.loggingOutput.enabled
+  description: This will only allow Fluentd to send logs into this OpenSearch. (To enable capturing logs see Logging Settings)
+  type: boolean
+  label: Fluentd Logs Output?
+  group: OpenSearch Settings
+  show_if: "opensearch.enabled=true"
+
+# Logging Settings
+- variable: loggingFlow.enabled
+  description: This will enable Fluentd to capture logs into OpenSearch.
+  type: boolean
+  label: Enable logs capture?
+  group: Logging Settings
+
+- variable: loggingFlow.opensearchInstallationName
+  description: |-
+    Edit this only if you want to reuse existing OpenSearch Installation.
+    Else enable OpenSearch Installation from "General Settings".
+  type: reference_service
+  label: Existing OpenSearch Installation Name
+  group: Logging Settings
+  show_if: "opensearch.enabled=false&&loggingFlow.enabled=true"
+
+# Keymanager
+- variable: keymanager.enabled
+  description: This installs Keymanager for managing Keys for Encrpytion and Signatures
+  type: boolean
+  label: Install Keymanager?
+  group: Keymanager Settings
+
+- variable: odoo.keymanagerInstallationName
+  description: |-
+    Edit this only if you want to reuse existing Keymanager Installation.
+    Else enable Keymanager Installation from "General Settings".
+  type: reference_service
+  label: Existing Keymanager Installation Name
+  group: Keymanager Settings
+  show_if: "keymanager.enabled=false"
+
+- variable: keymanager.springConfig.profile
+  type: string
+  label: Spring Config Profile
+  group: Keymanager Settings
+  show_if: "keymanager.enabled=true"
+
+- variable: keymanager.springConfig.names
+  type: string
+  label: Spring Config Names
+  group: Keymanager Settings
+  show_if: "keymanager.enabled=true"
+
+- variable: keymanager.springConfig.gitRepo.enabled
+  description: Enables download of configs from Git repo.
+  type: boolean
+  label: Spring Config Git Enabled
+  group: Keymanager Settings
+  show_if: "keymanager.enabled=true"
+  show_subquestion_if: true
+  subquestions:
+  - variable: keymanager.springConfig.gitRepo.repoUrl
+    description: |-
+      Repo Url for remote Git repo containing configs.
+      This url should include username password if required.
+    type: string
+    label: Spring Config Git Repo Url
+    group: Keymanager Settings
+
+  - variable: keymanager.springConfig.gitRepo.branch
+    description: Branch of remote Git repo containing configs.
+    type: string
+    label: Spring Config Git Repo Branch
+    group: Keymanager Settings
+
+- variable: keymanager.springConfig.rawConfig
+  description: |-
+    If git-based config is disabled, the complete application.properties can be
+    directly supplied here.
+  type: multiline
+  label: Spring Config application properties.
+  group: Keymanager Settings
+  show_if: "keymanager.enabled=true&&keymanager.springConfig.gitRepo.enabled=false"
+
+- variable: keymanager.envVars.auth_server_admin_allowed_audience
+  description: |-
+    List of Keycloak Client ID allowed to call this keymanager's APIs.
+    Do not edit this parameter unless required.
+  type: string
+  label: Allowed Keycloak Client IDs.
+  group: Keymanager Settings
+  show_if: "keymanager.enabled=true"
+
+# Reporting
+- variable: reporting.enabled
+  description: This installs Reporting Framework for that stream DB data to OpenSearch for Dashboards
+  type: boolean
+  label: Install Reporting Framework?
+  group: Reporting Settings
+
+# Superset Settings
+- variable: superset.enabled
+  description: This installs Superset for reporting
+  type: boolean
+  label: Install Superset?
+  group: Superset Settings
+
+- variable: global.srSupersetHostname
+  description: Hostname for Superset Dashboards
+  type: string
+  label: Superset Hostname
+  group: Superset Settings
+  show_if: "superset.enabled=true"
+
+- variable: superset.oidcClientId
+  description: OIDC Client ID for Superset login
+  type: string
+  label: OIDC Client ID
+  group: Superset Settings
+  show_if: "superset.enabled=true"
+
+- variable: superset.oidcClientSecret
+  description: OIDC Client Secret for Superset login
+  type: string
+  label: OIDC Client Secret
+  group: Superset Settings
+  show_if: "superset.enabled=true"
+
+- variable: superset.supersetSecretKey
+  description: Secret Key for Superset
+  type: string
+  label: Superset Secret Key
+  group: Superset Settings
+  show_if: "superset.enabled=true"
+
+# eSignet
+- variable: esignet.enabled
+  description: This installs eSignet for mocking user authentication
+  type: boolean
+  label: Install eSignet?
+  group: eSignet Settings
+
+- variable: global.srEsignetHostname
+  description: Hostname under which eSignet should be accessible
+  type: string
+  label: eSignet Hostname
+  group: eSignet Settings
+  show_if: "esignet.enabled=true"
+
+- variable: esignet.springConfig.profile
+  type: string
+  label: Spring Config Profile
+  group: eSignet Settings
+  show_if: "esignet.enabled=true"
+
+- variable: esignet.springConfig.names
+  type: string
+  label: Spring Config Names
+  group: eSignet Settings
+  show_if: "esignet.enabled=true"
+
+- variable: esignet.springConfig.gitRepo.enabled
+  description: Enables download of configs from Git repo.
+  type: boolean
+  label: Spring Config Git Enabled
+  group: eSignet Settings
+  show_if: "esignet.enabled=true"
+  show_subquestion_if: true
+  subquestions:
+  - variable: esignet.springConfig.gitRepo.repoUrl
+    description: |-
+      Repo Url for remote Git repo containing configs.
+      This url should include username password if required.
+    type: string
+    label: Spring Config Git Repo Url
+    group: eSignet Settings
+
+  - variable: esignet.springConfig.gitRepo.branch
+    description: Branch of remote Git repo containing configs.
+    type: string
+    label: Spring Config Git Repo Branch
+    group: eSignet Settings
+
+- variable: esignet.captchaEnabled
+  description: This enables captcha verification wherever applied.
+  type: boolean
+  label: Enabled captcha verification?
+  group: eSignet Settings
+  show_if: "esignet.enabled=true"
+  show_subquestion_if: true
+  subquestions:
+  - variable: esignet.envVars.esignet_captcha_site_key
+    description: Example Google reCAPTCHA site key
+    type: string
+    label: Captcha site key
+    group: eSignet Settings
+
+  - variable: esignet.envVars.esignet_captcha_secret_key
+    description: Example Google reCAPTCHA secret key
+    type: string
+    label: Captcha secret key
+    group: eSignet Settings
+
+- variable: esignet.springConfig.rawConfig
+  description: |-
+    If git-based config is disabled, the complete application.properties can be
+    directly supplied here.
+  type: multiline
+  label: Spring Config application properties.
+  group: eSignet Settings
+  show_if: "esignet.enabled=true&&esignet.springConfig.gitRepo.enabled=false"
+
+# Mock Identity Settings
+- variable: mock-identity-system.enabled
+  description: This installs Mock Identity System with eSignet (This is only relevant when esignet is installed.)
+  type: boolean
+  label: Install Mock Identity System?
+  group: Mock Identity System Settings
+
+- variable: mock-identity-system.springConfig.profile
+  type: string
+  label: Spring Config Profile
+  group: Mock Identity System Settings
+  show_if: "mock-identity-system.enabled=true"
+
+- variable: mock-identity-system.springConfig.names
+  type: string
+  label: Spring Config Names
+  group: Mock Identity System Settings
+  show_if: "mock-identity-system.enabled=true"
+
+- variable: mock-identity-system.springConfig.gitRepo.enabled
+  description: Enables download of configs from Git repo.
+  type: boolean
+  label: Spring Config Git Enabled
+  group: Mock Identity System Settings
+  show_if: "mock-identity-system.enabled=true"
+  show_subquestions_if: true
+  subquestions:
+  - variable: mock-identity-system.springConfig.gitRepo.repoUrl
+    description: |-
+      Repo Url for remote Git repo containing configs.
+      This url should include username password if required.
+    type: string
+    label: Spring Config Git Repo Url
+    group: Mock Identity System Settings
+
+  - variable: mock-identity-system.springConfig.gitRepo.branch
+    description: Branch of remote Git repo containing configs.
+    type: string
+    label: Spring Config Git Repo Branch
+    group: Mock Identity System Settings
+
+- variable: mock-identity-system.springConfig.rawConfig
+  description: |-
+    If git-based config is disabled, the complete application.properties can be
+    directly supplied here.
+  type: yamlfile
+  label: Spring Config application properties.
+  group: Mock Identity System Settings
+  show_if: "mock-identity-system.enabled=true&&mock-identity-system.springConfig.gitRepo.enabled=false"
+
