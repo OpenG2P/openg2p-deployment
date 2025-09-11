@@ -2,7 +2,7 @@ apiVersion: v2
 name: openg2p-commons
 description: A Helm chart for openg2p-commons
 type: application
-version: 0.0.2-develop
+version: 0.0.0-develop
 dependencies:
 - name: postgresql
   version: 15.5.38
