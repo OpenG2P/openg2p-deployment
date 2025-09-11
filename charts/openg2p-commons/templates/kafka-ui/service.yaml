@@ -1,0 +1,29 @@
+{{- if .Values.kafka.enabled }}
+{{- if .Values.kafkaUi.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "common.names.fullname" .Subcharts.kafka }}-ui
+  labels: {{ include "common.labels.standard" (dict "customLabels" .Values.kafkaUi.commonLabels "context" .Subcharts.kafka) | nindent 4 }}
+  {{- if .Values.kafkaUi.commonAnnotations }}
+  annotations: {{ include "common.tplvalues.render" (dict "value" .Values.kafkaUi.commonAnnotations "context" $) | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.kafkaUi.service.type }}
+  {{- if (or (eq .Values.kafkaUi.service.type "LoadBalancer") (eq .Values.kafkaUi.service.type "NodePort")) }}
+  externalTrafficPolicy: {{ .Values.kafkaUi.service.externalTrafficPolicy | quote }}
+  {{- end }}
+  {{ if eq .Values.kafkaUi.service.type "LoadBalancer" }}
+  loadBalancerSourceRanges: {{ .Values.kafkaUi.service.loadBalancerSourceRanges }}
+  {{ end }}
+  {{- if (and (eq .Values.kafkaUi.service.type "LoadBalancer") (not (empty .Values.kafkaUi.service.loadBalancerIP))) }}
+  loadBalancerIP: {{ .Values.kafkaUi.service.loadBalancerIP }}
+  {{- end }}
+  ports:
+    - name: http
+      port: {{ .Values.kafkaUi.service.port }}
+      protocol: TCP
+      targetPort: {{ .Values.kafkaUi.containerPort }}
+  selector: {{- include "common.labels.matchLabels" (dict "customLabels" .Values.kafkaUi.podLabels "context" .Subcharts.kafka) | nindent 4 }}
+{{- end }}
+{{- end }}

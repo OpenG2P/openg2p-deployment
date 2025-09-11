@@ -1,0 +1,810 @@
+global:
+  keycloakBaseUrl: https://keycloak.your.org
+  keycloakIssuerUrl: '{{ tpl .Values.global.keycloakBaseUrl $ }}/realms/master'
+
+  openg2pKeymanagerHostname: keymanager.openg2p.sandbox.net
+  openg2pMinioHostname: minio.openg2p.sandbox.net
+  openg2pOpensearchHostname: opensearch.openg2p.sandbox.net
+  openg2pKafkaUiHostname: kafka.openg2p.sandbox.net
+  openg2pSupersetHostname: superset.openg2p.sandbox.net
+  openg2pEsignetHostname: esignet.openg2p.sandbox.net
+
+  sysAdminEmail: admin@openg2p.sandbox.net
+  openg2pKeymanagerAuthEnabled: false
+
+postgresql:
+  enabled: true
+  auth:
+    postgresPassword: ""
+  additionalDbs:
+    enabled: true
+    userPasswordsExistingSecret: ""
+    userPasswords:
+      sruser: ""
+      odkuser: ""
+      superset: superset
+      keymgruser: ""
+      kerneluser: ""
+      esignetuser: ""
+      mockidsystemuser: ""
+  primary:
+    extendedConfiguration: |-
+      wal_level = logical
+      max_wal_senders = 20
+      max_replication_slots = 10
+    extraEnvVars:
+      - name: ADDL_DBS_ENABLED
+        value: '{{ .Values.additionalDbs.enabled | ternary "true" "false" }}'
+      - name: POSTGRES_POSTGRES_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            name: '{{ include "postgresql.v1.primary.fullname" . }}'
+            key: postgres-password
+      - name: ADDL_DBS_USER_PASSWORD_sruser
+        valueFrom:
+          secretKeyRef:
+            name: '{{ include "postgresql.v1.primary.fullname" . }}-addl-user-passwords'
+            key: sruser
+      - name: ADDL_DBS_USER_PASSWORD_odkuser
+        valueFrom:
+          secretKeyRef:
+            name: '{{ include "postgresql.v1.primary.fullname" . }}-addl-user-passwords'
+            key: odkuser
+      - name: ADDL_DBS_USER_PASSWORD_superset
+        valueFrom:
+          secretKeyRef:
+            name: '{{ include "postgresql.v1.primary.fullname" . }}-addl-user-passwords'
+            key: superset
+    # Extra DBs and Users create
+    initdb:
+      scripts:
+        create_dbs_and_users.sh: |-
+          #!/bin/bash
+          if [ "$ADDL_DBS_ENABLED" = "true" ]; then
+            PGPASSWORD=$POSTGRES_POSTGRES_PASSWORD psql -U postgres -d postgres -c "CREATE ROLE sruser WITH LOGIN NOSUPERUSER CREATEDB CREATEROLE INHERIT REPLICATION CONNECTION LIMIT -1 PASSWORD '"$ADDL_DBS_USER_PASSWORD_sruser"';"
+            PGPASSWORD=$POSTGRES_POSTGRES_PASSWORD psql -U postgres -d postgres -c "CREATE DATABASE socialregistrydb WITH OWNER = sruser TEMPLATE = template0 ENCODING = 'UTF8' TABLESPACE = pg_default CONNECTION LIMIT = -1;"
+            PGPASSWORD=$POSTGRES_POSTGRES_PASSWORD psql -U postgres -d postgres -c "CREATE ROLE odkuser WITH LOGIN NOSUPERUSER CREATEDB CREATEROLE INHERIT REPLICATION CONNECTION LIMIT -1 PASSWORD '"$ADDL_DBS_USER_PASSWORD_odkuser"';"
+            PGPASSWORD=$POSTGRES_POSTGRES_PASSWORD psql -U postgres -d postgres -c "CREATE DATABASE odkdb WITH OWNER = odkuser TEMPLATE = template0 ENCODING = 'UTF8' TABLESPACE = pg_default CONNECTION LIMIT = -1;"
+            PGPASSWORD=$POSTGRES_POSTGRES_PASSWORD psql -U postgres -d postgres -c "CREATE ROLE superset WITH LOGIN NOSUPERUSER CREATEDB CREATEROLE INHERIT REPLICATION CONNECTION LIMIT -1 PASSWORD '"$ADDL_DBS_USER_PASSWORD_superset"';"
+            PGPASSWORD=$POSTGRES_POSTGRES_PASSWORD psql -U postgres -d postgres -c "CREATE DATABASE superset WITH OWNER = superset TEMPLATE = template0 ENCODING = 'UTF8' TABLESPACE = pg_default CONNECTION LIMIT = -1;"
+          fi
+  istio:
+    enabled: false
+    virtualservice:
+      enabled: true
+      host: "*"
+      gateway: ""
+      matchPort: 5432
+      destination: '{{ include "postgresql.v1.primary.fullname" . }}'
+      destinationPort: "5432"
+    gateway:
+      enabled: true
+      port: 5432
+      host: "*"
+      ingressController:
+        istio: ingressgateway
+      tls:
+        enabled: false
+        mode: SIMPLE
+        credentialName: ""
+
+mail:
+  enabled: true
+  mailname: openg2p.sandbox.net
+
+minio:
+  enabled: true
+  hostname: '{{ tpl .Values.global.openg2pMinioHostname $ }}'
+  persistence:
+    enabled: true
+    size: 16Gi
+
+  oidcWellKnownConfigUrl: '{{ tpl .Values.global.keycloakIssuerUrl $ }}/.well-known/openid-configuration'
+  oidcClientId: 'openg2p-minio-{{ .Release.Namespace }}'
+  oidcClientSecret: ''
+
+  extraEnvVars:
+  - name: MINIO_IDENTITY_OPENID_CONFIG_URL
+    value: '{{ tpl .Values.oidcWellKnownConfigUrl $ }}'
+  - name: MINIO_IDENTITY_OPENID_CLIENT_ID
+    value: '{{ tpl .Values.oidcClientId $ }}'
+  - name: MINIO_IDENTITY_OPENID_CLIENT_SECRET
+    value: '{{ tpl .Values.oidcClientSecret $ }}'
+  - name: MINIO_IDENTITY_OPENID_DISPLAY_NAME
+    value: Keycloak
+  - name: MINIO_IDENTITY_OPENID_CLAIM_NAME
+    value: client_roles
+  - name: MINIO_IDENTITY_OPENID_SCOPES
+    value: openid,profile,email
+  - name: MINIO_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC
+    value: "on"
+  - name: MINIO_IDENTITY_OPENID_CLAIM_USERINFO
+    value: "on"
+
+  istio:
+    enabled: true
+    virtualservice:
+      enabled: true
+      host: ""
+      gateway: "internal"
+      destination: '{{ include "common.names.fullname" . }}'
+      destinationPort: "9001"
+    gateway:
+      enabled: false
+      host: ""
+      ingressController:
+        istio: ingressgateway
+      httpTlsRedirect: true
+      httpEnabled: true
+      httpsEnabled: false
+      tls:
+        mode: SIMPLE
+        credentialName: ""
+
+opensearch:
+  enabled: false
+  hostname: '{{ tpl .Values.global.openg2pOpensearchHostname $ }}'
+
+  oidcWellKnownConfigUrl: '{{ tpl .Values.global.keycloakIssuerUrl $ }}/.well-known/openid-configuration'
+  oidcClientId: 'openg2p-opensearch-{{ .Release.Namespace }}'
+  oidcClientSecret: ''
+
+  master:
+    masterOnly: false
+    persistence:
+      size: 8Gi
+    replicaCount: 1
+    heapSize: 256m
+    resourcesPreset: "none"
+
+  data:
+    replicaCount: 0
+    # persistence:
+    #   size: 8Gi
+
+  coordinating:
+    replicaCount: 0
+
+  ingest:
+    replicaCount: 0
+
+  extraVolumes:
+  - name: security-config
+    configMap:
+      name: '{{ include "common.names.fullname" . }}-custom-config'
+
+  extraVolumeMounts:
+  - name: security-config
+    mountPath: /opt/bitnami/opensearch/config.default/opensearch-security/config.yml
+    subPath: opensearch-security-config.yml
+
+  security:
+    enabled: true
+    tls:
+      restEncryption: true
+    extraConfig: |-
+      _meta:
+        type: "config"
+        config_version: 2
+      config:
+        dynamic:
+          http:
+            anonymous_auth_enabled: false
+            xff:
+              enabled: false
+          authc:
+            basic_internal_auth_domain:
+              http_enabled: true
+              transport_enabled: true
+              order: 0
+              description: "Authenticate via HTTP Basic against internal users database"
+              http_authenticator:
+                type: basic
+                challenge: false
+              authentication_backend:
+                type: internal
+            openid_auth_domain:
+              http_enabled: true
+              transport_enabled: true
+              order: 1
+              description: "Authenticate via Keycloak OIDC"
+              http_authenticator:
+                type: openid
+                challenge: false
+                config:
+                  subject_key: preferred_username
+                  roles_key: client_roles
+                  openid_connect_url: '{{ tpl .Values.oidcWellKnownConfigUrl $ }}'
+              authentication_backend:
+                type: noop
+            kerberos_auth_domain:
+              http_enabled: false
+              transport_enabled: false
+            proxy_auth_domain:
+              http_enabled: false
+              transport_enabled: false
+            jwt_auth_domain:
+              http_enabled: false
+              transport_enabled: false
+            clientcert_auth_domain:
+              http_enabled: false
+              transport_enabled: false
+            ldap:
+              http_enabled: false
+              transport_enabled: false
+          authz: {}
+
+  dashboards:
+    enabled: true
+    replicaCount: 1
+
+    resourcesPreset: "none"
+
+    extraVolumes:
+    - name: dashboards-config
+      configMap:
+        name: '{{ include "common.names.fullname" . }}-custom-config'
+
+    extraVolumeMounts:
+    - name: dashboards-config
+      mountPath: /opt/bitnami/opensearch-dashboards/config.default/opensearch_dashboards.yml
+      subPath: opensearch_dashboards.yml
+
+    extraConfig: |-
+      path:
+        data: /bitnami/opensearch-dashboards/data
+      opensearch:
+        requestHeadersAllowlist:
+          - authorization
+          - securitytenant
+        ssl:
+          verificationMode: none
+      opensearch_security:
+        auth:
+          type:
+          # - basicauth # Enable this to allow password based auth also
+          - openid
+          multiple_auth_enabled: true
+        openid:
+          connect_url: '{{ tpl .Values.oidcWellKnownConfigUrl $ }}'
+          client_id: '{{ tpl .Values.oidcClientId $ }}'
+          client_secret: '{{ tpl .Values.oidcClientSecret $ }}'
+          base_redirect_url: 'https://{{ tpl .Values.hostname $ }}'
+          logout_url: ""
+        ui:
+          openid:
+            login:
+              buttonname: "Log in with Keycloak"
+        multitenancy:
+          enabled: false # Enable this if multi tenancy is needed.
+          tenants:
+            preferred:
+            - Global
+            - Private
+        readonly_mode:
+          roles:
+          - kibana_read_only
+
+  loggingOutput:
+    enabled: true
+    type: opensearch
+    scheme: https
+    host: '{{ include "common.names.fullname" . }}.{{ .Release.Namespace }}'
+    port: "9200"
+    user: logstash
+    passwordFrom:
+      secretKeyRef:
+        key: logstash-password
+        name: '{{ include "common.names.fullname" . }}'
+    extraConfig:
+      ssl_verify: false
+      logstash_format: true
+      suppress_type_name: true
+      buffer:
+        flush_interval: 10s
+        flush_mode: interval
+
+  istio:
+    enabled: true
+    virtualservice:
+      enabled: true
+      host: ""
+      gateway: "internal"
+      destination: '{{ include "common.names.fullname" . }}-dashboards'
+      destinationPort: "5601"
+    gateway:
+      enabled: false
+      host: ""
+      ingressController:
+        istio: ingressgateway
+      httpTlsRedirect: true
+      httpEnabled: true
+      httpsEnabled: false
+      tls:
+        mode: SIMPLE
+        credentialName: ""
+
+kafka:
+  enabled: false
+  heapOpts: ""
+  extraConfig: |-
+    log.retention.hours=2
+    default.replication.factor=1
+    offsets.topic.replication.factor=1
+    transaction.state.log.replication.factor=1
+    auto.create.topics.enable=true
+    delete.topic.enable=true
+    num.partitions=3
+  controller:
+    heapOpts: ""
+    replicaCount: 1
+    resourcesPreset: "none"
+  broker:
+    heapOpts: ""
+    persistence:
+      enabled: false
+  listeners:
+    client:
+      protocol: PLAINTEXT
+    controller:
+      protocol: PLAINTEXT
+    interbroker:
+      protocol: PLAINTEXT
+    external:
+      protocol: PLAINTEXT
+  service:
+    ports:
+      client: 9092
+
+kafkaUi:
+  enabled: false
+  # kafka.nameOverride will apply here too.
+  hostname: '{{ tpl .Values.global.openg2pKafkaUiHostname $ }}'
+
+  basePath: ""
+
+  kafkaBootstrapServers: '{{ include "common.names.fullname" .Subcharts.kafka }}:9092'
+  debeziumAddress: '{{ .Release.Name }}-reporting-debezium'
+  opensearchKafkaConnectorAddress: '{{ .Release.Name }}-reporting-os-kafka-connector'
+
+  oidcIssuerUrl: '{{ tpl .Values.global.keycloakIssuerUrl $ }}'
+  oidcClientId: 'openg2p-kafka-{{ .Release.Namespace }}'
+  oidcClientSecret: ''
+
+  commonLabels:
+    app.kubernetes.io/name: '{{ include "common.names.name" . }}-ui'
+  commonAnnotations: {}
+  podLabels:
+    app.kubernetes.io/name: '{{ include "common.names.name" . }}-ui'
+  podAnnotations: {}
+
+  replicaCount: 1
+
+  service:
+    type: ClusterIP
+    port: 80
+    nodePorts:
+      http: ""
+      https: ""
+    externalTrafficPolicy: Cluster
+
+  image:
+    repository: provectuslabs/kafka-ui
+    tag: v0.7.2
+    pullPolicy: Always
+    pullSecrets: []
+
+  containerPort: 8080
+
+  startupProbe:
+    enabled: true
+    httpGet:
+      path: '{{ tpl .Values.kafkaUi.basePath $ }}/actuator/health'
+      port: 8080
+    initialDelaySeconds: 0
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 30
+    successThreshold: 1
+
+  livenessProbe:
+    enabled: true
+    httpGet:
+      path: '{{ tpl .Values.kafkaUi.basePath $ }}/actuator/health'
+      port: 8080
+    initialDelaySeconds: 20
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 6
+    successThreshold: 1
+
+  readinessProbe:
+    enabled: true
+    httpGet:
+      path: '{{ tpl .Values.kafkaUi.basePath $ }}/actuator/health'
+      port: 8080
+    initialDelaySeconds: 0
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+    successThreshold: 1
+
+  command: []
+  args: []
+
+  hostAliases: []
+
+  resources: {}
+  # javaOpts: "-Xms256M -Xmx2G"
+  javaOpts: ""
+
+  containerSecurityContext:
+    enabled: false
+    runAsUser: 1001
+    runAsNonRoot: true
+
+  podSecurityContext:
+    enabled: false
+    fsGroup: 1001
+
+  podAffinityPreset: ""
+  podAntiAffinityPreset: soft
+  nodeAffinityPreset:
+    type: ""
+    key: ""
+    values: []
+  affinity: {}
+  nodeSelector: {}
+  tolerations: []
+
+  priorityClassName: ""
+  lifecycleHooks: {}
+
+  updateStrategy:
+    type: RollingUpdate
+
+  initContainers: []
+  sidecars: []
+
+  extraVolumes: []
+  extraVolumeMounts: []
+
+  envVars:
+    JDK_JAVA_OPTIONS: '{{ tpl .Values.kafkaUi.javaOpts $ }}'
+    SERVER_SERVLET_CONTEXT_PATH: '{{ tpl .Values.kafkaUi.basePath $ }}'
+    SPRING_CONFIG_ADDITIONAL-LOCATION: '/kafka-ui/config.yml'
+  envVarsFrom: {}
+
+  configYml: |-
+    server:
+      max-http-header-size: "200000"
+    kafka:
+      clusters:
+      - name: main
+        bootstrapServers: '{{ tpl .Values.kafkaUi.kafkaBootstrapServers $ }}'
+        kafkaConnect:
+        - name: debezium
+          address: 'http://{{ tpl .Values.kafkaUi.debeziumAddress $ }}'
+        - name: opensearch-kafka-connector
+          address: 'http://{{ tpl .Values.kafkaUi.opensearchKafkaConnectorAddress $ }}'
+    auth:
+      type: OAUTH2
+      oauth2:
+        client:
+          keycloak:
+            clientId: '{{ tpl .Values.kafkaUi.oidcClientId $ }}'
+            clientSecret: '{{ tpl .Values.kafkaUi.oidcClientSecret $ }}'
+            scope: ["openid","profile","email"]
+            authorization-grant-type: authorization_code
+            issuer-uri: '{{ tpl .Values.kafkaUi.oidcIssuerUrl $ }}'
+            jwk-set-uri: '{{ tpl .Values.kafkaUi.oidcIssuerUrl $ }}/protocol/openid-connect/certs'
+            user-name-attribute: email
+            client-name: Keycloak
+            provider: keycloak
+            custom-params:
+              type: oauth
+              roles-field: client_roles
+    rbac:
+      roles:
+        - name: "admins"
+          clusters: ["main"]
+          subjects:
+            - provider: oauth
+              type: role
+              value: "Admin"
+          permissions:
+            - resource: applicationconfig
+              actions: all
+            - resource: clusterconfig
+              actions: all
+            - resource: topic
+              value: ".*"
+              actions: all
+            - resource: consumer
+              value: ".*"
+              actions: all
+            - resource: schema
+              value: ".*"
+              actions: all
+            - resource: connect
+              value: ".*"
+              actions: all
+            - resource: ksql
+              actions: all
+            - resource: acl
+              actions: all
+
+  istio:
+    enabled: true
+    virtualservice:
+      enabled: true
+      host: ""
+      gateway: "internal"
+      # In the following destination properties the context is root not ".Values.kafka"
+      # nor ".Values.kafkaUi" unlike other subcharts (like minio and opensearch)
+      # because of difference in structure.
+      destination: '{{ include "common.names.fullname" .Subcharts.kafka }}-ui'
+      destinationPort: '{{ .Values.kafkaUi.service.port }}'
+      prefix: /
+      rewriteUri: ""
+    gateway:
+      enabled: false
+      host: ""
+      ingressController:
+        istio: ingressgateway
+      httpTlsRedirect: true
+      httpEnabled: true
+      httpsEnabled: false
+      tls:
+        mode: SIMPLE
+        credentialName: ""
+
+reporting:
+  enabled: false
+  debezium:
+    enabled: true
+  opensearch-kafka-connector:
+    enabled: true
+
+artifactory:
+  enabled: true
+  image:
+    repository: mosipid/artifactory-server
+    tag: 1.4.1-ES
+  resources: {}
+
+softhsm:
+  enabled: false
+  # Hardcoding this for now. else every upgrade will reset the pin
+  securityPIN: MTYwMzIyMjg=
+  resources: {}
+
+keymanager:
+  enabled: true
+  hostname: '{{ tpl .Values.global.openg2pKeymanagerHostname $ }}'
+  authEnabled: '{{ .Values.global.openg2pKeymanagerAuthEnabled }}'
+  istio:
+    enabled: false
+  keystoreType: PKCS12
+  springConfig:
+    names: application,kernel
+    profile: default
+    gitRepo:
+      enabled: true
+      repoUrl: https://github.com/openg2p/mosip-config
+      branch: master
+    rawConfig: ""
+  envVars:
+    auth_server_admin_allowed_audience: 'openg2p-sr,openg2p-sr-{{ .Release.Namespace }},openg2p-pbms,openg2p-pbms-{{ .Release.Namespace }},openg2p-spar,openg2p-spar-{{ .Release.Namespace }},openg2p-g2p-bridge,openg2p-g2p-bridge-{{ .Release.Namespace }}'
+  envVarsFrom:
+    db_dbuser_password:
+      secretKeyRef:
+        name: '{{ .Release.Name }}-postgresql-addl-user-passwords'
+        key: keymgruser
+  postgresInit:
+    commonAnnotations:
+      "helm.sh/hook-weight": "0"
+    envVarsFrom:
+      DBUSER_PWD:
+        secretKeyRef:
+          name: '{{ .Release.Name }}-postgresql-addl-user-passwords'
+          key: keymgruser
+  persistence:
+    enabled: true
+
+superset:
+  enabled: true
+  hostname: '{{ tpl .Values.global.openg2pSupersetHostname $ }}'
+
+  oidcIssuerUrl: '{{ tpl .Values.global.keycloakIssuerUrl $ }}'
+  oidcClientId: 'openg2p-superset-{{ .Release.Namespace }}'
+  oidcClientSecret: ''
+
+  supersetSecretKey: ''
+
+  init:
+    createAdmin: false
+    jobAnnotations:
+      "helm.sh/hook-weight": "0"
+
+  postgresql:
+    enabled: false
+
+  redis:
+    enabled: false
+
+  supersetNode:
+    connections:
+      redis_host: '{{ .Release.Name }}-superset-redis-headless'
+      db_host: '{{ .Release.Name }}-postgresql'
+
+  bootstrapScript: |
+    #!/bin/bash
+    pip install authlib==1.3.0
+
+  configOverrides:
+    enable_oauth: |
+      SECRET_KEY = '{{ tpl .Values.supersetSecretKey $ }}' or 'OPENG2P_SUPER_SECRET_KEY'
+
+      # This will make sure the redirect_uri is properly computed, even with SSL offloading
+      ENABLE_PROXY_FIX = True
+
+      from flask_appbuilder.security.manager import AUTH_OAUTH
+      AUTH_TYPE = AUTH_OAUTH
+      OAUTH_PROVIDERS = [
+        {
+          "name": "keycloak",
+          "icon": "fa-key",
+          "token_key": "access_token",
+          "remote_app": {
+            "client_id": "{{ tpl .Values.oidcClientId $ }}",
+            "client_secret": "{{ tpl .Values.oidcClientSecret $ }}",
+            "api_base_url": "{{ tpl .Values.oidcIssuerUrl $ }}/protocol/openid-connect",
+            "client_kwargs": {"scope": "email profile openid"},
+            "access_token_url": "{{ tpl .Values.oidcIssuerUrl $ }}/protocol/openid-connect/token",
+            "jwks_uri": "{{ tpl .Values.oidcIssuerUrl $ }}/protocol/openid-connect/certs",
+            "authorize_url": "{{ tpl .Values.oidcIssuerUrl $ }}/protocol/openid-connect/auth",
+            "request_token_url": None
+          },
+        }
+      ]
+
+      # Map Authlib roles to superset roles
+      AUTH_ROLES_MAPPING = {
+        "Public": ["Public"],
+        "Admin": ["Admin"],
+      }
+
+      AUTH_ROLES_SYNC_AT_LOGIN = True
+
+      # Will allow user self registration, allowing to create Flask users from Authorized User
+      AUTH_USER_REGISTRATION = True
+
+      # The default user self registration role
+      # AUTH_USER_REGISTRATION_ROLE = "Public"
+
+      from superset.security import SupersetSecurityManager
+      class CustomSsoSecurityManager(SupersetSecurityManager):
+        def oauth_user_info(self, provider, response=None):
+          if provider == "keycloak":
+            me = self.appbuilder.sm.oauth_remotes[provider].get(
+              "openid-connect/userinfo"
+            )
+            me.raise_for_status()
+            data = me.json()
+            return {
+              "username": data.get("preferred_username", ""),
+              "first_name": data.get("given_name", ""),
+              "last_name": data.get("family_name", ""),
+              "email": data.get("email", ""),
+              "role_keys": data.get("client_roles", []),
+            }
+          return {}
+
+      CUSTOM_SECURITY_MANAGER = CustomSsoSecurityManager
+      SESSION_COOKIE_HTTPONLY = True
+      SESSION_COOKIE_SECURE = True
+      SESSION_COOKIE_SAMESITE = None
+      TALISMAN_ENABLED = False
+
+  istio:
+    enabled: true
+    virtualservice:
+      enabled: true
+      host: ""
+      gateway: "internal"
+      destination: '{{ include "superset.fullname" . }}'
+      destinationPort: '{{ .Values.service.port }}'
+    gateway:
+      enabled: false
+      host: ""
+      ingressController:
+        istio: ingressgateway
+      httpTlsRedirect: true
+      httpEnabled: true
+      httpsEnabled: false
+      tls:
+        mode: SIMPLE
+        credentialName: ""
+
+supersetRedis:
+  nameOverride: superset-redis
+  architecture: standalone
+  auth:
+    enabled: false
+  master:
+    resourcesPreset: none
+    persistence:
+      enabled: false
+
+esignetRedis:
+  nameOverride: esignet-redis
+  architecture: standalone
+  auth:
+    enabled: true
+  master:
+    resourcesPreset: none
+    persistence:
+      enabled: false
+
+esignet:
+  enabled: false
+  hostname: '{{ tpl .Values.global.openg2pEsignetHostname $ }}'
+
+  captchaEnabled: false
+
+  envVars:
+    esignet_captcha_site_key: ''
+    esignet_captcha_secret_key: ''
+
+  envVarsFrom:
+    db_dbuser_password:
+      secretKeyRef:
+        name: '{{ tpl .Values.postgresqlInstallationName $ }}-addl-user-passwords'
+        key: esignetuser
+
+  postgresInit:
+    commonAnnotations:
+      "helm.sh/hook-weight": "0"
+    envVarsFrom:
+      DBUSER_PWD:
+        secretKeyRef:
+          name: '{{ tpl .Values.postgresqlInstallationName $ }}-addl-user-passwords'
+          key: esignetuser
+
+  springConfig:
+    names: application,esignet
+    profile: default
+    gitRepo:
+      enabled: true
+      repoUrl: https://github.com/openg2p/mosip-config
+      branch: master
+    rawConfig: ""
+
+mock-identity-system:
+  enabled: false
+  hostname: '{{ tpl .Values.global.openg2pEsignetHostname $ }}'
+
+  envVarsFrom:
+    db_dbuser_password:
+      secretKeyRef:
+        name: '{{ tpl .Values.postgresqlInstallationName $ }}-addl-user-passwords'
+        key: mockidsystemuser
+
+  postgresInit:
+    commonAnnotations:
+      "helm.sh/hook-weight": "0"
+    envVarsFrom:
+      DBUSER_PWD:
+        secretKeyRef:
+          name: '{{ tpl .Values.postgresqlInstallationName $ }}-addl-user-passwords'
+          key: mockidsystemuser
+
+  springConfig:
+    names: application,mock-identity-system
+    profile: default
+    gitRepo:
+      enabled: true
+      repoUrl: https://github.com/openg2p/mosip-config
+      branch: master
+    rawConfig: ""

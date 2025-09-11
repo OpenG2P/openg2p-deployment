@@ -1,0 +1,104 @@
+{{- if .Values.kafka.enabled }}
+{{- if .Values.kafkaUi.enabled }}
+apiVersion: {{ include "common.capabilities.deployment.apiVersion" . }}
+kind: Deployment
+metadata:
+  name: {{ include "common.names.fullname" .Subcharts.kafka }}-ui
+  labels: {{ include "common.labels.standard" (dict "customLabels" .Values.kafkaUi.commonLabels "context" .Subcharts.kafka) | nindent 4 }}
+  {{- if .Values.kafkaUi.commonAnnotations }}
+  annotations: {{ include "common.tplvalues.render" (dict "value" .Values.kafkaUi.commonAnnotations "context" $) | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.kafkaUi.replicaCount }}
+  {{- if .Values.kafkaUi.updateStrategy }}
+  strategy: {{- toYaml .Values.kafkaUi.updateStrategy | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels: {{- include "common.labels.matchLabels" (dict "customLabels" .Values.kafkaUi.podLabels "context" .Subcharts.kafka) | nindent 6 }}
+  template:
+    metadata:
+      labels: {{ include "common.labels.standard" (dict "customLabels" .Values.kafkaUi.podLabels "context" .Subcharts.kafka) | nindent 8 }}
+      {{- if .Values.kafkaUi.podAnnotations }}
+      annotations: {{ include "common.tplvalues.render" (dict "value" .Values.kafkaUi.podAnnotations "context" $) | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "kafka.serviceAccountName" .Subcharts.kafka }}
+      {{- include "common.images.pullSecrets" (dict "images" (list .Values.kafkaUi.image) "global" .Values.global) | nindent 6 }}
+      {{- if .Values.kafkaUi.hostAliases }}
+      hostAliases: {{- include "common.tplvalues.render" (dict "value" .Values.kafkaUi.hostAliases "context" $) | nindent 8 }}
+      {{- end }}
+      {{- if .Values.kafkaUi.affinity }}
+      affinity: {{- include "common.tplvalues.render" ( dict "value" .Values.kafkaUi.affinity "context" $) | nindent 8 }}
+      {{- else }}
+      affinity:
+        podAffinity: {{- include "common.affinities.pods" (dict "type" .Values.kafkaUi.podAffinityPreset "context" $) | nindent 10 }}
+        podAntiAffinity: {{- include "common.affinities.pods" (dict "type" .Values.kafkaUi.podAntiAffinityPreset "context" $) | nindent 10 }}
+        nodeAffinity: {{- include "common.affinities.nodes" (dict "type" .Values.kafkaUi.nodeAffinityPreset.type "key" .Values.kafkaUi.nodeAffinityPreset.key "values" .Values.kafkaUi.nodeAffinityPreset.values) | nindent 10 }}
+      {{- end }}
+      {{- if .Values.kafkaUi.nodeSelector }}
+      nodeSelector: {{- include "common.tplvalues.render" ( dict "value" .Values.kafkaUi.nodeSelector "context" $) | nindent 8 }}
+      {{- end }}
+      {{- if .Values.kafkaUi.tolerations }}
+      tolerations: {{- include "common.tplvalues.render" (dict "value" .Values.kafkaUi.tolerations "context" .) | nindent 8 }}
+      {{- end }}
+      {{- if .Values.kafkaUi.priorityClassName }}
+      priorityClassName: {{ .Values.kafkaUi.priorityClassName | quote }}
+      {{- end }}
+      {{- if .Values.kafkaUi.podSecurityContext.enabled }}
+      securityContext: {{- omit .Values.kafkaUi.podSecurityContext "enabled" | toYaml | nindent 8 }}
+      {{- end }}
+      {{- if .Values.kafkaUi.initContainers }}
+      initContainers:
+        {{- include "common.tplvalues.render" (dict "value" .Values.kafkaUi.initContainers "context" $) | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: kafka-ui
+          image: {{ include "common.images.image" (dict "imageRoot" .Values.kafkaUi.image "global" .Values.global) }}
+          imagePullPolicy: {{ .Values.kafkaUi.image.pullPolicy }}
+          {{- if .Values.kafkaUi.lifecycleHooks }}
+          lifecycle: {{- include "common.tplvalues.render" (dict "value" .Values.kafkaUi.lifecycleHooks "context" $) | nindent 12 }}
+          {{- end }}
+          {{- if .Values.kafkaUi.containerSecurityContext.enabled }}
+          securityContext: {{- omit .Values.kafkaUi.containerSecurityContext "enabled" | toYaml | nindent 12 }}
+          {{- end }}
+          {{- if .Values.kafkaUi.command }}
+          command: {{- include "common.tplvalues.render" (dict "value" .Values.kafkaUi.command "context" $) | nindent 12 }}
+          {{- end }}
+          {{- if .Values.kafkaUi.args }}
+          args: {{- include "common.tplvalues.render" (dict "value" .Values.kafkaUi.args "context" $) | nindent 12 }}
+          {{- end }}
+          env:
+            {{- include "openg2pCommon.kafka-ui.envVars" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.kafkaUi.containerPort }}
+          {{- if .Values.kafkaUi.resources }}
+          resources: {{- toYaml .Values.kafkaUi.resources | nindent 12 }}
+          {{- end }}
+          {{- if .Values.kafkaUi.startupProbe.enabled }}
+          startupProbe: {{- include "common.tplvalues.render" (dict "value" (omit .Values.kafkaUi.startupProbe "enabled") "context" $) | nindent 12 }}
+          {{- end }}
+          {{- if .Values.kafkaUi.livenessProbe.enabled }}
+          livenessProbe: {{- include "common.tplvalues.render" (dict "value" (omit .Values.kafkaUi.livenessProbe "enabled") "context" $) | nindent 12 }}
+          {{- end }}
+          {{- if .Values.kafkaUi.readinessProbe.enabled }}
+          readinessProbe: {{- include "common.tplvalues.render" (dict "value" (omit .Values.kafkaUi.readinessProbe "enabled") "context" $) | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: kafka-ui-config
+              mountPath: /kafka-ui/
+            {{- if .Values.kafkaUi.extraVolumeMounts }}
+            {{- include "common.tplvalues.render" (dict "value" .Values.kafkaUi.extraVolumeMounts "context" $) | nindent 12 }}
+            {{- end }}
+        {{- if .Values.kafkaUi.sidecars }}
+        {{- include "common.tplvalues.render" ( dict "value" .Values.kafkaUi.sidecars "context" $) | nindent 8 }}
+        {{- end }}
+      volumes:
+        - name: kafka-ui-config
+          configMap:
+            name: {{ include "common.names.fullname" .Subcharts.kafka }}-ui
+        {{- if .Values.kafkaUi.extraVolumes }}
+        {{- include "common.tplvalues.render" (dict "value" .Values.kafkaUi.extraVolumes "context" $) | nindent 8 }}
+        {{- end }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,63 @@
+apiVersion: v2
+name: openg2p-commons
+description: A Helm chart for openg2p-commons
+type: application
+version: 0.0.2-develop
+dependencies:
+- name: postgresql
+  version: 15.5.38
+  repository: https://openg2p.github.io/openg2p-helm
+  condition: postgresql.enabled
+- name: mail
+  version: 1.2.0
+  condition: mail.enabled
+- name: minio
+  version: 12.12.2
+  repository: https://openg2p.github.io/openg2p-helm
+  condition: minio.enabled
+- name: opensearch
+  version: 1.2.0
+  repository: https://openg2p.github.io/openg2p-helm
+  condition: opensearch.enabled
+- name: kafka
+  repository: https://openg2p.github.io/openg2p-helm
+  version: 29.3.14
+  condition: kafka.enabled
+- name: artifactory
+  version: 12.0.2
+  condition: artifactory.enabled
+- name: keymanager
+  version: 12.1.0
+  condition: keymanager.enabled
+- name: softhsm
+  repository: https://mosip.github.io/mosip-helm
+  version: 12.0.1
+  condition: softhsm.enabled
+- name: reporting
+  version: 1.3.0-develop
+  repository: https://openg2p.github.io/openg2p-helm
+  condition: reporting.enabled
+- name: superset
+  version: 0.12.11
+  repository: https://apache.github.io/superset
+  condition: superset.enabled
+- name: redis
+  alias: supersetRedis
+  version: 19.6.4
+  repository: https://openg2p.github.io/openg2p-helm
+  condition: superset.enabled
+- name: esignet
+  version: 1.4.2
+  condition: esignet.enabled
+- name: redis
+  alias: esignetRedis
+  version: 19.6.4
+  repository: https://openg2p.github.io/openg2p-helm
+  condition: esignet.enabled
+- name: mock-identity-system
+  version: 0.9.4
+  condition: mock-identity-system.enabled
+icon: https://openg2p.github.io/openg2p-helm/openg2p-logo.png
+annotations:
+  catalog.cattle.io/display-name: "OpenG2P Commons"
+  openg2p.org/add-to-rancher: ""
