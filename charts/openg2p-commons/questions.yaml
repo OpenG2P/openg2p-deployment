@@ -40,6 +40,48 @@ questions:
   group: Minio Settings
   show_if: "minio.enabled=true"
 
+  # ODK Central Settings
+- variable: odk-central.enabled
+  description: This installs ODK Central.
+  type: boolean
+  label: Install ODK Central?
+  group: ODK Central Settings
+
+- variable: global.openg2pOdkCentralHostname
+  description: Hostname for ODK Central
+  type: string
+  label: ODK Central Hostname
+  group: ODK Central Settings
+  show_if: "odk-central.enabled=true"
+
+- variable: odk-central.backend.envVars.OIDC_ENABLED
+  description: Enable OIDC Login for ODK Central
+  type: boolean
+  label: Enable OIDC
+  group: ODK Central Settings
+  show_if: "odk-central.enabled=true"
+
+- variable: odk-central.backend.envVars.OIDC_CLIENT_ID
+  description: OIDC Client ID for ODK Central login
+  type: string
+  label: OIDC Client ID
+  group: ODK Central Settings
+  show_if: "odk-central.enabled=true&&odk-central.backend.envVars.OIDC_ENABLED=true"
+
+- variable: odk-central.backend.envVars.OIDC_CLIENT_SECRET
+  description: OIDC Client Secret for ODK Central login
+  type: string
+  label: OIDC Client Secret
+  group: ODK Central Settings
+  show_if: "odk-central.enabled=true&&odk-central.backend.envVars.OIDC_ENABLED=true"
+
+- variable: odk-central.s3BlobsEnabled
+  description: This enables use of S3 (Minio) for storing form file uploads (blobs).
+  type: boolean
+  label: Enable Blobs store to S3
+  group: ODK Central Settings
+  show_if: "odk-central.enabled=true"
+
 # Kafka Settings
 - variable: kafka.enabled
   description: This installs Kafka along with OpenG2P-commons (Required for Reporting and eSignet)

@@ -8,6 +8,7 @@ global:
   openg2pKafkaUiHostname: kafka.openg2p.sandbox.net
   openg2pSupersetHostname: superset.openg2p.sandbox.net
   openg2pEsignetHostname: esignet.openg2p.sandbox.net
+  openg2pOdkCentralHostname: odk.openg2p.sandbox.net
 
   sysAdminEmail: admin@openg2p.sandbox.net
   openg2pKeymanagerAuthEnabled: false
@@ -90,7 +91,60 @@ postgresql:
 
 mail:
   enabled: true
-  mailname: openg2p.sandbox.net
+  mailname: admin@openg2p.sanbox.org
+
+odk-central:
+  enabled: true
+  hostname: '{{ tpl .Values.global.openg2pOdkCentralHostname $ }}'
+
+  postgresqlInstallationName: '{{ .Release.Name }}-postgresql'
+  mailInstallationName: '{{ .Release.Name }}-mail'
+
+  s3BlobsEnabled: true
+  minioInstallationName: '{{ .Release.Name }}-minio'
+
+  backend:
+    envVars:
+      OIDC_ENABLED: true
+      OIDC_ISSUER_URL: '{{ tpl .Values.global.keycloakIssuerUrl $ }}'
+      OIDC_CLIENT_ID: 'openg2p-odk-{{ .Release.Namespace }}'
+      OIDC_CLIENT_SECRET: ""
+
+    envVarsFrom:
+      DB_PASSWORD:
+        secretKeyRef:
+          name: '{{ tpl .Values.postgresqlInstallationName $ }}-addl-user-passwords'
+          key: odkuser
+
+odk-central-enketo-redis-main:
+  enabled: true
+  image:
+    registry: docker.io
+    repository: openg2p/redis
+    tag: 7.2.5-debian-12-r4
+  architecture: standalone
+  auth:
+    enabled: false
+  master:
+    resourcesPreset: none
+    persistence:
+      enabled: true
+      size: 2Gi
+
+odk-central-enketo-redis-cache:
+  enabled: true
+  image:
+    registry: docker.io
+    repository: openg2p/redis
+    tag: 7.2.5-debian-12-r4
+  architecture: standalone
+  auth:
+    enabled: false
+  master:
+    resourcesPreset: none
+    persistence:
+      enabled: true
+      size: 2Gi
 
 minio:
   enabled: true
@@ -142,7 +196,7 @@ minio:
         credentialName: ""
 
 opensearch:
-  enabled: false
+  enabled: true
   hostname: '{{ tpl .Values.global.openg2pOpensearchHostname $ }}'
 
   oidcWellKnownConfigUrl: '{{ tpl .Values.global.keycloakIssuerUrl $ }}/.well-known/openid-configuration'
@@ -325,7 +379,7 @@ opensearch:
         credentialName: ""
 
 kafka:
-  enabled: false
+  enabled: true
   heapOpts: ""
   extraConfig: |-
     log.retention.hours=2
@@ -357,7 +411,7 @@ kafka:
       client: 9092
 
 kafkaUi:
-  enabled: false
+  enabled: true
   # kafka.nameOverride will apply here too.
   hostname: '{{ tpl .Values.global.openg2pKafkaUiHostname $ }}'
 
@@ -389,7 +443,7 @@ kafkaUi:
     externalTrafficPolicy: Cluster
 
   image:
-    repository: provectuslabs/kafka-ui
+    repository: openg2p/kafka-ui
     tag: v0.7.2
     pullPolicy: Always
     pullSecrets: []
@@ -560,7 +614,7 @@ kafkaUi:
         credentialName: ""
 
 reporting:
-  enabled: false
+  enabled: true
   debezium:
     enabled: true
   opensearch-kafka-connector:
