@@ -663,6 +663,25 @@ keymanager:
         secretKeyRef:
           name: '{{ .Release.Name }}-postgresql-addl-user-passwords'
           key: keymgruser
+  keygen:
+    commonAnnotations:
+      "helm.sh/hook-weight": "1"
+    appIdsList:
+      - OPENG2P_SR
+      - OPENG2P_SR_NID
+      - OPENG2P_SPAR
+      - OPENG2P_SPAR_NID
+      - OPENG2P_PBMS
+      - OPENG2P_PBMS_NID
+
+    baseKeysList:
+      - OPENG2P_SR:ENCRYPT
+      - OPENG2P_SR_NID:ENCRYPT
+      - OPENG2P_SPAR:ENCRYPT
+      - OPENG2P_SPAR_NID:ENCRYPT
+      - OPENG2P_PBMS:ENCRYPT
+      - OPENG2P_PBMS_NID:ENCRYPT
+
   persistence:
     enabled: true
 
