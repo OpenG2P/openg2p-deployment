@@ -1,0 +1,8 @@
+questions:
+  - variable: strapi.publicUrl
+    group: "Strapi Configuration"
+    label: "Strapi Public URL"
+    description: "The public URL where Strapi will be accessible "
+    type: string
+    required: true
+    default: "https://strapi.devops.openg2p.org"

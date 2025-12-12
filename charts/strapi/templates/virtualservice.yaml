@@ -1,0 +1,29 @@
+{{- if .Values.istio.enabled }}
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: {{ include "strapi.fullname" . }}-vs
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "strapi.labels" . | nindent 4 }}
+spec:
+  hosts:
+    - {{ .Values.istio.host | quote }}
+  gateways:
+    - {{ .Values.istio.gatewayName }}
+  http:
+    - match:
+        - uri:
+            prefix: /
+      route:
+        - destination:
+            host: {{ include "strapi.fullname" . }}
+            port:
+              number: {{ .Values.service.port }}
+      # Timeout configuration for long-running admin operations
+      timeout: 300s
+      retries:
+        attempts: 3
+        perTryTimeout: 60s
+        retryOn: 5xx,reset,connect-failure,refused-stream
+{{- end }}

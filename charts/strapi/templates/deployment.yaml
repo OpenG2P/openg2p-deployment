@@ -1,0 +1,142 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "strapi.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "strapi.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "strapi.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "strapi.selectorLabels" . | nindent 8 }}
+    spec:
+      initContainers:
+        - name: wait-for-db
+          image: busybox:1.36
+          command: 
+            - sh
+            - -c
+            - |
+              echo "Waiting for PostgreSQL to be ready..."
+              until nc -z {{ include "strapi.postgresql.host" . }} 5432; do
+                echo "PostgreSQL is unavailable - sleeping"
+                sleep 2
+              done
+              echo "PostgreSQL is up - continuing"
+      containers:
+        - name: strapi
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 1337
+              protocol: TCP
+          env:
+            # Database Configuration
+            - name: DATABASE_CLIENT
+              value: {{ .Values.database.client | quote }}
+            - name: DATABASE_HOST
+              value: {{ include "strapi.postgresql.host" . }}
+            - name: DATABASE_PORT
+              value: "5432"
+            - name: DATABASE_NAME
+              value: {{ .Values.postgresql.auth.database | quote }}
+            - name: DATABASE_USERNAME
+              value: {{ .Values.postgresql.auth.username | quote }}
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "strapi.fullname" . }}-secret
+                  key: database-password
+            - name: DATABASE_SSL
+              value: {{ .Values.database.ssl | quote }}
+
+            # Strapi Security Keys
+            - name: APP_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "strapi.fullname" . }}-secret
+                  key: app-keys
+            - name: API_TOKEN_SALT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "strapi.fullname" . }}-secret
+                  key: api-token-salt
+            - name: ADMIN_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "strapi.fullname" . }}-secret
+                  key: admin-jwt-secret
+            - name: TRANSFER_TOKEN_SALT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "strapi.fullname" . }}-secret
+                  key: transfer-token-salt
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "strapi.fullname" . }}-secret
+                  key: jwt-secret
+
+            # Admin User Configuration
+            - name: STRAPI_ADMIN_EMAIL
+              value: {{ .Values.strapi.admin.email | quote }}
+            - name: STRAPI_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "strapi.fullname" . }}-secret
+                  key: admin-password
+            - name: STRAPI_ADMIN_FIRSTNAME
+              value: {{ .Values.strapi.admin.firstname | quote }}
+            - name: STRAPI_ADMIN_LASTNAME
+              value: {{ .Values.strapi.admin.lastname | quote }}
+
+            # Additional Environment Variables
+            {{- range .Values.extraEnv }}
+            - name: {{ .name }}
+              value: {{ .value | quote }}
+            {{- end }}
+
+          {{- if .Values.resources }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- end }}
+
+          {{- if .Values.healthCheck.enabled }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.healthCheck.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.healthCheck.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.periodSeconds }}
+            timeoutSeconds: {{ .Values.healthCheck.timeoutSeconds }}
+            failureThreshold: {{ .Values.healthCheck.failureThreshold }}
+
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.healthCheck.path }}
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          {{- end }}
+
+          {{- if .Values.persistence.enabled }}
+          volumeMounts:
+            - name: uploads
+              mountPath: {{ .Values.persistence.mountPath }}
+          {{- end }}
+
+      {{- if .Values.persistence.enabled }}
+      volumes:
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: {{ include "strapi.fullname" . }}-pvc
+      {{- end }}
+      
