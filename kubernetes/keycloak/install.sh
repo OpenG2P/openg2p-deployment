@@ -9,6 +9,9 @@ export NS=${NS:-keycloak-system}
 
 kubectl create ns $NS
 
+helm repo add openg2p https://openg2p.github.io/openg2p-helm
+helm repo update
+
 helm -n $NS upgrade --install keycloak openg2p/keycloak \
     -f values-keycloak.yaml \
     $@
