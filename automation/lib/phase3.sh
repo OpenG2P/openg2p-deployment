@@ -302,15 +302,28 @@ run_phase3() {
     # ── Step 3.4: Configure Keycloak admin email ─────────────────────────
     log_info "Configuring Keycloak admin user email..."
 
-    local admin_users
+    # Find admin user — try by username "admin" first, then by email
+    local admin_users admin_user_id
     admin_users=$(keycloak_api GET "${keycloak_url}/admin/realms/master/users?username=admin&exact=true" "$kc_token")
-    local admin_user_id
     admin_user_id=$(echo "$admin_users" | jq -r '.[0].id // empty')
 
     if [[ -z "$admin_user_id" ]]; then
+        # With email-as-username enabled, search by email
+        admin_users=$(keycloak_api GET "${keycloak_url}/admin/realms/master/users?email=${admin_email}&exact=true" "$kc_token")
+        admin_user_id=$(echo "$admin_users" | jq -r '.[0].id // empty')
+    fi
+
+    if [[ -z "$admin_user_id" ]]; then
+        # Last resort: get all users and find one with admin role
+        admin_users=$(keycloak_api GET "${keycloak_url}/admin/realms/master/users?max=50" "$kc_token")
+        admin_user_id=$(echo "$admin_users" | jq -r '.[0].id // empty')
+    fi
+
+    if [[ -z "$admin_user_id" ]]; then
         log_error "Could not find Keycloak admin user" \
-                  "The admin user may not exist in the master realm" \
-                  "Check Keycloak users"
+                  "Searched by username 'admin' and email '${admin_email}'" \
+                  "Check Keycloak users" \
+                  "curl -sk ${keycloak_url}/admin/realms/master/users -H 'Authorization: Bearer TOKEN'"
         return 1
     fi
 
