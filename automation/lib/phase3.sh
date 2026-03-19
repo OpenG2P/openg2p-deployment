@@ -509,15 +509,25 @@ JSONEOF
 
     log_info "SAML payload written to ${saml_payload_file} ($(wc -c < "$saml_payload_file") bytes)"
 
-    # If SAML was previously configured (e.g. failed attempt), disable it first
+    # If SAML was previously configured (even partially/broken), reset it
     local current_saml
     current_saml=$(rancher_api GET "${rancher_url}/v3/keycloakConfigs/keycloak" "$rancher_token")
     local saml_enabled
     saml_enabled=$(echo "$current_saml" | jq -r '.enabled // false' 2>/dev/null)
     if [[ "$saml_enabled" == "true" ]]; then
-        log_info "Existing SAML config found — disabling before reconfiguring..."
+        log_info "Existing SAML config found (enabled) — disabling before reconfiguring..."
         rancher_api POST "${rancher_url}/v3/keycloakConfigs/keycloak?action=disable" "$rancher_token" > /dev/null 2>&1
         sleep 3
+    fi
+    # Also clear any stale/broken config by resetting the auth config object
+    local saml_rv
+    saml_rv=$(echo "$current_saml" | jq -r '.resourceVersion // empty' 2>/dev/null)
+    if [[ -n "$saml_rv" && "$saml_rv" != "null" ]]; then
+        log_info "Clearing stale Keycloak auth config (resourceVersion: ${saml_rv})..."
+        kubectl get authconfigs.management.cattle.io keycloak -o json 2>/dev/null | \
+            jq '.metadata.annotations = {} | .enabled = false | del(.idpMetadataContent) | del(.spCert) | del(.spKey)' | \
+            kubectl replace -f - > /dev/null 2>&1 || true
+        sleep 2
     fi
 
     # Enable Keycloak SAML in Rancher (use @file to avoid arg truncation)
