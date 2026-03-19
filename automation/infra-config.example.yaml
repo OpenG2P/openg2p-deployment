@@ -91,6 +91,10 @@ rke2_token: ""
 # Wireguard VPN
 # ---------------------------------------------------------------------------
 wireguard:
+  # Public IP or hostname that VPN clients use to connect.
+  # If your VM has a public IP different from node_ip, set it here.
+  # Leave empty to use node_ip (works when clients are on the same network).
+  endpoint: ""
   subnet: "10.15.0.0/16"
   port: "51820"
   peers: "254"

@@ -293,6 +293,7 @@ phase1_step4_wireguard() {
     local wg_subnet=$(cfg "wireguard.subnet" "10.15.0.0/16")
     local wg_peers=$(cfg "wireguard.peers" "254")
     local allowed_ips=$(cfg "wireguard.cluster_subnet" "0.0.0.0/0")
+    local wg_endpoint=$(cfg "wireguard.endpoint" "$node_ip")
     local domain_mode=$(cfg "domain_mode" "custom")
     local wg_iface="wg0"
     local peer_dir="/etc/wireguard/peers"
@@ -351,9 +352,13 @@ PostUp = iptables -A FORWARD -i ${wg_iface} -j ACCEPT; iptables -A FORWARD -o ${
 PostDown = iptables -D FORWARD -i ${wg_iface} -j ACCEPT; iptables -D FORWARD -o ${wg_iface} -j ACCEPT; iptables -t nat -D POSTROUTING -o eth+ -j MASQUERADE
 EOF
 
-    # DNS line for peer configs (only in local mode)
+    # DNS line for peer configs:
+    # - Full tunnel (AllowedIPs = 0.0.0.0/0): set DNS to VM so all lookups go through dnsmasq
+    # - Split tunnel (AllowedIPs = specific subnet): skip DNS directive, because it would
+    #   override the client's entire DNS and break normal internet resolution.
+    #   Instead, clients configure per-domain DNS routing (macOS /etc/resolver/, Linux resolvectl).
     local peer_dns_line=""
-    if [[ "$domain_mode" == "local" ]]; then
+    if [[ "$domain_mode" == "local" && "$allowed_ips" == "0.0.0.0/0" ]]; then
         peer_dns_line="DNS = ${node_ip}"
     fi
 
@@ -392,7 +397,7 @@ ${peer_dns_line}
 [Peer]
 PublicKey = ${server_pubkey}
 PresharedKey = ${peer_psk}
-Endpoint = ${node_ip}:${wg_port}
+Endpoint = ${wg_endpoint}:${wg_port}
 AllowedIPs = ${allowed_ips}
 PersistentKeepalive = 25
 EOF
@@ -440,7 +445,14 @@ EOF
     log_info "  Example: ${peer_dir}/peer1/peer1.conf"
     log_info "Copy a peer config to your laptop and import into Wireguard client."
     if [[ "$domain_mode" == "local" ]]; then
-        log_info "DNS push is enabled — VPN clients will resolve *.openg2p.test automatically."
+        if [[ "$allowed_ips" == "0.0.0.0/0" ]]; then
+            log_info "DNS push is enabled — VPN clients will resolve *.openg2p.test automatically."
+        else
+            local local_domain=$(cfg "local_domain" "openg2p.test")
+            log_info "Split tunnel mode — configure per-domain DNS on your laptop:"
+            log_info "  macOS:  sudo mkdir -p /etc/resolver && echo 'nameserver ${node_ip}' | sudo tee /etc/resolver/${local_domain}"
+            log_info "  Linux:  sudo resolvectl dns ${wg_iface} ${node_ip} && sudo resolvectl domain ${wg_iface} '~${local_domain}'"
+        fi
     fi
     log_info ""
 
