@@ -32,6 +32,58 @@ get_keycloak_hostname() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Tool installers — dedicated functions for tools whose install commands
+# have nested subshells that break when passed through eval
+# ─────────────────────────────────────────────────────────────────────────────
+install_kubectl() {
+    if kubectl version --client &>/dev/null; then
+        log_success "kubectl is already installed."
+        return 0
+    fi
+    log_info "Installing kubectl..."
+    local kube_version
+    kube_version=$(curl -sL https://dl.k8s.io/release/stable.txt)
+    if [[ -z "$kube_version" ]]; then
+        log_error "Failed to fetch latest kubectl version" \
+                  "Could not reach https://dl.k8s.io" \
+                  "Check internet connectivity" \
+                  "curl -sL https://dl.k8s.io/release/stable.txt" \
+                  "https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/"
+        return 1
+    fi
+    curl -sLO "https://dl.k8s.io/release/${kube_version}/bin/linux/amd64/kubectl" || {
+        log_error "Failed to download kubectl ${kube_version}" \
+                  "Download from dl.k8s.io failed" \
+                  "Check internet connectivity" \
+                  "curl -sLO https://dl.k8s.io/release/${kube_version}/bin/linux/amd64/kubectl"
+        return 1
+    }
+    install -m 0755 kubectl /usr/local/bin/kubectl
+    rm -f kubectl
+    log_success "kubectl ${kube_version} installed."
+}
+
+install_istioctl() {
+    local version="${1:-1.24.1}"
+    if istioctl version --remote=false &>/dev/null; then
+        log_success "istioctl is already installed."
+        return 0
+    fi
+    log_info "Installing istioctl ${version}..."
+    curl -sL https://istio.io/downloadIstio | ISTIO_VERSION="${version}" sh - || {
+        log_error "Failed to download istioctl ${version}" \
+                  "Download from istio.io failed" \
+                  "Check internet connectivity" \
+                  "" \
+                  "https://istio.io/latest/docs/setup/getting-started/#download"
+        return 1
+    }
+    install -m 0755 "istio-${version}/bin/istioctl" /usr/local/bin/istioctl
+    rm -rf "istio-${version}"
+    log_success "istioctl ${version} installed."
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Step 1: Install prerequisite tools
 # ─────────────────────────────────────────────────────────────────────────────
 phase1_step1_tools() {
@@ -58,29 +110,18 @@ phase1_step1_tools() {
     }
     log_success "Basic tools installed (wget, curl, jq, openssl, dig)."
 
-    install_if_missing "kubectl" \
-        "kubectl version --client" \
-        "curl -sLO 'https://dl.k8s.io/release/\$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl' && \
-         install -m 0755 kubectl /usr/local/bin/kubectl && rm -f kubectl" \
-        "https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/"
+    install_kubectl || return 1
 
     install_if_missing "helm" \
         "helm version" \
         "curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash" \
         "https://helm.sh/docs/intro/install/"
 
-    local istio_version="1.24.1"
-    install_if_missing "istioctl" \
-        "istioctl version --remote=false" \
-        "curl -sL https://istio.io/downloadIstio | ISTIO_VERSION=${istio_version} sh - && \
-         install -m 0755 istio-${istio_version}/bin/istioctl /usr/local/bin/istioctl && \
-         rm -rf istio-${istio_version}" \
-        "https://istio.io/latest/docs/setup/getting-started/#download"
+    install_istioctl "1.24.1" || return 1
 
     install_if_missing "helmfile" \
         "helmfile version" \
-        "curl -sL https://github.com/helmfile/helmfile/releases/latest/download/helmfile_linux_amd64.tar.gz | tar xz -C /tmp && \
-         install -m 0755 /tmp/helmfile /usr/local/bin/helmfile && rm -f /tmp/helmfile" \
+        "curl -sL https://github.com/helmfile/helmfile/releases/latest/download/helmfile_linux_amd64.tar.gz | tar xz -C /tmp && install -m 0755 /tmp/helmfile /usr/local/bin/helmfile && rm -f /tmp/helmfile" \
         "https://github.com/helmfile/helmfile#installation"
 
     if ! helm plugin list 2>/dev/null | grep -q diff; then
@@ -253,14 +294,12 @@ phase1_step4_wireguard() {
         log_warn "Wireguard pod may still be starting. Check manually later."
     }
 
-    # In local mode, update Wireguard peer configs to push DNS
     local domain_mode=$(cfg "domain_mode" "custom")
     if [[ "$domain_mode" == "local" ]]; then
         local node_ip=$(cfg "node_ip")
         log_info "Updating Wireguard peer configs to push DNS server (${node_ip})..."
         local peer_dir="/etc/${wg_name}"
         if [[ -d "$peer_dir" ]]; then
-            # Add DNS directive to each peer config if not already present
             find "$peer_dir" -name "peer*.conf" -type f | while read -r pconf; do
                 if ! grep -q "^DNS" "$pconf"; then
                     sed -i "/^\[Interface\]/a DNS = ${node_ip}" "$pconf"
@@ -383,53 +422,33 @@ phase1_step7_local_dns() {
     local node_ip=$(cfg "node_ip")
     local local_domain=$(cfg "local_domain" "openg2p.test")
 
-    # Install dnsmasq
     install_if_missing "dnsmasq" \
         "dnsmasq --version" \
         "apt-get install -y -qq dnsmasq > /dev/null 2>&1" \
         "https://thekelleys.org.uk/dnsmasq/doc.html"
 
-    # Stop systemd-resolved if it's holding port 53
     if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
         log_info "Configuring systemd-resolved to coexist with dnsmasq..."
-        # Tell resolved not to listen on port 53 — let dnsmasq handle it
         mkdir -p /etc/systemd/resolved.conf.d
         cat > /etc/systemd/resolved.conf.d/openg2p-dnsmasq.conf <<EOF
 [Resolve]
 DNSStubListener=no
 EOF
-        # Point /etc/resolv.conf to dnsmasq (which forwards upstream)
         ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf 2>/dev/null || true
         systemctl restart systemd-resolved
     fi
 
-    # Configure dnsmasq
-    log_info "Configuring dnsmasq for *.${local_domain} → ${node_ip}..."
+    log_info "Configuring dnsmasq for *.${local_domain} -> ${node_ip}..."
     cat > /etc/dnsmasq.d/openg2p.conf <<EOF
-# OpenG2P local DNS — resolves *.${local_domain} to this VM
-# Auto-generated by openg2p-infra.sh — do not edit manually
-
-# Resolve all *.${local_domain} to this VM's IP
+# OpenG2P local DNS
 address=/${local_domain}/${node_ip}
-
-# Forward all other queries to upstream DNS
 server=8.8.8.8
 server=8.8.4.4
-
-# Only listen on localhost and the node IP (not on cluster-internal interfaces)
 listen-address=127.0.0.1,${node_ip}
-
-# Don't read /etc/hosts for dnsmasq (avoid conflicts)
 no-hosts
-
-# Log queries for debugging (can be disabled later)
 log-queries
 log-facility=/var/log/dnsmasq-openg2p.log
 EOF
-
-    # Ensure dnsmasq doesn't conflict with RKE2's CoreDNS
-    # RKE2 CoreDNS listens on the cluster network (10.43.x.x), not on host ports
-    # dnsmasq listens on 127.0.0.1 and node_ip, so no conflict
 
     systemctl enable dnsmasq
     systemctl restart dnsmasq || {
@@ -440,59 +459,48 @@ EOF
         return 1
     }
 
-    # Verify resolution works
     sleep 2
     local test_resolve
     test_resolve=$(dig +short "rancher.${local_domain}" @127.0.0.1 2>/dev/null)
     if [[ "$test_resolve" == "$node_ip" ]]; then
-        log_success "Local DNS working: rancher.${local_domain} → ${node_ip}"
+        log_success "Local DNS working: rancher.${local_domain} -> ${node_ip}"
     else
         log_error "Local DNS verification failed" \
-                  "dnsmasq is running but resolution returned '${test_resolve}' instead of '${node_ip}'" \
+                  "dnsmasq returned '${test_resolve}' instead of '${node_ip}'" \
                   "Check dnsmasq config and logs" \
                   "dig +short rancher.${local_domain} @127.0.0.1; cat /var/log/dnsmasq-openg2p.log"
         return 1
     fi
 
-    # Make the VM itself use dnsmasq for resolution
     log_info "Configuring the VM to use local DNS for resolution..."
-    if [[ -L /etc/resolv.conf ]] || [[ -f /etc/resolv.conf ]]; then
-        # Prepend our dnsmasq as the first nameserver
-        if ! grep -q "127.0.0.1" /etc/resolv.conf 2>/dev/null; then
-            sed -i '1i nameserver 127.0.0.1' /etc/resolv.conf 2>/dev/null || {
-                echo "nameserver 127.0.0.1" > /tmp/resolv.conf
-                cat /etc/resolv.conf >> /tmp/resolv.conf 2>/dev/null
-                mv /tmp/resolv.conf /etc/resolv.conf
-            }
-        fi
+    if ! grep -q "127.0.0.1" /etc/resolv.conf 2>/dev/null; then
+        sed -i '1i nameserver 127.0.0.1' /etc/resolv.conf 2>/dev/null || {
+            echo "nameserver 127.0.0.1" > /tmp/resolv.conf
+            cat /etc/resolv.conf >> /tmp/resolv.conf 2>/dev/null
+            mv /tmp/resolv.conf /etc/resolv.conf
+        }
     fi
 
     log_success "dnsmasq configured. All *.${local_domain} resolves to ${node_ip}."
-
     mark_step_done "$step_id"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 8: TLS Certificates
-#   local mode  → generate local CA + self-signed certs
-#   custom mode → Let's Encrypt via DNS-01 or HTTP-01
 # ─────────────────────────────────────────────────────────────────────────────
 phase1_step8_certificates() {
     local step_id="phase1.certificates"
     skip_if_done "$step_id" "TLS certificates" && return 0
 
     local domain_mode=$(cfg "domain_mode" "custom")
-
     if [[ "$domain_mode" == "local" ]]; then
         phase1_step8_certificates_local
     else
         phase1_step8_certificates_letsencrypt
     fi
-
     mark_step_done "$step_id"
 }
 
-# --- Local mode: generate a local CA and sign certs ---
 phase1_step8_certificates_local() {
     log_step "1.8" "Generating local CA and self-signed TLS certificates"
 
@@ -504,13 +512,11 @@ phase1_step8_certificates_local() {
 
     mkdir -p "$ca_dir" "$certs_dir"
 
-    # Generate CA if not exists
     if [[ ! -f "${ca_dir}/ca.key" ]]; then
         log_info "Generating local Certificate Authority..."
         openssl genrsa -out "${ca_dir}/ca.key" 4096 2>/dev/null
         openssl req -x509 -new -nodes \
-            -key "${ca_dir}/ca.key" \
-            -sha256 -days 3650 \
+            -key "${ca_dir}/ca.key" -sha256 -days 3650 \
             -subj "/C=XX/ST=OpenG2P/L=OpenG2P/O=OpenG2P/CN=OpenG2P Local CA" \
             -out "${ca_dir}/ca.crt" 2>/dev/null
         chmod 600 "${ca_dir}/ca.key"
@@ -519,86 +525,58 @@ phase1_step8_certificates_local() {
         log_success "Local CA already exists."
     fi
 
-    # Generate cert for each hostname (with wildcard SAN for the local domain)
     for domain in "$rancher_host" "$keycloak_host"; do
         local cert_path="${certs_dir}/${domain}"
         if [[ -f "${cert_path}/fullchain.pem" && -f "${cert_path}/privkey.pem" ]]; then
             log_success "Certificate for ${domain} already exists."
             continue
         fi
-
         log_info "Generating certificate for ${domain}..."
         mkdir -p "$cert_path"
-
-        # Create SAN config
         cat > "${cert_path}/openssl.cnf" <<EOF
 [req]
 distinguished_name = req_distinguished_name
 req_extensions = v3_req
 prompt = no
-
 [req_distinguished_name]
 C = XX
 ST = OpenG2P
 L = OpenG2P
 O = OpenG2P
 CN = ${domain}
-
 [v3_req]
 basicConstraints = CA:FALSE
 keyUsage = digitalSignature, keyEncipherment
 subjectAltName = @alt_names
-
 [alt_names]
 DNS.1 = ${domain}
 DNS.2 = *.${local_domain}
 DNS.3 = ${local_domain}
 EOF
-
-        # Generate key and CSR
         openssl genrsa -out "${cert_path}/privkey.pem" 2048 2>/dev/null
-        openssl req -new \
-            -key "${cert_path}/privkey.pem" \
-            -config "${cert_path}/openssl.cnf" \
-            -out "${cert_path}/cert.csr" 2>/dev/null
-
-        # Sign with local CA
-        openssl x509 -req \
-            -in "${cert_path}/cert.csr" \
-            -CA "${ca_dir}/ca.crt" \
-            -CAkey "${ca_dir}/ca.key" \
-            -CAcreateserial \
-            -out "${cert_path}/cert.pem" \
-            -days 825 \
-            -sha256 \
-            -extensions v3_req \
-            -extfile "${cert_path}/openssl.cnf" 2>/dev/null
-
-        # Create fullchain (cert + CA)
+        openssl req -new -key "${cert_path}/privkey.pem" \
+            -config "${cert_path}/openssl.cnf" -out "${cert_path}/cert.csr" 2>/dev/null
+        openssl x509 -req -in "${cert_path}/cert.csr" \
+            -CA "${ca_dir}/ca.crt" -CAkey "${ca_dir}/ca.key" -CAcreateserial \
+            -out "${cert_path}/cert.pem" -days 825 -sha256 \
+            -extensions v3_req -extfile "${cert_path}/openssl.cnf" 2>/dev/null
         cat "${cert_path}/cert.pem" "${ca_dir}/ca.crt" > "${cert_path}/fullchain.pem"
-
-        # Clean up temp files
         rm -f "${cert_path}/cert.csr" "${cert_path}/openssl.cnf" "${cert_path}/cert.pem"
         chmod 600 "${cert_path}/privkey.pem"
-
         log_success "Certificate generated for ${domain}."
     done
 
     log_success "All local certificates generated."
     log_info ""
     log_info "To avoid browser warnings, install the CA certificate on your laptop:"
-    log_info "  CA cert location: ${ca_dir}/ca.crt"
-    log_info ""
-    log_info "  macOS:   Copy ca.crt to laptop, open Keychain Access, import into"
-    log_info "           'System' keychain, then set trust to 'Always Trust'"
-    log_info "  Windows: Copy ca.crt to laptop, double-click, Install Certificate →"
-    log_info "           Local Machine → 'Trusted Root Certification Authorities'"
+    log_info "  CA cert: ${ca_dir}/ca.crt"
+    log_info "  macOS:   Import into Keychain Access -> System -> Always Trust"
+    log_info "  Windows: Import into Trusted Root Certification Authorities"
     log_info "  Linux:   sudo cp ca.crt /usr/local/share/ca-certificates/openg2p-ca.crt"
     log_info "           sudo update-ca-certificates"
     log_info ""
 }
 
-# --- Custom mode: Let's Encrypt ---
 phase1_step8_certificates_letsencrypt() {
     log_step "1.8" "Obtaining Let's Encrypt TLS certificates"
 
@@ -612,46 +590,34 @@ phase1_step8_certificates_letsencrypt() {
         "apt-get install -y -qq certbot > /dev/null 2>&1" \
         "https://certbot.eff.org/"
 
-    # Install DNS plugin if needed
     case "$challenge" in
         dns-cloudflare)
             install_if_missing "certbot-dns-cloudflare" \
                 "pip3 show certbot-dns-cloudflare" \
-                "apt-get install -y -qq python3-certbot-dns-cloudflare > /dev/null 2>&1 || pip3 install certbot-dns-cloudflare --break-system-packages" \
-                "https://certbot-dns-cloudflare.readthedocs.io/"
-
+                "apt-get install -y -qq python3-certbot-dns-cloudflare > /dev/null 2>&1 || pip3 install certbot-dns-cloudflare --break-system-packages"
             local cf_token=$(cfg "cloudflare_api_token")
             if [[ -z "$cf_token" ]]; then
                 log_error "Cloudflare API token not set" \
-                          "letsencrypt_challenge is 'dns-cloudflare' but cloudflare_api_token is empty" \
+                          "cloudflare_api_token is empty in config" \
                           "Set cloudflare_api_token in your config file" \
-                          "" \
-                          "https://dash.cloudflare.com/profile/api-tokens"
+                          "" "https://dash.cloudflare.com/profile/api-tokens"
                 return 1
             fi
             mkdir -p /etc/letsencrypt
-            cat > /etc/letsencrypt/cloudflare.ini <<EOF
-dns_cloudflare_api_token = ${cf_token}
-EOF
+            echo "dns_cloudflare_api_token = ${cf_token}" > /etc/letsencrypt/cloudflare.ini
             chmod 600 /etc/letsencrypt/cloudflare.ini
             ;;
         dns-route53)
             install_if_missing "certbot-dns-route53" \
                 "pip3 show certbot-dns-route53" \
-                "apt-get install -y -qq python3-certbot-dns-route53 > /dev/null 2>&1 || pip3 install certbot-dns-route53 --break-system-packages" \
-                "https://certbot-dns-route53.readthedocs.io/"
+                "apt-get install -y -qq python3-certbot-dns-route53 > /dev/null 2>&1 || pip3 install certbot-dns-route53 --break-system-packages"
             ;;
     esac
 
-    # Check if certs already exist
     local certs_exist=true
     for domain in "$rancher_host" "$keycloak_host"; do
-        if [[ ! -d "/etc/letsencrypt/live/${domain}" ]]; then
-            certs_exist=false
-            break
-        fi
+        [[ ! -d "/etc/letsencrypt/live/${domain}" ]] && certs_exist=false && break
     done
-
     if [[ "$certs_exist" == "true" ]]; then
         log_success "TLS certificates already exist for Rancher and Keycloak."
         return 0
@@ -662,85 +628,44 @@ EOF
         systemctl stop nginx
     fi
 
-    log_info "Requesting certificates from Let's Encrypt (challenge: ${challenge})..."
+    log_info "Requesting certificates (challenge: ${challenge})..."
 
     for domain in "$rancher_host" "$keycloak_host"; do
-        if [[ -d "/etc/letsencrypt/live/${domain}" ]]; then
-            log_success "Certificate for ${domain} already exists — skipping."
-            continue
-        fi
-
+        [[ -d "/etc/letsencrypt/live/${domain}" ]] && { log_success "Cert for ${domain} exists."; continue; }
         log_info "Requesting certificate for ${domain}..."
-
         case "$challenge" in
             dns)
-                log_info "Using manual DNS-01 challenge."
-                log_info "Certbot will ask you to create a TXT record at your DNS provider."
-                log_info "You will need to:"
-                log_info "  1. Log in to your DNS provider (Route53, Cloudflare, GoDaddy, etc.)"
-                log_info "  2. Create the TXT record that certbot displays"
-                log_info "  3. Wait a moment for DNS propagation"
-                log_info "  4. Press Enter to continue"
-                echo ""
+                log_info "Manual DNS-01: certbot will prompt you to create a TXT record."
                 certbot certonly --manual --preferred-challenges dns --agree-tos \
                     --email "$email" -d "$domain" || {
-                    log_error "Certificate generation failed for ${domain}" \
-                              "DNS-01 challenge failed — the TXT record may not have propagated" \
-                              "Verify: dig TXT _acme-challenge.${domain}" \
-                              "dig TXT _acme-challenge.${domain}"
-                    return 1
-                }
-                ;;
+                    log_error "Cert failed for ${domain}" "DNS-01 challenge failed" \
+                              "Verify: dig TXT _acme-challenge.${domain}"; return 1; } ;;
             dns-cloudflare)
                 certbot certonly --dns-cloudflare \
                     --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
                     --dns-cloudflare-propagation-seconds 30 \
                     --non-interactive --agree-tos --email "$email" -d "$domain" || {
-                    log_error "Certificate generation failed for ${domain}" \
-                              "Cloudflare DNS-01 challenge failed" \
-                              "Check your Cloudflare API token and DNS zone permissions" \
-                              "cat /var/log/letsencrypt/letsencrypt.log | tail -30"
-                    return 1
-                }
-                ;;
+                    log_error "Cert failed for ${domain}" "Cloudflare DNS-01 failed" \
+                              "Check API token and zone permissions"; return 1; } ;;
             dns-route53)
-                certbot certonly --dns-route53 \
-                    --dns-route53-propagation-seconds 30 \
+                certbot certonly --dns-route53 --dns-route53-propagation-seconds 30 \
                     --non-interactive --agree-tos --email "$email" -d "$domain" || {
-                    log_error "Certificate generation failed for ${domain}" \
-                              "Route53 DNS-01 challenge failed" \
-                              "Check AWS credentials and Route53 hosted zone" \
-                              "aws sts get-caller-identity; aws route53 list-hosted-zones"
-                    return 1
-                }
-                ;;
+                    log_error "Cert failed for ${domain}" "Route53 DNS-01 failed" \
+                              "Check AWS credentials"; return 1; } ;;
             http)
                 certbot certonly --standalone --non-interactive --agree-tos \
                     --email "$email" -d "$domain" || {
-                    log_error "Certificate generation failed for ${domain}" \
-                              "HTTP-01 challenge failed — port 80 may not be reachable" \
-                              "Ensure port 80 is open to the internet and DNS points to this machine" \
-                              "certbot certonly --standalone -d ${domain} --dry-run"
-                    return 1
-                }
-                ;;
-            *)
-                log_error "Unknown certificate challenge method: '${challenge}'" \
-                          "Valid values: dns, dns-cloudflare, dns-route53, http" \
-                          "Set letsencrypt_challenge in your config file"
-                return 1
-                ;;
+                    log_error "Cert failed for ${domain}" "HTTP-01 failed — port 80 not reachable?" \
+                              "Ensure port 80 is open"; return 1; } ;;
+            *) log_error "Unknown challenge: '${challenge}'" "Valid: dns, dns-cloudflare, dns-route53, http" ""; return 1 ;;
         esac
-
         log_success "Certificate obtained for ${domain}."
     done
-
     log_success "All TLS certificates obtained."
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 9: Nginx Reverse Proxy
-#   Cert paths differ between local and custom mode
 # ─────────────────────────────────────────────────────────────────────────────
 phase1_step9_nginx() {
     local step_id="phase1.nginx"
@@ -758,9 +683,7 @@ phase1_step9_nginx() {
         "apt-get install -y -qq nginx > /dev/null 2>&1" \
         "https://nginx.org/en/linux_packages.html"
 
-    # Determine cert paths based on domain mode
     local rancher_cert rancher_key keycloak_cert keycloak_key
-
     if [[ "$domain_mode" == "local" ]]; then
         local certs_dir="/etc/openg2p/certs"
         rancher_cert="${certs_dir}/${rancher_host}/fullchain.pem"
@@ -776,8 +699,8 @@ phase1_step9_nginx() {
 
     for cert in "$rancher_cert" "$rancher_key" "$keycloak_cert" "$keycloak_key"; do
         if [[ ! -f "$cert" ]]; then
-            log_error "TLS certificate file not found: ${cert}" \
-                      "The certificate generation step may not have completed" \
+            log_error "TLS cert not found: ${cert}" \
+                      "Certificate step may not have completed" \
                       "Run the certificate step again" \
                       "ls -la $(dirname "$cert")"
             return 1
@@ -785,28 +708,23 @@ phase1_step9_nginx() {
     done
 
     log_info "Generating Nginx configuration..."
-
     rm -f /etc/nginx/sites-enabled/default
 
     cat > /etc/nginx/sites-available/openg2p-infra.conf <<EOF
 upstream istio_ingress {
     server ${node_ip}:30080;
 }
-
 server {
     listen 80;
     server_name ${rancher_host} ${keycloak_host};
     return 301 https://\$host\$request_uri;
 }
-
 server {
     listen 443 ssl;
     server_name ${rancher_host};
-
     ssl_certificate     ${rancher_cert};
     ssl_certificate_key ${rancher_key};
     ssl_protocols       TLSv1.2 TLSv1.3;
-
     location / {
         proxy_pass                      http://istio_ingress;
         proxy_http_version              1.1;
@@ -824,15 +742,12 @@ server {
         proxy_pass_request_headers      on;
     }
 }
-
 server {
     listen 443 ssl;
     server_name ${keycloak_host};
-
     ssl_certificate     ${keycloak_cert};
     ssl_certificate_key ${keycloak_key};
     ssl_protocols       TLSv1.2 TLSv1.3;
-
     location / {
         proxy_pass                      http://istio_ingress;
         proxy_http_version              1.1;
@@ -855,8 +770,8 @@ EOF
     ln -sf /etc/nginx/sites-available/openg2p-infra.conf /etc/nginx/sites-enabled/openg2p-infra.conf
 
     nginx -t || {
-        log_error "Nginx configuration test failed" \
-                  "There is a syntax error in the generated config" \
+        log_error "Nginx config test failed" \
+                  "Syntax error in generated config" \
                   "Review the config file" \
                   "nginx -t; cat /etc/nginx/sites-available/openg2p-infra.conf"
         return 1
@@ -866,13 +781,12 @@ EOF
     systemctl restart nginx || {
         log_error "Nginx failed to start" \
                   "Another service may be using port 80 or 443" \
-                  "Check what is listening on these ports" \
+                  "Check listening ports" \
                   "ss -tlnp | grep -E ':80|:443'"
         return 1
     }
 
-    log_success "Nginx reverse proxy configured for ${rancher_host} and ${keycloak_host}."
-
+    log_success "Nginx configured for ${rancher_host} and ${keycloak_host}."
     mark_step_done "$step_id"
 }
 
