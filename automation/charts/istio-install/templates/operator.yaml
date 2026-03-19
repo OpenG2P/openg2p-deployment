@@ -1,0 +1,40 @@
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+metadata:
+  namespace: istio-system
+  name: primary
+spec:
+  profile: default
+  meshConfig:
+    accessLogFile: /dev/stdout
+    enableTracing: true
+    pathNormalization:
+      normalization: MERGE_SLASHES
+    defaultConfig:
+      proxyMetadata:
+        ISTIO_META_IDLE_TIMEOUT: 0s
+      holdApplicationUntilProxyStarts: true
+  components:
+    ingressGateways:
+      - name: istio-ingressgateway
+        enabled: true
+        label:
+          istio: ingressgateway
+        k8s:
+          hpaSpec:
+            minReplicas: 2
+          nodeSelector:
+            shouldInstallIstioIngress: "true"
+          service:
+            type: NodePort
+            ports:
+              - name: tcp-status-port
+                port: 15021
+                nodePort: 30521
+              - name: http2
+                port: 80
+                targetPort: 8080
+                nodePort: 30080
+              - name: tcp-postgres
+                port: 5432
+                nodePort: 30432

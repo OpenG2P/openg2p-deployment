@@ -1,0 +1,233 @@
+# =============================================================================
+# OpenG2P Infra Helmfile — Platform-level Helm releases
+# =============================================================================
+# Installs: Istio, Rancher, Keycloak, Monitoring, Logging
+# Called by openg2p-infra.sh after host-level setup completes.
+# =============================================================================
+
+helmDefaults:
+  wait: true
+  timeout: 600
+  createNamespace: true
+
+repositories:
+  - name: openg2p
+    url: https://openg2p.github.io/openg2p-helm
+  - name: rancher-stable
+    url: https://releases.rancher.com/server-charts/stable
+  - name: rancher-charts
+    url: https://charts.rancher.io
+
+environments:
+  default:
+    values:
+      - helmfile-infra-values.yaml
+
+---
+
+releases:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Istio EnvoyFilter for SPDY upgrade
+  # (Istio itself is installed via istioctl in Phase 1 bash)
+  # ─────────────────────────────────────────────────────────────────────────
+  - name: istio-envoyfilter
+    namespace: istio-system
+    chart: ./charts/raw
+    values:
+      - resources:
+          - apiVersion: networking.istio.io/v1alpha3
+            kind: EnvoyFilter
+            metadata:
+              name: spdy-upgrade-filter
+              namespace: istio-system
+            spec:
+              configPatches:
+                - applyTo: NETWORK_FILTER
+                  match:
+                    listener:
+                      filterChain:
+                        filter:
+                          name: "envoy.filters.network.http_connection_manager"
+                  patch:
+                    operation: MERGE
+                    value:
+                      typed_config:
+                        "@type": "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager"
+                        "upgradeConfigs":
+                          - upgradeType: "SPDY/3.1"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Rancher cluster management
+  # ─────────────────────────────────────────────────────────────────────────
+  - name: rancher
+    namespace: cattle-system
+    chart: rancher-stable/rancher
+    version: {{ .Values.rancher.version | quote }}
+    values:
+      - ingress:
+          enabled: false
+        tls: external
+        replicas: {{ .Values.rancher.replicas }}
+
+  - name: rancher-ingress
+    namespace: cattle-system
+    chart: ./charts/raw
+    needs:
+      - cattle-system/rancher
+    values:
+      - resources:
+          - apiVersion: networking.istio.io/v1beta1
+            kind: Gateway
+            metadata:
+              name: rancher
+              namespace: cattle-system
+            spec:
+              selector:
+                istio: ingressgateway
+              servers:
+                - hosts:
+                    - {{ .Values.rancher_hostname | quote }}
+                  port:
+                    name: http2
+                    number: 8080
+                    protocol: HTTP2
+          - apiVersion: networking.istio.io/v1beta1
+            kind: VirtualService
+            metadata:
+              name: rancher
+              namespace: cattle-system
+            spec:
+              gateways:
+                - rancher
+              hosts:
+                - {{ .Values.rancher_hostname | quote }}
+              http:
+                - route:
+                    - destination:
+                        host: rancher
+                        port:
+                          number: 80
+                  headers:
+                    request:
+                      set:
+                        x-forwarded-proto: https
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Keycloak authentication
+  # ─────────────────────────────────────────────────────────────────────────
+  - name: keycloak
+    namespace: keycloak-system
+    chart: openg2p/keycloak
+    values:
+      - service:
+          type: ClusterIP
+        auth:
+          adminUser: admin
+        ingress:
+          enabled: false
+        replicaCount: {{ .Values.keycloak.replicas }}
+        resources:
+          limits: {}
+          requests:
+            cpu: 200m
+            memory: 1000Mi
+        rbac:
+          create: true
+          rules:
+            - apiGroups: [""]
+              resources: ["pods"]
+              verbs: ["get", "list"]
+        proxy: edge
+        proxyHeaders: xforwarded
+        production: true
+
+  - name: keycloak-ingress
+    namespace: keycloak-system
+    chart: ./charts/raw
+    needs:
+      - keycloak-system/keycloak
+    values:
+      - resources:
+          - apiVersion: networking.istio.io/v1beta1
+            kind: Gateway
+            metadata:
+              name: keycloak
+              namespace: keycloak-system
+            spec:
+              selector:
+                istio: ingressgateway
+              servers:
+                - hosts:
+                    - {{ .Values.keycloak_hostname | quote }}
+                  port:
+                    name: http2
+                    number: 8080
+                    protocol: HTTP2
+          - apiVersion: networking.istio.io/v1beta1
+            kind: VirtualService
+            metadata:
+              name: keycloak
+              namespace: keycloak-system
+            spec:
+              gateways:
+                - keycloak
+              hosts:
+                - {{ .Values.keycloak_hostname | quote }}
+              http:
+                - route:
+                    - destination:
+                        host: keycloak
+                        port:
+                          number: 80
+                  headers:
+                    request:
+                      set:
+                        x-forwarded-proto: https
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Monitoring (Prometheus + Grafana)
+  # ─────────────────────────────────────────────────────────────────────────
+  - name: rancher-monitoring-crd
+    namespace: cattle-monitoring-system
+    chart: rancher-charts/rancher-monitoring-crd
+    version: "105.0.0+up57.0.3"
+    needs:
+      - cattle-system/rancher
+    wait: true
+
+  - name: rancher-monitoring
+    namespace: cattle-monitoring-system
+    chart: rancher-charts/rancher-monitoring
+    version: "105.0.0+up57.0.3"
+    needs:
+      - cattle-monitoring-system/rancher-monitoring-crd
+    values:
+      - global:
+          cattle:
+            psp:
+              enabled: false
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Logging (FluentD)
+  # ─────────────────────────────────────────────────────────────────────────
+  - name: rancher-logging-crd
+    namespace: cattle-logging-system
+    chart: rancher-charts/rancher-logging-crd
+    version: "104.1.0+up4.8.0"
+    needs:
+      - cattle-system/rancher
+    wait: true
+
+  - name: rancher-logging
+    namespace: cattle-logging-system
+    chart: rancher-charts/rancher-logging
+    version: "104.1.0+up4.8.0"
+    needs:
+      - cattle-logging-system/rancher-logging-crd
+    values:
+      - global:
+          cattle:
+            psp:
+              enabled: false
+        psp:
+          enabled: false

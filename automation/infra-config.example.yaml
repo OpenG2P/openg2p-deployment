@@ -1,0 +1,70 @@
+# =============================================================================
+# OpenG2P Base Infrastructure Configuration
+# =============================================================================
+# Copy this file to infra-config.yaml and fill in your values:
+#   cp infra-config.example.yaml infra-config.yaml
+#
+# Then run:
+#   sudo ./openg2p-infra.sh --config infra-config.yaml
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Node configuration
+# ---------------------------------------------------------------------------
+# Internal/private IP address of this VM (used for NFS, Nginx, K8s)
+node_ip: ""
+
+# A short name for this node (used in K8s node labels and NFS paths)
+# Example: openg2p-dev
+node_name: "openg2p"
+
+# ---------------------------------------------------------------------------
+# Domain configuration
+# ---------------------------------------------------------------------------
+# Rancher management UI hostname
+# Example: rancher.openg2p.org
+rancher_hostname: ""
+
+# Keycloak authentication hostname
+# Example: keycloak.openg2p.org
+keycloak_hostname: ""
+
+# ---------------------------------------------------------------------------
+# TLS / Let's Encrypt
+# ---------------------------------------------------------------------------
+# Email address for Let's Encrypt certificate registration
+letsencrypt_email: ""
+
+# ---------------------------------------------------------------------------
+# RKE2 Kubernetes
+# ---------------------------------------------------------------------------
+# RKE2 version to install (see: https://github.com/rancher/rke2/releases)
+rke2_version: "v1.31.4+rke2r1"
+
+# RKE2 cluster token (auto-generated if left empty)
+rke2_token: ""
+
+# ---------------------------------------------------------------------------
+# Wireguard VPN
+# ---------------------------------------------------------------------------
+wireguard:
+  name: "wireguard_app_users"
+  subnet: "10.15.0.0/16"
+  port: "51820"
+  peers: "254"
+  # Subnet of cluster nodes that Wireguard clients can access
+  # Leave empty if not restricting
+  cluster_subnet: ""
+
+# ---------------------------------------------------------------------------
+# Rancher
+# ---------------------------------------------------------------------------
+rancher:
+  version: "2.12.3"
+  replicas: "1"
+
+# ---------------------------------------------------------------------------
+# Keycloak
+# ---------------------------------------------------------------------------
+keycloak:
+  replicas: "1"

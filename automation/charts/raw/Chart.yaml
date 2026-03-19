@@ -1,0 +1,5 @@
+apiVersion: v2
+name: raw
+description: A minimal chart that renders raw Kubernetes resources from values
+type: application
+version: 0.1.0

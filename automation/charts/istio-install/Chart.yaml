@@ -1,0 +1,5 @@
+apiVersion: v2
+name: istio-install
+description: Wrapper chart that installs Istio via istioctl operator YAML
+type: application
+version: 0.1.0

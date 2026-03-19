@@ -1,0 +1,95 @@
+# =============================================================================
+# OpenG2P Environment Helmfile — Namespace-level module releases
+# =============================================================================
+# Installs: Istio gateway for env, openg2p-commons, Registry, PBMS, SPAR, etc.
+# Called by openg2p-environment.sh after base infra is in place.
+# Can be run multiple times for different environments (dev, qa, pilot).
+# =============================================================================
+
+helmDefaults:
+  wait: true
+  timeout: 600
+  createNamespace: true
+
+repositories:
+  - name: openg2p
+    url: https://openg2p.github.io/openg2p-helm
+
+environments:
+  default:
+    values:
+      - helmfile-env-values.yaml
+
+---
+
+releases:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Environment Istio gateway (routes traffic for this namespace)
+  # ─────────────────────────────────────────────────────────────────────────
+  - name: openg2p-istio-gateway
+    namespace: {{ .Values.namespace | quote }}
+    chart: ./charts/raw
+    values:
+      - resources:
+          - apiVersion: networking.istio.io/v1beta1
+            kind: Gateway
+            metadata:
+              name: internal
+              namespace: {{ .Values.namespace | quote }}
+            spec:
+              selector:
+                istio: ingressgateway
+              servers:
+                - hosts:
+                    - {{ .Values.base_domain | quote }}
+                    - {{ printf "*.%s" .Values.base_domain | quote }}
+                  port:
+                    name: http2
+                    number: 8080
+                    protocol: HTTP2
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # OpenG2P Commons (shared PostgreSQL, OpenSearch, MinIO, Kafka, etc.)
+  # ─────────────────────────────────────────────────────────────────────────
+  - name: openg2p-commons
+    namespace: {{ .Values.namespace | quote }}
+    chart: openg2p/openg2p-commons
+    condition: modules.openg2p_commons
+    needs:
+      - {{ .Values.namespace }}/openg2p-istio-gateway
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # OpenG2P Modules — conditional on config toggles
+  # ─────────────────────────────────────────────────────────────────────────
+
+  # Registry
+  - name: openg2p-registry
+    namespace: {{ .Values.namespace | quote }}
+    chart: openg2p/openg2p-registry
+    condition: modules.registry
+    needs:
+      - {{ .Values.namespace }}/openg2p-commons
+
+  # PBMS
+  - name: openg2p-pbms
+    namespace: {{ .Values.namespace | quote }}
+    chart: openg2p/openg2p-pbms
+    condition: modules.pbms
+    needs:
+      - {{ .Values.namespace }}/openg2p-commons
+
+  # SPAR
+  - name: openg2p-spar
+    namespace: {{ .Values.namespace | quote }}
+    chart: openg2p/openg2p-spar
+    condition: modules.spar
+    needs:
+      - {{ .Values.namespace }}/openg2p-commons
+
+  # G2P Bridge
+  - name: openg2p-g2p-bridge
+    namespace: {{ .Values.namespace | quote }}
+    chart: openg2p/g2p-bridge
+    condition: modules.g2p_bridge
+    needs:
+      - {{ .Values.namespace }}/openg2p-commons

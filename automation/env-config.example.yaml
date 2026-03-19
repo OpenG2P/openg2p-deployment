@@ -1,0 +1,55 @@
+# =============================================================================
+# OpenG2P Environment Configuration
+# =============================================================================
+# Copy this file to env-config.yaml and fill in your values:
+#   cp env-config.example.yaml env-config.yaml
+#
+# Then run:
+#   sudo ./openg2p-environment.sh --config env-config.yaml
+#
+# Prerequisites:
+#   Base infrastructure must be set up first (run openg2p-infra.sh)
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------------
+# Kubernetes namespace for this environment (e.g., dev, qa, staging, pilot)
+# This will also be used as the Rancher project name.
+# You can run this script multiple times with different namespaces
+# to create multiple environments on the same cluster.
+namespace: "dev"
+
+# Base domain for this environment.
+# Modules will be accessible at: <module>.<base_domain>
+# Example: dev.openg2p.org → registry.dev.openg2p.org
+base_domain: ""
+
+# ---------------------------------------------------------------------------
+# TLS / Let's Encrypt
+# ---------------------------------------------------------------------------
+# Email for Let's Encrypt certificate for this environment's domain
+# Certs will be generated for: base_domain and *.base_domain
+letsencrypt_email: ""
+
+# Node IP (needed for Nginx config update and cert validation)
+node_ip: ""
+
+# ---------------------------------------------------------------------------
+# Keycloak
+# ---------------------------------------------------------------------------
+# Keycloak hostname (must match what was set during infra setup)
+keycloak_hostname: ""
+
+# ---------------------------------------------------------------------------
+# Modules — set to true/false to enable/disable
+# ---------------------------------------------------------------------------
+# openg2p-commons installs shared components (PostgreSQL on Docker,
+# OpenSearch, MinIO, Kafka, etc.) required by all modules.
+# Must be true if any module below is true.
+modules:
+  openg2p_commons: true
+  registry: true
+  pbms: true
+  spar: true
+  g2p_bridge: false
