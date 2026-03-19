@@ -882,12 +882,18 @@ EOF
 run_phase1() {
     log_step "1" "Phase 1 — Host-Level Setup"
 
-    ensure_kubeconfig 2>/dev/null || true
+    # On re-runs, RKE2 may already be installed — silently set kubeconfig if available.
+    # On fresh installs, RKE2 doesn't exist yet, so we skip without error.
+    if [[ -f /etc/rancher/rke2/rke2.yaml ]]; then
+        export KUBECONFIG="/etc/rancher/rke2/rke2.yaml"
+        export PATH="$PATH:/var/lib/rancher/rke2/bin"
+    fi
 
     phase1_step1_tools
     phase1_step2_firewall
     phase1_step3_rke2
 
+    # Now RKE2 is guaranteed installed — hard stop if kubeconfig is missing
     ensure_kubeconfig
 
     phase1_step4_wireguard
