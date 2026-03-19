@@ -175,6 +175,18 @@ phase1_step2_firewall() {
         ufw disable
     fi
 
+    # Increase inotify limits — RKE2/K8s exhausts the defaults, causing
+    # "Too many open files" errors for apt, systemd, and other tools
+    log_info "Setting inotify limits for Kubernetes..."
+    sysctl -w fs.inotify.max_user_watches=524288 > /dev/null 2>&1
+    sysctl -w fs.inotify.max_user_instances=1024 > /dev/null 2>&1
+    if ! grep -q "fs.inotify.max_user_watches" /etc/sysctl.conf 2>/dev/null; then
+        echo "fs.inotify.max_user_watches=524288" >> /etc/sysctl.conf
+    fi
+    if ! grep -q "fs.inotify.max_user_instances" /etc/sysctl.conf 2>/dev/null; then
+        echo "fs.inotify.max_user_instances=1024" >> /etc/sysctl.conf
+    fi
+
     log_info "Firewall: ufw disabled. Ensure your external firewall allows ports:"
     log_info "  TCP: 6443, 9345, 10250, 30080, 30443, 443"
     log_info "  UDP: $(cfg 'wireguard.port' '51820')"
