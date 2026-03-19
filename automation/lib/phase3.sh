@@ -415,9 +415,9 @@ JSONEOF
     log_info "Adding SAML protocol mappers..."
 
     local mappers='[
-        {"name":"X500 email","protocol":"saml","protocolMapper":"saml-user-attribute-idp-mapper","consentRequired":false,"config":{"attribute.nameformat":"urn:oasis:names:tc:SAML:2.0:attrname-format:uri","user.attribute":"email","friendly.name":"email","attribute.name":"urn:oid:1.2.840.113549.1.9.1"}},
-        {"name":"X500 givenName","protocol":"saml","protocolMapper":"saml-user-attribute-idp-mapper","consentRequired":false,"config":{"attribute.nameformat":"urn:oasis:names:tc:SAML:2.0:attrname-format:uri","user.attribute":"firstName","friendly.name":"givenName","attribute.name":"urn:oid:2.5.4.42"}},
-        {"name":"X500 surname","protocol":"saml","protocolMapper":"saml-user-attribute-idp-mapper","consentRequired":false,"config":{"attribute.nameformat":"urn:oasis:names:tc:SAML:2.0:attrname-format:uri","user.attribute":"lastName","friendly.name":"surname","attribute.name":"urn:oid:2.5.4.4"}},
+        {"name":"X500 email","protocol":"saml","protocolMapper":"saml-user-property-idp-mapper","consentRequired":false,"config":{"attribute.nameformat":"urn:oasis:names:tc:SAML:2.0:attrname-format:uri","user.attribute":"email","friendly.name":"email","attribute.name":"email"}},
+        {"name":"X500 givenName","protocol":"saml","protocolMapper":"saml-user-property-idp-mapper","consentRequired":false,"config":{"attribute.nameformat":"urn:oasis:names:tc:SAML:2.0:attrname-format:uri","user.attribute":"firstName","friendly.name":"givenName","attribute.name":"givenName"}},
+        {"name":"X500 surname","protocol":"saml","protocolMapper":"saml-user-property-idp-mapper","consentRequired":false,"config":{"attribute.nameformat":"urn:oasis:names:tc:SAML:2.0:attrname-format:uri","user.attribute":"lastName","friendly.name":"surname","attribute.name":"surname"}},
         {"name":"role list","protocol":"saml","protocolMapper":"saml-role-list-mapper","consentRequired":false,"config":{"single":"true","attribute.nameformat":"Basic","friendly.name":"","attribute.name":"Role"}}
     ]'
 
