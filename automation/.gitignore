@@ -1,1 +1,6 @@
 infra-config.yaml
+env-config.yaml
+helmfile-infra-values.yaml
+helmfile-env-values.yaml
+*.tmp
+*.tmp.bak
