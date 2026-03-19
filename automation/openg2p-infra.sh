@@ -269,7 +269,6 @@ main() {
 
     load_config "$CONFIG_FILE"
 
-    # Validate based on domain mode
     local domain_mode=$(cfg "domain_mode" "custom")
     log_info "Domain mode: ${BOLD}${domain_mode}${NC}"
 
@@ -291,8 +290,7 @@ main() {
 
     case "${RUN_PHASE:-all}" in
         1)
-            check_ubuntu_version
-            check_system_resources
+            check_prerequisites
             if [[ "$domain_mode" == "custom" ]]; then
                 check_dns_for_domains "$(cfg 'node_ip')" "$rancher_host" "$keycloak_host"
             fi
@@ -302,8 +300,7 @@ main() {
             run_phase2
             ;;
         all)
-            check_ubuntu_version
-            check_system_resources
+            check_prerequisites
             if [[ "$domain_mode" == "custom" ]]; then
                 check_dns_for_domains "$(cfg 'node_ip')" "$rancher_host" "$keycloak_host"
             fi

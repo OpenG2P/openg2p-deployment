@@ -135,7 +135,6 @@ load_config() {
 
     local current_parent=""
     while IFS= read -r line || [[ -n "$line" ]]; do
-        # Skip comments and empty lines
         [[ "$line" =~ ^[[:space:]]*# ]] && continue
         [[ "$line" =~ ^[[:space:]]*$ ]] && continue
 
@@ -199,14 +198,12 @@ validate_config() {
         fi
     done
 
-    # Validate IP format if node_ip is present
     local ip=$(cfg "node_ip")
     if [[ -n "$ip" ]] && ! [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         log_warn "Invalid IP address format: '${ip}'"
         ((errors++))
     fi
 
-    # Validate email format if letsencrypt_email is present
     local email=$(cfg "letsencrypt_email")
     if [[ -n "$email" ]] && ! [[ "$email" =~ ^[^@]+@[^@]+\.[^@]+$ ]]; then
         log_warn "Invalid email format: '${email}'"
@@ -224,7 +221,9 @@ validate_config() {
 }
 
 # ---------------------------------------------------------------------------
-# System prerequisite checks
+# Step 0: System prerequisites check (HARD STOP — will not proceed if unmet)
+# Verifies: OS, version, CPU, RAM, disk per OpenG2P resource requirements
+# Ref: https://docs.openg2p.org/deployment/resource-requirements#single-node
 # ---------------------------------------------------------------------------
 check_root() {
     if [[ $EUID -ne 0 ]]; then
@@ -236,81 +235,155 @@ check_root() {
     fi
 }
 
-check_ubuntu_version() {
-    log_info "Checking Ubuntu version..."
+check_prerequisites() {
+    log_step "0" "Verifying system prerequisites"
+    log_info "Checking against OpenG2P resource requirements for single-node deployment."
+    log_info "Ref: https://docs.openg2p.org/deployment/resource-requirements#single-node"
+    echo ""
+
+    local failures=0
+
+    # ── OS check ──────────────────────────────────────────────────────────
+    log_info "Checking operating system..."
     if [[ ! -f /etc/os-release ]]; then
-        log_error "Cannot detect OS version" \
+        log_error "Cannot detect operating system" \
                   "/etc/os-release not found" \
-                  "This script requires Ubuntu 24.04 LTS"
+                  "This script requires Ubuntu 24.04 LTS" \
+                  "cat /etc/os-release" \
+                  "https://ubuntu.com/download/server"
         exit 1
     fi
 
     source /etc/os-release
+
     if [[ "$ID" != "ubuntu" ]]; then
-        log_error "Unsupported operating system: ${ID}" \
-                  "This script is designed for Ubuntu" \
+        log_error "Unsupported operating system: ${PRETTY_NAME:-$ID}" \
+                  "OpenG2P requires Ubuntu 24.04 LTS" \
                   "Install Ubuntu 24.04 LTS on this machine" \
                   "" \
                   "https://ubuntu.com/download/server"
         exit 1
     fi
+    log_success "Operating system: Ubuntu — OK."
 
+    # ── Ubuntu version check ──────────────────────────────────────────────
+    log_info "Checking Ubuntu version..."
     if [[ ! "$VERSION_ID" =~ ^24\.04 ]]; then
-        log_warn "Ubuntu ${VERSION_ID} detected. This script is tested on 24.04 LTS."
-        log_warn "Proceeding, but you may encounter issues."
+        log_error "Unsupported Ubuntu version: ${VERSION_ID}" \
+                  "OpenG2P requires Ubuntu 24.04 LTS" \
+                  "You are running Ubuntu ${VERSION_ID}. Please upgrade or reinstall with 24.04 LTS." \
+                  "lsb_release -a" \
+                  "https://ubuntu.com/download/server"
+        exit 1
+    fi
+    log_success "Ubuntu version: ${VERSION_ID} — OK."
+
+    # ── CPU check ─────────────────────────────────────────────────────────
+    local required_cpus=16
+    local actual_cpus
+    actual_cpus=$(nproc 2>/dev/null || echo 0)
+
+    log_info "Checking CPU cores... (required: ${required_cpus} vCPU)"
+    if [[ $actual_cpus -lt $required_cpus ]]; then
+        log_error "Insufficient CPU cores: ${actual_cpus} detected, ${required_cpus} required" \
+                  "The VM does not have enough CPU cores for OpenG2P" \
+                  "Resize the VM to at least ${required_cpus} vCPUs" \
+                  "nproc" \
+                  "https://docs.openg2p.org/deployment/resource-requirements#single-node"
+        ((failures++))
     else
-        log_success "Ubuntu ${VERSION_ID} detected — OK."
+        log_success "CPU cores: ${actual_cpus} vCPU — OK."
     fi
-}
 
-check_system_resources() {
-    log_info "Checking system resources..."
-    local min_cpus=16
-    local min_ram_gb=60
-    local min_disk_gb=100
+    # ── RAM check ─────────────────────────────────────────────────────────
+    local required_ram_gb=64
+    local required_ram_min_gb=60  # Allow slight variance (hypervisors sometimes report less)
+    local actual_ram_kb
+    actual_ram_kb=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}')
+    local actual_ram_gb=$(( actual_ram_kb / 1024 / 1024 ))
 
-    local cpus
-    cpus=$(nproc 2>/dev/null || echo 0)
-    local ram_kb
-    ram_kb=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}')
-    local ram_gb=$(( ram_kb / 1024 / 1024 ))
-    local disk_gb
-    disk_gb=$(df -BG / 2>/dev/null | tail -1 | awk '{print $4}' | tr -d 'G')
-
-    local warn=0
-    if [[ $cpus -lt $min_cpus ]]; then
-        log_warn "CPUs: ${cpus} detected, ${min_cpus} recommended."
-        ((warn++))
+    log_info "Checking RAM... (required: ${required_ram_gb} GB)"
+    if [[ $actual_ram_gb -lt $required_ram_min_gb ]]; then
+        log_error "Insufficient RAM: ${actual_ram_gb} GB detected, ${required_ram_gb} GB required" \
+                  "The VM does not have enough memory for OpenG2P" \
+                  "Resize the VM to at least ${required_ram_gb} GB RAM" \
+                  "free -g" \
+                  "https://docs.openg2p.org/deployment/resource-requirements#single-node"
+        ((failures++))
     else
-        log_success "CPUs: ${cpus} — OK."
+        log_success "RAM: ${actual_ram_gb} GB — OK."
     fi
 
-    if [[ $ram_gb -lt $min_ram_gb ]]; then
-        log_warn "RAM: ${ram_gb} GB detected, ${min_ram_gb}+ GB recommended."
-        ((warn++))
+    # ── Disk check ────────────────────────────────────────────────────────
+    local required_disk_gb=128
+    local required_disk_min_gb=100  # Allow some used space on a 128GB disk
+    local actual_disk_gb
+    actual_disk_gb=$(df -BG / 2>/dev/null | tail -1 | awk '{print $2}' | tr -d 'G')
+    local free_disk_gb
+    free_disk_gb=$(df -BG / 2>/dev/null | tail -1 | awk '{print $4}' | tr -d 'G')
+
+    log_info "Checking disk... (required: ${required_disk_gb} GB SSD)"
+    if [[ $actual_disk_gb -lt $required_disk_min_gb ]]; then
+        log_error "Insufficient disk: ${actual_disk_gb} GB total (${free_disk_gb} GB free), ${required_disk_gb} GB SSD required" \
+                  "The VM disk is too small for OpenG2P" \
+                  "Resize the disk to at least ${required_disk_gb} GB" \
+                  "df -h /" \
+                  "https://docs.openg2p.org/deployment/resource-requirements#single-node"
+        ((failures++))
     else
-        log_success "RAM: ${ram_gb} GB — OK."
+        log_success "Disk: ${actual_disk_gb} GB total, ${free_disk_gb} GB free — OK."
     fi
 
-    if [[ $disk_gb -lt $min_disk_gb ]]; then
-        log_warn "Disk: ${disk_gb} GB free, ${min_disk_gb}+ GB recommended."
-        ((warn++))
+    # ── SSD check (best effort) ──────────────────────────────────────────
+    log_info "Checking disk type..."
+    local root_device
+    root_device=$(findmnt -no SOURCE / 2>/dev/null | sed 's/[0-9]*$//' | sed 's|/dev/||')
+    # Strip partition numbers and mapper prefixes
+    root_device=$(echo "$root_device" | sed 's|mapper/||' | sed 's/-part.*//' | sed 's/p$//')
+    local rotational=""
+    if [[ -f "/sys/block/${root_device}/queue/rotational" ]]; then
+        rotational=$(cat "/sys/block/${root_device}/queue/rotational" 2>/dev/null)
+    fi
+    if [[ "$rotational" == "1" ]]; then
+        log_warn "Root disk appears to be a spinning HDD (rotational=1)."
+        log_warn "SSD is strongly recommended for OpenG2P performance."
+        log_warn "Ref: https://docs.openg2p.org/deployment/resource-requirements#single-node"
+    elif [[ "$rotational" == "0" ]]; then
+        log_success "Disk type: SSD — OK."
     else
-        log_success "Disk: ${disk_gb} GB free — OK."
+        log_info "Disk type: Could not determine (this is normal on cloud VMs). Proceeding."
     fi
 
-    if [[ $warn -gt 0 ]]; then
-        log_warn "System resources are below recommended specs."
-        read -rp "Continue anyway? (y/N): " ans
-        if [[ ! "$ans" =~ ^[Yy] ]]; then
-            log_info "Aborted by user."
-            exit 0
-        fi
+    # ── Final verdict ─────────────────────────────────────────────────────
+    echo ""
+    if [[ $failures -gt 0 ]]; then
+        echo -e "${RED}╔══════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${RED}║  PREREQUISITES NOT MET — CANNOT PROCEED                     ║${NC}"
+        echo -e "${RED}╠══════════════════════════════════════════════════════════════╣${NC}"
+        echo -e "${RED}║${NC}                                                              ${RED}║${NC}"
+        echo -e "${RED}║${NC}  ${failures} requirement(s) failed. The deployment cannot proceed"
+        echo -e "${RED}║${NC}  until the system meets the minimum resource requirements."
+        echo -e "${RED}║${NC}                                                              ${RED}║${NC}"
+        echo -e "${RED}║${NC}  Required for single-node:                                   ${RED}║${NC}"
+        echo -e "${RED}║${NC}    • Ubuntu 24.04 LTS                                        ${RED}║${NC}"
+        echo -e "${RED}║${NC}    • 16 vCPU                                                 ${RED}║${NC}"
+        echo -e "${RED}║${NC}    • 64 GB RAM                                               ${RED}║${NC}"
+        echo -e "${RED}║${NC}    • 128 GB SSD                                              ${RED}║${NC}"
+        echo -e "${RED}║${NC}                                                              ${RED}║${NC}"
+        echo -e "${RED}║${NC}  Resize the VM and re-run this script.                       ${RED}║${NC}"
+        echo -e "${RED}║${NC}  Docs: https://docs.openg2p.org/deployment/resource-requirements"
+        echo -e "${RED}║${NC}                                                              ${RED}║${NC}"
+        echo -e "${RED}╚══════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        exit 1
     fi
+
+    log_success "All prerequisites met. Proceeding with deployment."
+    echo ""
 }
 
 # ---------------------------------------------------------------------------
-# DNS verification — accepts a list of "domain:expected_ip" pairs
+# DNS verification
 # ---------------------------------------------------------------------------
 check_dns_resolution() {
     local domain="$1"
