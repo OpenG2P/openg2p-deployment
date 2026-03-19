@@ -6,7 +6,7 @@ Automated single-node deployment of the complete OpenG2P platform — from bare 
 
 | Script | Purpose | Run when |
 |---|---|---|
-| `openg2p-infra.sh` | Base infrastructure (K8s, Istio, Rancher, Keycloak, monitoring) | Once per machine |
+| `openg2p-infra.sh` | Base infrastructure (K8s, Istio, Rancher, Keycloak, monitoring, Rancher-Keycloak SSO) | Once per machine |
 | `openg2p-environment.sh` | Environment + modules (namespace, commons, Registry, PBMS, etc.) | Once per environment |
 
 ## Domain Modes
@@ -64,11 +64,20 @@ sudo chmod +x openg2p-infra.sh
 sudo ./openg2p-infra.sh --config infra-config.yaml
 ```
 
-**Local mode minimal config** — only 3 fields needed:
+**Local mode minimal config** — only 4 fields needed:
 ```yaml
-node_ip: "172.16.0.10"    # Your VM's IP
+node_ip: "172.16.0.10"       # Your VM's private IP
 node_name: "openg2p"
 domain_mode: "local"
+keycloak:
+  admin_email: "admin@example.com"  # For Rancher-Keycloak SSO
+```
+
+For AWS or any setup where the public IP differs from `node_ip`, also set:
+```yaml
+wireguard:
+  endpoint: "<public-ip>"     # Public IP for VPN clients
+  cluster_subnet: "172.29.0.0/16"  # Split tunnel (recommended)
 ```
 
 Takes ~15-25 minutes. Idempotent — re-run on failure.
@@ -79,6 +88,7 @@ Takes ~15-25 minutes. Idempotent — re-run on failure.
 sudo ./openg2p-infra.sh --config infra-config.yaml              # Full infra setup
 sudo ./openg2p-infra.sh --config infra-config.yaml --phase 1    # Host setup only
 sudo ./openg2p-infra.sh --config infra-config.yaml --phase 2    # Helmfile only
+sudo ./openg2p-infra.sh --config infra-config.yaml --phase 3    # Rancher-Keycloak integration only
 sudo ./openg2p-infra.sh --config infra-config.yaml --force       # Re-run everything
 sudo ./openg2p-infra.sh --config infra-config.yaml --dry-run     # Preview
 sudo ./openg2p-infra.sh --reset                                   # Clear state markers
@@ -167,11 +177,25 @@ kubectl get nodes
 
 Requires Wireguard VPN to be active (the K8s API is on the private IP).
 
-### Step 5: Rancher & Keycloak
+### Step 5: Login to Rancher
 
-1. Open Rancher at `https://rancher.<domain>` and bootstrap the admin password
-2. Integrate Rancher with Keycloak for SSO ([OIDC guide](https://docs.openg2p.org/deployment/deployment-instructions/infrastructure-setup#id-11.-integrating-rancher-with-keycloak))
-3. Run `openg2p-environment.sh` to create an OpenG2P environment (coming soon)
+Rancher-Keycloak SAML integration is done automatically by the script (Phase 3). Open Rancher at `https://rancher.<domain>` — you should see a **"Login with Keycloak"** button.
+
+Login using the Keycloak admin email configured in `keycloak.admin_email` (default: `admin@openg2p.org`). The Keycloak admin password is stored in the K8s secret `keycloak-system/keycloak` (key: `admin-password`).
+
+The Rancher admin password is auto-generated and saved to K8s secret `cattle-system/rancher-secret`. To retrieve it:
+```bash
+sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml kubectl -n cattle-system get secret rancher-secret -o jsonpath='{.data.adminPassword}' | base64 -d && echo
+```
+
+To override the Rancher admin password on re-runs:
+```bash
+sudo RANCHER_ADMIN_PASSWORD=mypassword ./openg2p-infra.sh --config infra-config.yaml --phase 3
+```
+
+### Step 6: Next
+
+Run `openg2p-environment.sh` to create an OpenG2P environment (coming soon).
 
 ## File Structure
 
@@ -179,14 +203,16 @@ Requires Wireguard VPN to be active (the K8s API is on the private IP).
 automation/
 ├── openg2p-infra.sh               # Script 1: base infrastructure
 ├── infra-config.example.yaml      # Config for Script 1
-├── helmfile-infra.yaml            # Helmfile for platform components
+├── helmfile-infra.yaml.gotmpl     # Helmfile for platform components (Go template)
 ├── openg2p-environment.sh         # Script 2: environment setup (coming soon)
 ├── env-config.example.yaml        # Config for Script 2
 ├── helmfile-env.yaml              # Helmfile for environment modules
 ├── README.md
 ├── lib/
 │   ├── utils.sh                   # Shared: logging, state, config, wait helpers
-│   └── phase1.sh                  # Infra Phase 1: host-level setup functions
+│   ├── phase1.sh                  # Phase 1: host-level setup (tools, RKE2, Wireguard, NFS, DNS, TLS, Nginx)
+│   ├── phase2.sh                  # Phase 2: platform components (Istio, Helmfile sync)
+│   └── phase3.sh                  # Phase 3: Rancher-Keycloak SAML integration
 └── charts/
     ├── raw/                       # Minimal chart for applying K8s manifests
     └── istio-install/             # Istio operator YAML for istioctl
@@ -198,7 +224,7 @@ automation/
 Re-run it. Completed steps are skipped. Error messages include diagnostic commands.
 
 **Local DNS not resolving on my laptop?**
-Ensure Wireguard VPN is connected. The DNS push only works when the VPN is active. Test with: `dig rancher.openg2p.test @<node_ip>`
+Ensure Wireguard VPN is connected. If using split tunnel, configure per-domain DNS (see Step 2 above). Note: `dig` bypasses the macOS resolver — use `ping` or `dscacheutil` to test instead.
 
 **Browser shows certificate warning in local mode?**
 Install the CA certificate on your laptop (see Local mode section above).
