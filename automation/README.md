@@ -26,7 +26,7 @@ Hostnames are auto-derived: `rancher.openg2p.test`, `keycloak.openg2p.test`, and
 
 **What the DevOps person needs to do on their laptop** (after the script completes):
 
-1. **Install Wireguard** and import the peer config from the VM (`/etc/wireguard_app_users/peer1/peer1.conf`). The config includes `DNS = <node_ip>` so all `*.openg2p.test` domains resolve automatically when the VPN is active.
+1. **Install Wireguard** and import the peer config from the VM (`/etc/wireguard/peers/peer1/peer1.conf`). The config includes `DNS = <node_ip>` so all `*.openg2p.test` domains resolve automatically when the VPN is active.
 
 2. **Install the CA certificate** to avoid browser warnings. Copy `/etc/openg2p/ca/ca.crt` from the VM to your laptop, then:
    - **macOS**: Open Keychain Access → File → Import Items → select `ca.crt` → drag to "System" keychain → double-click → Trust → set "Always Trust"
