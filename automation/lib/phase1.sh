@@ -83,6 +83,35 @@ install_istioctl() {
     log_success "istioctl ${version} installed."
 }
 
+install_helmfile() {
+    local version="${1:-1.1.0}"
+    if helmfile version &>/dev/null; then
+        log_success "helmfile is already installed."
+        return 0
+    fi
+    log_info "Installing helmfile v${version}..."
+    local url="https://github.com/helmfile/helmfile/releases/download/v${version}/helmfile_${version}_linux_amd64.tar.gz"
+    curl -sL "$url" -o /tmp/helmfile.tar.gz || {
+        log_error "Failed to download helmfile v${version}" \
+                  "Download from GitHub failed" \
+                  "Check internet connectivity and that version ${version} exists" \
+                  "curl -sI ${url}" \
+                  "https://github.com/helmfile/helmfile/releases"
+        return 1
+    }
+    tar xzf /tmp/helmfile.tar.gz -C /tmp helmfile || {
+        log_error "Failed to extract helmfile archive" \
+                  "The downloaded file may be corrupt" \
+                  "Try downloading manually" \
+                  "curl -sL ${url} | file -"
+        rm -f /tmp/helmfile.tar.gz
+        return 1
+    }
+    install -m 0755 /tmp/helmfile /usr/local/bin/helmfile
+    rm -f /tmp/helmfile /tmp/helmfile.tar.gz
+    log_success "helmfile v${version} installed."
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 1: Install prerequisite tools
 # ─────────────────────────────────────────────────────────────────────────────
@@ -119,10 +148,7 @@ phase1_step1_tools() {
 
     install_istioctl "1.24.1" || return 1
 
-    install_if_missing "helmfile" \
-        "helmfile version" \
-        "curl -sL https://github.com/helmfile/helmfile/releases/latest/download/helmfile_linux_amd64.tar.gz | tar xz -C /tmp && install -m 0755 /tmp/helmfile /usr/local/bin/helmfile && rm -f /tmp/helmfile" \
-        "https://github.com/helmfile/helmfile#installation"
+    install_helmfile "1.1.0" || return 1
 
     if ! helm plugin list 2>/dev/null | grep -q diff; then
         log_info "Installing helm-diff plugin (required by Helmfile)..."
