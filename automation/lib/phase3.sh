@@ -538,31 +538,30 @@ JSONEOF
         -d @"${saml_payload_file}" > /dev/null 2>&1
     sleep 2
 
-    # Step 2: POST to testAndEnable to activate it
-    log_info "Enabling SAML auth provider (testAndEnable)..."
-    local saml_response
-    saml_response=$(curl -sk -X POST "${rancher_url}/v3/keycloakConfigs/keycloak?action=testAndEnable" \
-        -H "Authorization: Bearer ${rancher_token}" \
-        -H "Content-Type: application/json" \
-        -d @"${saml_payload_file}" 2>/dev/null)
+    # Step 2: Force-enable via kubectl patch on the authconfig CRD
+    # (The testAndEnable API requires a browser SAML redirect flow that
+    #  can't complete via CLI. Patching the CRD directly is the reliable way.)
+    log_info "Enabling Keycloak SAML auth provider via kubectl patch..."
+    kubectl patch authconfigs.management.cattle.io keycloak --type=merge \
+        -p '{"enabled": true}' > /dev/null 2>&1 || {
+        log_error "Failed to enable Keycloak SAML in Rancher" \
+                  "kubectl patch of authconfig failed" \
+                  "Check the authconfig object" \
+                  "kubectl get authconfigs.management.cattle.io keycloak -o json | jq '{enabled, type}'"
+        return 1
+    }
 
-    local saml_error
-    saml_error=$(echo "$saml_response" | jq -r '.message // empty' 2>/dev/null)
-
-    if echo "$saml_response" | jq -r '.type // empty' 2>/dev/null | grep -qi "error"; then
-        if [[ "$saml_error" == *"An error occurred logging in"* ]]; then
-            log_warn "Rancher returned a login error — this is expected and can be ignored."
-            log_warn "The integration is successful if 'Login with Keycloak' appears on the login page."
-        else
-            log_error "Failed to enable Keycloak SAML in Rancher" \
-                      "Error: ${saml_error}" \
-                      "Check Rancher and Keycloak logs" \
-                      "kubectl -n cattle-system logs deploy/rancher --tail=30"
-            return 1
-        fi
+    # Verify it's enabled
+    sleep 3
+    local saml_enabled_check
+    saml_enabled_check=$(kubectl get authconfigs.management.cattle.io keycloak \
+        -o jsonpath='{.enabled}' 2>/dev/null)
+    if [[ "$saml_enabled_check" == "true" ]]; then
+        log_success "Keycloak SAML auth provider enabled in Rancher."
+    else
+        log_warn "Auth config patch applied but enabled status is '${saml_enabled_check}'."
+        log_warn "Check the Rancher login page manually for 'Login with Keycloak' button."
     fi
-
-    log_success "Keycloak SAML auth provider configured in Rancher."
     rm -rf "$sp_cert_dir" "$saml_payload_file"
 
     # ── Step 3.10: Configure access mode ─────────────────────────────────
