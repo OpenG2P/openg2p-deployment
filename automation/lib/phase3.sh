@@ -451,9 +451,9 @@ JSONEOF
     sp_cert_pem=$(cat "${sp_cert_dir}/sp.crt")
     sp_key_pem=$(cat "${sp_cert_dir}/sp.key")
 
-    # Build payload
-    local saml_enable_payload
-    saml_enable_payload=$(jq -n \
+    # Build payload in a temp file (avoids shell escaping issues with large XML)
+    local saml_payload_file="/tmp/rancher-saml-payload.json"
+    jq -n \
         --arg displayNameField "givenName" \
         --arg userNameField "email" \
         --arg uidField "email" \
@@ -473,12 +473,27 @@ JSONEOF
             "idpMetadataContent": $idpMetadataContent,
             "spCert": $spCert,
             "spKey": $spKey
-        }')
+        }' > "$saml_payload_file"
 
-    # Enable Keycloak SAML in Rancher
+    log_info "SAML payload written to ${saml_payload_file} ($(wc -c < "$saml_payload_file") bytes)"
+
+    # If SAML was previously configured (e.g. failed attempt), disable it first
+    local current_saml
+    current_saml=$(rancher_api GET "${rancher_url}/v3/keycloakConfigs/keycloak" "$rancher_token")
+    local saml_enabled
+    saml_enabled=$(echo "$current_saml" | jq -r '.enabled // false' 2>/dev/null)
+    if [[ "$saml_enabled" == "true" ]]; then
+        log_info "Existing SAML config found — disabling before reconfiguring..."
+        rancher_api POST "${rancher_url}/v3/keycloakConfigs/keycloak?action=disable" "$rancher_token" > /dev/null 2>&1
+        sleep 3
+    fi
+
+    # Enable Keycloak SAML in Rancher (use @file to avoid arg truncation)
     local saml_response
-    saml_response=$(rancher_api POST "${rancher_url}/v3/keycloakConfigs/keycloak?action=testAndEnable" \
-        "$rancher_token" "$saml_enable_payload")
+    saml_response=$(curl -sk -X POST "${rancher_url}/v3/keycloakConfigs/keycloak?action=testAndEnable" \
+        -H "Authorization: Bearer ${rancher_token}" \
+        -H "Content-Type: application/json" \
+        -d @"${saml_payload_file}" 2>/dev/null)
 
     local saml_error
     saml_error=$(echo "$saml_response" | jq -r '.message // empty' 2>/dev/null)
@@ -497,7 +512,7 @@ JSONEOF
     fi
 
     log_success "Keycloak SAML auth provider configured in Rancher."
-    rm -rf "$sp_cert_dir"
+    rm -rf "$sp_cert_dir" "$saml_payload_file"
 
     # ── Step 3.10: Configure access mode ─────────────────────────────────
     log_info "Setting Rancher access mode to 'allow cluster members + authorized users'..."
