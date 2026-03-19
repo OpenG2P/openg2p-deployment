@@ -571,10 +571,36 @@ JSONEOF
     if [[ -z "$rancher_token" ]]; then
         log_warn "Could not refresh Rancher token for access mode config. Skipping."
     else
-        # Set access mode to restricted with admin email as allowed principal
-        rancher_api PUT "${rancher_url}/v3/keycloakConfigs/keycloak" "$rancher_token" \
-            "{\"accessMode\":\"restricted\",\"allowedPrincipalIds\":[\"keycloak_user://${admin_email}\"]}" \
-            > /dev/null 2>&1
+        # Get the local admin's principal ID so we can include it in allowedPrincipalIds
+        local local_admin_principal
+        local_admin_principal=$(rancher_api GET "${rancher_url}/v3/users?username=admin" "$rancher_token" | \
+            jq -r '.data[0].principalIds[0] // empty' 2>/dev/null)
+
+        # Set access mode to unrestricted — allows any authenticated Keycloak user to
+        # access Rancher. The CRTB (below) controls what they can see/do.
+        # "restricted" mode requires exact principal ID matching before the user has
+        # ever logged in via SAML, which is fragile and often causes "no clusters visible."
+        # Use kubectl patch on the authconfig CRD instead of the API PUT, because
+        # PUT on /v3/keycloakConfigs can partially overwrite the SAML config fields.
+        local allowed_principals_json
+        if [[ -n "$local_admin_principal" ]]; then
+            allowed_principals_json="[\"keycloak_user://${admin_email}\",\"${local_admin_principal}\"]"
+        else
+            allowed_principals_json="[\"keycloak_user://${admin_email}\"]"
+        fi
+
+        log_info "Setting access mode to 'unrestricted' via kubectl patch..."
+        kubectl get authconfigs.management.cattle.io keycloak -o json 2>/dev/null | \
+            jq --argjson pids "$allowed_principals_json" \
+               '.accessMode = "unrestricted" | .allowedPrincipalIds = $pids' | \
+            kubectl replace -f - > /dev/null 2>&1 || {
+            log_warn "kubectl patch for accessMode failed, trying API fallback..."
+            rancher_api PUT "${rancher_url}/v3/keycloakConfigs/keycloak" "$rancher_token" \
+                "{\"accessMode\":\"unrestricted\",\"allowedPrincipalIds\":${allowed_principals_json}}" \
+                > /dev/null 2>&1
+        }
+
+        log_success "Access mode set to 'unrestricted'."
 
         # Add Keycloak admin as Owner on the local cluster via ClusterRoleTemplateBinding
         local keycloak_principal="keycloak_user://${admin_email}"
@@ -591,32 +617,51 @@ JSONEOF
             local crtb_response
             crtb_response=$(rancher_api POST "${rancher_url}/v3/clusterRoleTemplateBindings" "$rancher_token" \
                 "{\"clusterId\":\"local\",\"roleTemplateId\":\"cluster-owner\",\"userPrincipalId\":\"${keycloak_principal}\"}")
-            local crtb_error
-            crtb_error=$(echo "$crtb_response" | jq -r '.message // empty' 2>/dev/null)
-            if [[ -n "$crtb_error" ]]; then
+            local crtb_id crtb_error
+            crtb_id=$(echo "$crtb_response" | jq -r '.id // empty' 2>/dev/null)
+            crtb_error=$(echo "$crtb_response" | jq -r '.message // .code // empty' 2>/dev/null)
+            if [[ -n "$crtb_id" ]]; then
+                log_success "Keycloak admin added as Owner on local cluster (CRTB: ${crtb_id})."
+            elif [[ -n "$crtb_error" ]]; then
                 log_warn "Could not add cluster owner binding: ${crtb_error}"
-                log_warn "You may need to add the user manually in Rancher UI:"
-                log_warn "  Cluster > local > Cluster Members > Add > ${admin_email} > Owner"
+                log_warn "Full response: $(echo "$crtb_response" | jq -c '.' 2>/dev/null)"
+                log_warn "Trying via kubectl as fallback..."
+                # Create CRTB directly via kubectl as fallback
+                kubectl apply -f - > /dev/null 2>&1 <<CRTBEOF
+apiVersion: management.cattle.io/v3
+kind: ClusterRoleTemplateBinding
+metadata:
+  generateName: crtb-keycloak-admin-
+  namespace: local
+spec:
+  clusterName: local
+  roleTemplateName: cluster-owner
+  userPrincipalName: ${keycloak_principal}
+CRTBEOF
+                if [[ $? -eq 0 ]]; then
+                    log_success "Keycloak admin added as Owner via kubectl."
+                else
+                    log_warn "kubectl CRTB fallback also failed."
+                    log_warn "You may need to add the user manually in Rancher UI:"
+                    log_warn "  Cluster > local > Cluster Members > Add > ${admin_email} > Owner"
+                fi
             else
-                log_success "Keycloak admin added as Owner on local cluster."
+                log_warn "CRTB creation returned unexpected response: $(echo "$crtb_response" | jq -c '.' 2>/dev/null)"
             fi
         fi
 
         # Also ensure the Rancher local admin user retains cluster owner access
-        local local_admin_id
-        local_admin_id=$(rancher_api GET "${rancher_url}/v3/users?username=admin" "$rancher_token" | \
-            jq -r '.data[0].principalIds[0] // empty' 2>/dev/null)
-        if [[ -n "$local_admin_id" ]]; then
+        if [[ -n "$local_admin_principal" ]]; then
             existing_crtb=$(rancher_api GET "${rancher_url}/v3/clusterRoleTemplateBindings?clusterId=local" "$rancher_token" | \
-                jq -r --arg pid "$local_admin_id" '.data[] | select(.userPrincipalId == $pid) | .id' 2>/dev/null | head -1)
+                jq -r --arg pid "$local_admin_principal" '.data[] | select(.userPrincipalId == $pid) | .id' 2>/dev/null | head -1)
             if [[ -z "$existing_crtb" ]]; then
                 rancher_api POST "${rancher_url}/v3/clusterRoleTemplateBindings" "$rancher_token" \
-                    "{\"clusterId\":\"local\",\"roleTemplateId\":\"cluster-owner\",\"userPrincipalId\":\"${local_admin_id}\"}" \
+                    "{\"clusterId\":\"local\",\"roleTemplateId\":\"cluster-owner\",\"userPrincipalId\":\"${local_admin_principal}\"}" \
                     > /dev/null 2>&1
             fi
         fi
 
-        log_success "Rancher access mode configured."
+        log_success "Rancher access mode and cluster owner configured."
     fi
 
     # ── Done ─────────────────────────────────────────────────────────────
