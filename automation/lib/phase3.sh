@@ -530,7 +530,16 @@ JSONEOF
         sleep 2
     fi
 
-    # Enable Keycloak SAML in Rancher (use @file to avoid arg truncation)
+    # Step 1: PUT the config to save it on the Rancher object
+    log_info "Saving SAML config to Rancher (PUT)..."
+    curl -sk -X PUT "${rancher_url}/v3/keycloakConfigs/keycloak" \
+        -H "Authorization: Bearer ${rancher_token}" \
+        -H "Content-Type: application/json" \
+        -d @"${saml_payload_file}" > /dev/null 2>&1
+    sleep 2
+
+    # Step 2: POST to testAndEnable to activate it
+    log_info "Enabling SAML auth provider (testAndEnable)..."
     local saml_response
     saml_response=$(curl -sk -X POST "${rancher_url}/v3/keycloakConfigs/keycloak?action=testAndEnable" \
         -H "Authorization: Bearer ${rancher_token}" \
