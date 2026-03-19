@@ -314,11 +314,10 @@ run_phase3() {
     local saml_client_id="https://${rancher_host}/v1-saml/keycloak/saml/metadata"
     local saml_acs_url="https://${rancher_host}/v1-saml/keycloak/saml/acs"
 
-    # Check if client already exists
-    local existing_clients
-    existing_clients=$(keycloak_api GET "${keycloak_url}/admin/realms/master/clients?clientId=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${saml_client_id}'))" 2>/dev/null || echo "${saml_client_id}")" "$kc_token")
-    local existing_client_id
-    existing_client_id=$(echo "$existing_clients" | jq -r '.[0].id // empty')
+    # Check if client already exists (search all clients and filter by clientId)
+    local all_clients existing_client_id
+    all_clients=$(keycloak_api GET "${keycloak_url}/admin/realms/master/clients?max=200" "$kc_token")
+    existing_client_id=$(echo "$all_clients" | jq -r --arg cid "$saml_client_id" '.[] | select(.clientId == $cid) | .id' 2>/dev/null | head -1)
 
     if [[ -n "$existing_client_id" ]]; then
         log_info "SAML client already exists on Keycloak — updating."
@@ -365,9 +364,9 @@ JSONEOF
 
     # Refresh token and re-fetch client to get UUID
     kc_token=$(keycloak_get_token "$keycloak_url" "$kc_admin_password")
-    existing_clients=$(keycloak_api GET "${keycloak_url}/admin/realms/master/clients?clientId=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${saml_client_id}'))" 2>/dev/null || echo "${saml_client_id}")" "$kc_token")
+    all_clients=$(keycloak_api GET "${keycloak_url}/admin/realms/master/clients?max=200" "$kc_token")
     local client_uuid
-    client_uuid=$(echo "$existing_clients" | jq -r '.[0].id // empty')
+    client_uuid=$(echo "$all_clients" | jq -r --arg cid "$saml_client_id" '.[] | select(.clientId == $cid) | .id' 2>/dev/null | head -1)
 
     if [[ -z "$client_uuid" ]]; then
         log_error "Failed to create SAML client on Keycloak" \
