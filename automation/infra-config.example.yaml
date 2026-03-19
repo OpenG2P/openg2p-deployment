@@ -109,9 +109,15 @@ wireguard:
 rancher:
   version: "2.12.3"
   replicas: "1"
+  # Admin password for Rancher. Auto-generated if left empty.
+  # Stored in K8s secret cattle-system/rancher-secret after bootstrap.
+  admin_password: ""
 
 # ---------------------------------------------------------------------------
 # Keycloak
 # ---------------------------------------------------------------------------
 keycloak:
   replicas: "1"
+  # Email address for the Keycloak admin user.
+  # Required for Rancher-Keycloak SAML integration (Keycloak uses email as username).
+  admin_email: "admin@openg2p.org"

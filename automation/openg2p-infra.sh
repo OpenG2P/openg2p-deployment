@@ -5,6 +5,7 @@
 # Sets up the complete base infrastructure on a single Ubuntu 24.04 VM:
 #   Phase 1 (bash):     Tools, firewall, RKE2, Wireguard, NFS, DNS, TLS, Nginx
 #   Phase 2 (helmfile): Istio, Rancher, Keycloak, Monitoring, Logging
+#   Phase 3 (APIs):     Rancher bootstrap, Rancher-Keycloak SAML integration
 #
 # Supports two domain modes:
 #   "custom" — your own domains + Let's Encrypt (production)
@@ -29,6 +30,8 @@ LOG_FILE="/var/log/openg2p-infra-$(date '+%Y%m%d-%H%M%S').log"
 
 source "${SCRIPT_DIR}/lib/utils.sh"
 source "${SCRIPT_DIR}/lib/phase1.sh"
+source "${SCRIPT_DIR}/lib/phase2.sh"
+source "${SCRIPT_DIR}/lib/phase3.sh"
 
 # ---------------------------------------------------------------------------
 parse_args() {
@@ -38,7 +41,7 @@ parse_args() {
             --phase)   RUN_PHASE="$2"; shift 2 ;;
             --force)   FORCE_MODE=true; shift ;;
             --dry-run) DRY_RUN=true; shift ;;
-            --reset)   init_state_dir; reset_state "phase1."; reset_state "phase2."; exit 0 ;;
+            --reset)   init_state_dir; reset_state "phase1."; reset_state "phase2."; reset_state "phase3."; exit 0 ;;
             --help|-h) show_help; exit 0 ;;
             *)
                 log_error "Unknown option: $1" \
@@ -71,7 +74,7 @@ Usage:
 
 Options:
   --config <file>    Path to configuration file (required)
-  --phase <1|2>      Run only Phase 1 (host setup) or Phase 2 (platform Helmfile)
+  --phase <1|2|3>    Run only a specific phase
   --force            Ignore completion markers, re-run all steps
   --dry-run          Show what would be done without executing
   --reset            Clear all infra state markers and exit
@@ -83,120 +86,6 @@ Domain modes (set in config file):
 
 Docs: https://docs.openg2p.org/deployment/deployment-instructions/infrastructure-setup
 EOF
-}
-
-# ---------------------------------------------------------------------------
-# Phase 2: Platform components via Helmfile
-# ---------------------------------------------------------------------------
-run_phase2() {
-    log_step "2" "Phase 2 — Platform Components (Helmfile)"
-
-    ensure_kubeconfig || return 1
-
-    log_info "Verifying Kubernetes cluster is healthy..."
-    if ! kubectl get nodes | grep -qw Ready; then
-        log_error "Kubernetes node is not in Ready state" \
-                  "RKE2 may still be initializing" \
-                  "Check node status and RKE2 logs" \
-                  "kubectl get nodes; journalctl -u rke2-server -n 30"
-        return 1
-    fi
-    log_success "Kubernetes cluster is healthy."
-
-    install_istio_if_needed || return 1
-    generate_helmfile_infra_values
-
-    log_info "Running Helmfile sync for platform components..."
-    log_info "This may take 10-20 minutes on first run."
-    cd "${SCRIPT_DIR}"
-
-    if [[ "$DRY_RUN" == "true" ]]; then
-        log_info "[DRY RUN] Would execute: helmfile -f helmfile-infra.yaml sync"
-        helmfile -f helmfile-infra.yaml.gotmpl diff 2>/dev/null || log_warn "helmfile diff may fail on first run (expected)."
-        return 0
-    fi
-
-    helmfile -f helmfile-infra.yaml.gotmpl sync 2>&1 | tee -a "$LOG_FILE" || {
-        log_error "Helmfile sync failed" \
-                  "One or more Helm releases failed to install" \
-                  "Review the output above for specific errors" \
-                  "helmfile -f helmfile-infra.yaml.gotmpl sync --debug 2>&1 | tail -50"
-        echo ""
-        log_info "Troubleshooting tips:"
-        log_info "  1. Check pod status:  kubectl get pods -A | grep -v Running"
-        log_info "  2. Check events:      kubectl get events -A --sort-by=.lastTimestamp | tail -20"
-        log_info "  3. Re-run to retry:   sudo $0 --config $(basename "$CONFIG_FILE")"
-        return 1
-    }
-
-    log_success "Phase 2 complete — all platform components deployed."
-}
-
-# ---------------------------------------------------------------------------
-generate_helmfile_infra_values() {
-    local values_file="${SCRIPT_DIR}/helmfile-infra-values.yaml"
-    local rancher_host=$(get_rancher_hostname)
-    local keycloak_host=$(get_keycloak_hostname)
-
-    cat > "$values_file" <<EOF
-# Auto-generated from infra config — do not edit manually
-# Generated at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
-
-rancher_hostname: "${rancher_host}"
-keycloak_hostname: "${keycloak_host}"
-node_ip: "$(cfg 'node_ip')"
-
-rancher:
-  version: "$(cfg 'rancher.version' '2.12.3')"
-  replicas: $(cfg 'rancher.replicas' '1')
-
-keycloak:
-  replicas: $(cfg 'keycloak.replicas' '1')
-EOF
-
-    log_success "Helmfile infra values generated at ${values_file}"
-}
-
-# ---------------------------------------------------------------------------
-install_istio_if_needed() {
-    local step_id="phase2.istio"
-
-    if is_step_done "$step_id" && [[ "$FORCE_MODE" != "true" ]]; then
-        log_info "Skipping Istio installation — already completed."
-        return 0
-    fi
-
-    if kubectl -n istio-system get deployment istiod &>/dev/null; then
-        log_success "Istio (istiod) is already deployed."
-        mark_step_done "$step_id"
-        return 0
-    fi
-
-    log_info "Installing Istio via istioctl..."
-    local istio_operator="${SCRIPT_DIR}/charts/istio-install/templates/operator.yaml"
-
-    if [[ ! -f "$istio_operator" ]]; then
-        log_error "Istio operator YAML not found at ${istio_operator}" \
-                  "The automation charts directory may be incomplete" \
-                  "Ensure the charts/istio-install directory exists"
-        return 1
-    fi
-
-    istioctl install -f "$istio_operator" -y || {
-        log_error "istioctl install failed" \
-                  "Istio could not be installed on the cluster" \
-                  "Check cluster access and istioctl version" \
-                  "istioctl version; kubectl get nodes"
-        return 1
-    }
-
-    wait_for_deployment "istio-system" "istiod" 300 || return 1
-    wait_for_command "Istio ingress gateway pods" \
-        "kubectl -n istio-system get pods -l istio=ingressgateway -o jsonpath='{.items[*].status.phase}' | grep -q Running" \
-        300 10
-
-    mark_step_done "$step_id"
-    log_success "Istio installed and healthy."
 }
 
 # ---------------------------------------------------------------------------
@@ -270,12 +159,24 @@ show_summary() {
     echo -e "${GREEN}║${NC}      kubectl get nodes                                        ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
     echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${GREEN}║${NC}  ${BOLD}Post-setup:${NC}                                                ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}  5. Open Rancher and bootstrap admin password               ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}  6. Integrate Rancher with Keycloak (OIDC)                  ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}     Docs: https://docs.openg2p.org/deployment/              ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}       deployment-instructions/infrastructure-setup           ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}  7. Run openg2p-environment.sh to create an environment     ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}  ${BOLD}Credentials:${NC}                                               ${GREEN}║${NC}"
+    # Show Rancher admin password if saved
+    local saved_pw_file="/var/lib/openg2p/deploy-state/rancher-admin-password"
+    if [[ -f "$saved_pw_file" ]]; then
+        local saved_pw
+        saved_pw=$(cat "$saved_pw_file")
+        echo -e "${GREEN}║${NC}  Rancher admin password: ${BOLD}${saved_pw}${NC}"
+        echo -e "${GREEN}║${NC}  (also in K8s secret: cattle-system/rancher-secret)         ${GREEN}║${NC}"
+    fi
+    echo -e "${GREEN}║${NC}  Keycloak admin password: see K8s secret                    ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}    keycloak-system/keycloak (key: admin-password)            ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
+    echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${GREEN}║${NC}  ${BOLD}What's next:${NC}                                                ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}  Rancher-Keycloak SAML integration: done automatically.     ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}  Login at ${rancher_url} with 'Login with Keycloak'.         ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}  Run openg2p-environment.sh to create an environment.       ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}  Log: ${LOG_FILE}"
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
@@ -297,6 +198,7 @@ main() {
     if [[ "$FORCE_MODE" == "true" ]]; then
         reset_state "phase1."
         reset_state "phase2."
+        reset_state "phase3."
     fi
 
     load_config "$CONFIG_FILE"
@@ -331,6 +233,9 @@ main() {
         2)
             run_phase2
             ;;
+        3)
+            run_phase3
+            ;;
         all)
             check_prerequisites
             if [[ "$domain_mode" == "custom" ]]; then
@@ -338,12 +243,13 @@ main() {
             fi
             run_phase1
             run_phase2
+            run_phase3
             show_summary
             ;;
         *)
             log_error "Invalid phase: ${RUN_PHASE}" \
-                      "Valid phases are: 1, 2, or omit for all" \
-                      "Use --phase 1 or --phase 2"
+                      "Valid phases are: 1, 2, 3, or omit for all" \
+                      "Use --phase 1, --phase 2, or --phase 3"
             exit 1
             ;;
     esac
