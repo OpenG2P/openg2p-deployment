@@ -276,6 +276,16 @@ PROFILE
     cp /etc/rancher/rke2/rke2.yaml /root/rke2-kubeconfig-backup.yaml
     chmod 600 /root/rke2-kubeconfig-backup.yaml
 
+    # Generate a remote-access kubeconfig with the node's private IP
+    # (the default rke2.yaml uses 127.0.0.1 which only works on the VM)
+    local remote_kubeconfig="/etc/rancher/rke2/rke2-remote.yaml"
+    log_info "Generating remote-access kubeconfig at ${remote_kubeconfig}..."
+    sed "s|https://127.0.0.1:6443|https://${node_ip}:6443|g" \
+        /etc/rancher/rke2/rke2.yaml > "$remote_kubeconfig"
+    chmod 600 "$remote_kubeconfig"
+    log_success "Remote kubeconfig ready: ${remote_kubeconfig}"
+    log_info "Copy this file to your laptop to access the cluster via kubectl/helm."
+
     mark_step_done "$step_id"
 }
 
@@ -450,8 +460,9 @@ EOF
         else
             local local_domain=$(cfg "local_domain" "openg2p.test")
             log_info "Split tunnel mode — configure per-domain DNS on your laptop:"
-            log_info "  macOS:  sudo mkdir -p /etc/resolver && echo 'nameserver ${node_ip}' | sudo tee /etc/resolver/${local_domain}"
-            log_info "  Linux:  sudo resolvectl dns ${wg_iface} ${node_ip} && sudo resolvectl domain ${wg_iface} '~${local_domain}'"
+            log_info "  macOS:   sudo mkdir -p /etc/resolver && echo 'nameserver ${node_ip}' | sudo tee /etc/resolver/${local_domain}"
+            log_info "  Windows: Add-DnsClientNrptRule -Namespace '.${local_domain}' -NameServers '${node_ip}'"
+            log_info "  Linux:   sudo resolvectl dns ${wg_iface} ${node_ip} && sudo resolvectl domain ${wg_iface} '~${local_domain}'"
         fi
     fi
     log_info ""

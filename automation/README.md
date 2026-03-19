@@ -24,14 +24,7 @@ Designed for getting OpenG2P running the same day, with zero external dependenci
 
 Hostnames are auto-derived: `rancher.openg2p.test`, `keycloak.openg2p.test`, and later `registry.dev.openg2p.test`, etc.
 
-**What the DevOps person needs to do on their laptop** (after the script completes):
-
-1. **Install Wireguard** and import the peer config from the VM (`/etc/wireguard/peers/peer1/peer1.conf`). The config includes `DNS = <node_ip>` so all `*.openg2p.test` domains resolve automatically when the VPN is active.
-
-2. **Install the CA certificate** to avoid browser warnings. Copy `/etc/openg2p/ca/ca.crt` from the VM to your laptop, then:
-   - **macOS**: Open Keychain Access → File → Import Items → select `ca.crt` → drag to "System" keychain → double-click → Trust → set "Always Trust"
-   - **Windows**: Double-click `ca.crt` → Install Certificate → Local Machine → "Trusted Root Certification Authorities"
-   - **Linux**: `sudo cp ca.crt /usr/local/share/ca-certificates/openg2p-ca.crt && sudo update-ca-certificates`
+After the script completes, follow the [Post-Infrastructure Steps](#post-infrastructure-steps-on-your-laptop) below to set up Wireguard VPN, DNS resolution, CA certificate, and kubectl access on your laptop.
 
 Can be migrated to `custom` mode later when real domain names are available.
 
@@ -91,13 +84,94 @@ sudo ./openg2p-infra.sh --config infra-config.yaml --dry-run     # Preview
 sudo ./openg2p-infra.sh --reset                                   # Clear state markers
 ```
 
-## Post-Infrastructure Steps
+## Post-Infrastructure Steps (on your laptop)
 
-1. Set up Wireguard VPN on your laptop (see peer config location in the summary output)
-2. If local mode: install the CA certificate on your laptop (see instructions above)
-3. Open Rancher and bootstrap admin password
-4. Integrate Rancher with Keycloak ([OIDC guide](https://docs.openg2p.org/deployment/deployment-instructions/infrastructure-setup#id-11.-integrating-rancher-with-keycloak))
-5. Run `openg2p-environment.sh` to create an OpenG2P environment (coming soon)
+After the script completes, follow these steps to access the cluster from your machine.
+
+### Step 1: Wireguard VPN
+
+Copy the peer config from the VM to your laptop:
+
+```bash
+# On the VM:
+sudo cp /etc/wireguard/peers/peer1/peer1.conf /tmp/
+sudo chmod 644 /tmp/peer1.conf
+
+# On your laptop:
+scp -i <your-key.pem> <user>@<public-ip>:/tmp/peer1.conf .
+```
+
+If the VM has a public IP different from `node_ip` (e.g., AWS with a public + private IP), edit `peer1.conf` and change the `Endpoint` line to the public IP. Or set `wireguard.endpoint` in your config before running the script.
+
+Import `peer1.conf` into the [Wireguard client app](https://www.wireguard.com/install/) on your laptop and activate the tunnel.
+
+**Important for split tunnel:** If you set `wireguard.cluster_subnet` to a specific subnet (not `0.0.0.0/0`), the `AllowedIPs` in the peer config will only route cluster traffic through the VPN — your internet stays normal. However, you'll need per-domain DNS (see Step 2).
+
+### Step 2: DNS resolution (local mode + split tunnel only)
+
+If you're using `domain_mode: local` with split tunnel (`cluster_subnet` set), the Wireguard `DNS` directive is not included (it would break your internet). Configure per-domain DNS instead:
+
+**macOS:**
+```bash
+sudo mkdir -p /etc/resolver
+echo "nameserver <node_ip>" | sudo tee /etc/resolver/<local_domain>
+# e.g.: echo "nameserver 172.29.8.137" | sudo tee /etc/resolver/sandbox.test
+```
+
+**Windows (PowerShell as Administrator):**
+```powershell
+Add-DnsClientNrptRule -Namespace ".<local_domain>" -NameServers "<node_ip>"
+# e.g.: Add-DnsClientNrptRule -Namespace ".sandbox.test" -NameServers "172.29.8.137"
+```
+
+**Linux:**
+```bash
+sudo resolvectl dns wg0 <node_ip>
+sudo resolvectl domain wg0 '~<local_domain>'
+```
+
+Note: `dig` bypasses the macOS resolver system. Use `dscacheutil -q host -a name rancher.<local_domain>` or `ping` or `curl` to test DNS on macOS.
+
+### Step 3: CA certificate (local mode only)
+
+Copy `/etc/openg2p/ca/ca.crt` from the VM to your laptop, then install it:
+
+**macOS:**
+```bash
+sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ca.crt
+```
+Or double-click `ca.crt` and install via System Settings → General → Profiles.
+
+**Windows:** Double-click `ca.crt` → Install Certificate → Local Machine → "Trusted Root Certification Authorities"
+
+**Linux:**
+```bash
+sudo cp ca.crt /usr/local/share/ca-certificates/openg2p-ca.crt
+sudo update-ca-certificates
+```
+
+### Step 4: kubectl / helm access
+
+The script generates a remote-access kubeconfig at `/etc/rancher/rke2/rke2-remote.yaml` (with the VM's private IP instead of `127.0.0.1`).
+
+```bash
+# On the VM:
+sudo cp /etc/rancher/rke2/rke2-remote.yaml /tmp/
+sudo chmod 644 /tmp/rke2-remote.yaml
+
+# On your laptop:
+scp -i <your-key.pem> <user>@<public-ip>:/tmp/rke2-remote.yaml ~/.kube/openg2p-config
+export KUBECONFIG=~/.kube/openg2p-config
+kubectl get nodes
+```
+
+Requires Wireguard VPN to be active (the K8s API is on the private IP).
+
+### Step 5: Rancher & Keycloak
+
+1. Open Rancher at `https://rancher.<domain>` and bootstrap the admin password
+2. Integrate Rancher with Keycloak for SSO ([OIDC guide](https://docs.openg2p.org/deployment/deployment-instructions/infrastructure-setup#id-11.-integrating-rancher-with-keycloak))
+3. Run `openg2p-environment.sh` to create an OpenG2P environment (coming soon)
 
 ## File Structure
 
