@@ -7,6 +7,7 @@
 #   - Configure Keycloak admin email and realm settings
 #   - Create SAML client on Keycloak for Rancher
 #   - Configure Rancher to use Keycloak SAML as auth provider
+#   - Add Keycloak admin as cluster owner on local cluster
 #
 # Rancher admin password resolution (no password in config file):
 #   1. Environment variable RANCHER_ADMIN_PASSWORD
@@ -26,8 +27,6 @@ keycloak_get_token() {
     local kc_password="$2"
     local kc_username="${3:-}"
 
-    # If username not specified, try email-as-username first (the state after
-    # our script enables it), then fall back to plain "admin"
     local token_response token
     local usernames_to_try
 
@@ -210,7 +209,6 @@ run_phase3() {
         if [[ -n "$bootstrap_password" ]]; then
             rancher_token=$(rancher_try_login "$rancher_url" "$bootstrap_password")
             if [[ -n "$rancher_token" ]]; then
-                # Bootstrap worked — auto-generate a proper password
                 rancher_admin_password="openg2p-$(openssl rand -hex 8)"
                 log_info "Bootstrap login successful. Setting new admin password..."
                 curl -sk -X POST "${rancher_url}/v3/users?action=changepassword" \
@@ -218,7 +216,6 @@ run_phase3() {
                     -H "Content-Type: application/json" \
                     -d "{\"currentPassword\":\"${bootstrap_password}\",\"newPassword\":\"${rancher_admin_password}\"}" \
                     > /dev/null 2>&1
-                # Re-login with new password
                 rancher_token=$(rancher_try_login "$rancher_url" "$rancher_admin_password")
                 log_success "Rancher admin password auto-generated and set."
             else
@@ -308,13 +305,11 @@ run_phase3() {
     admin_user_id=$(echo "$admin_users" | jq -r '.[0].id // empty')
 
     if [[ -z "$admin_user_id" ]]; then
-        # With email-as-username enabled, search by email
         admin_users=$(keycloak_api GET "${keycloak_url}/admin/realms/master/users?email=${admin_email}&exact=true" "$kc_token")
         admin_user_id=$(echo "$admin_users" | jq -r '.[0].id // empty')
     fi
 
     if [[ -z "$admin_user_id" ]]; then
-        # Last resort: get all users and find one with admin role
         admin_users=$(keycloak_api GET "${keycloak_url}/admin/realms/master/users?max=50" "$kc_token")
         admin_user_id=$(echo "$admin_users" | jq -r '.[0].id // empty')
     fi
@@ -347,7 +342,6 @@ run_phase3() {
     local saml_client_id="https://${rancher_host}/v1-saml/keycloak/saml/metadata"
     local saml_acs_url="https://${rancher_host}/v1-saml/keycloak/saml/acs"
 
-    # Check if client already exists (search all clients and filter by clientId)
     local all_clients existing_client_id
     all_clients=$(keycloak_api GET "${keycloak_url}/admin/realms/master/clients?max=200" "$kc_token")
     existing_client_id=$(echo "$all_clients" | jq -r --arg cid "$saml_client_id" '.[] | select(.clientId == $cid) | .id' 2>/dev/null | head -1)
@@ -546,8 +540,6 @@ JSONEOF
     sleep 2
 
     # Step 2: Force-enable via kubectl patch on the authconfig CRD
-    # (The testAndEnable API requires a browser SAML redirect flow that
-    #  can't complete via CLI. Patching the CRD directly is the reliable way.)
     log_info "Enabling Keycloak SAML auth provider via kubectl patch..."
     kubectl patch authconfigs.management.cattle.io keycloak --type=merge \
         -p '{"enabled": true}' > /dev/null 2>&1 || {
@@ -571,14 +563,61 @@ JSONEOF
     fi
     rm -rf "$sp_cert_dir" "$saml_payload_file"
 
-    # ── Step 3.10: Configure access mode ─────────────────────────────────
-    log_info "Setting Rancher access mode to 'allow cluster members + authorized users'..."
+    # ── Step 3.10: Configure access mode and add cluster owner ────────────
+    log_info "Setting Rancher access mode and adding Keycloak admin as cluster owner..."
 
-    rancher_api PUT "${rancher_url}/v3/keycloakConfigs/keycloak" "$rancher_token" \
-        "{\"accessMode\":\"restricted\",\"allowedPrincipalIds\":[\"keycloak_user://${admin_email}\"]}" \
-        > /dev/null 2>&1
+    # Refresh Rancher token (may have expired during Keycloak config steps)
+    rancher_token=$(rancher_try_login "$rancher_url" "$rancher_admin_password")
+    if [[ -z "$rancher_token" ]]; then
+        log_warn "Could not refresh Rancher token for access mode config. Skipping."
+    else
+        # Set access mode to restricted with admin email as allowed principal
+        rancher_api PUT "${rancher_url}/v3/keycloakConfigs/keycloak" "$rancher_token" \
+            "{\"accessMode\":\"restricted\",\"allowedPrincipalIds\":[\"keycloak_user://${admin_email}\"]}" \
+            > /dev/null 2>&1
 
-    log_success "Rancher access mode configured."
+        # Add Keycloak admin as Owner on the local cluster via ClusterRoleTemplateBinding
+        local keycloak_principal="keycloak_user://${admin_email}"
+
+        # Check if binding already exists
+        local existing_crtb
+        existing_crtb=$(rancher_api GET "${rancher_url}/v3/clusterRoleTemplateBindings?clusterId=local" "$rancher_token" | \
+            jq -r --arg pid "$keycloak_principal" '.data[] | select(.userPrincipalId == $pid) | .id' 2>/dev/null | head -1)
+
+        if [[ -n "$existing_crtb" ]]; then
+            log_info "Keycloak admin already has a role on local cluster — skipping."
+        else
+            log_info "Adding ${admin_email} as Owner on local cluster..."
+            local crtb_response
+            crtb_response=$(rancher_api POST "${rancher_url}/v3/clusterRoleTemplateBindings" "$rancher_token" \
+                "{\"clusterId\":\"local\",\"roleTemplateId\":\"cluster-owner\",\"userPrincipalId\":\"${keycloak_principal}\"}")
+            local crtb_error
+            crtb_error=$(echo "$crtb_response" | jq -r '.message // empty' 2>/dev/null)
+            if [[ -n "$crtb_error" ]]; then
+                log_warn "Could not add cluster owner binding: ${crtb_error}"
+                log_warn "You may need to add the user manually in Rancher UI:"
+                log_warn "  Cluster > local > Cluster Members > Add > ${admin_email} > Owner"
+            else
+                log_success "Keycloak admin added as Owner on local cluster."
+            fi
+        fi
+
+        # Also ensure the Rancher local admin user retains cluster owner access
+        local local_admin_id
+        local_admin_id=$(rancher_api GET "${rancher_url}/v3/users?username=admin" "$rancher_token" | \
+            jq -r '.data[0].principalIds[0] // empty' 2>/dev/null)
+        if [[ -n "$local_admin_id" ]]; then
+            existing_crtb=$(rancher_api GET "${rancher_url}/v3/clusterRoleTemplateBindings?clusterId=local" "$rancher_token" | \
+                jq -r --arg pid "$local_admin_id" '.data[] | select(.userPrincipalId == $pid) | .id' 2>/dev/null | head -1)
+            if [[ -z "$existing_crtb" ]]; then
+                rancher_api POST "${rancher_url}/v3/clusterRoleTemplateBindings" "$rancher_token" \
+                    "{\"clusterId\":\"local\",\"roleTemplateId\":\"cluster-owner\",\"userPrincipalId\":\"${local_admin_id}\"}" \
+                    > /dev/null 2>&1
+            fi
+        fi
+
+        log_success "Rancher access mode configured."
+    fi
 
     # ── Done ─────────────────────────────────────────────────────────────
     log_success "Rancher-Keycloak SAML integration complete."
