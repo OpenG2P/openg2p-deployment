@@ -3,30 +3,23 @@
 # OpenG2P Base Infrastructure Setup
 # =============================================================================
 # Sets up the complete base infrastructure on a single Ubuntu 24.04 VM:
-#   Phase 1 (bash):     Tools, firewall, RKE2, Wireguard, NFS, TLS certs, Nginx
+#   Phase 1 (bash):     Tools, firewall, RKE2, Wireguard, NFS, DNS, TLS, Nginx
 #   Phase 2 (helmfile): Istio, Rancher, Keycloak, Monitoring, Logging
+#
+# Supports two domain modes:
+#   "custom" — your own domains + Let's Encrypt (production)
+#   "local"  — local DNS (dnsmasq) + self-signed CA (sandbox/pilot)
 #
 # After this completes, run openg2p-environment.sh to create environments.
 #
 # Usage:
 #   sudo ./openg2p-infra.sh --config infra-config.yaml
 #
-# Options:
-#   --config <file>    Path to infra-config.yaml (required)
-#   --phase <1|2>      Run only a specific phase
-#   --force            Re-run all steps (ignore completion markers)
-#   --dry-run          Show what would be done without executing
-#   --reset            Clear all infra state markers and exit
-#   --help             Show this help message
-#
 # Docs: https://docs.openg2p.org/deployment/deployment-instructions/infrastructure-setup
 # =============================================================================
 
 set -euo pipefail
 
-# ---------------------------------------------------------------------------
-# Globals
-# ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE=""
 RUN_PHASE=""
@@ -34,44 +27,19 @@ FORCE_MODE=false
 DRY_RUN=false
 LOG_FILE="/var/log/openg2p-infra-$(date '+%Y%m%d-%H%M%S').log"
 
-# ---------------------------------------------------------------------------
-# Source libraries
-# ---------------------------------------------------------------------------
 source "${SCRIPT_DIR}/lib/utils.sh"
 source "${SCRIPT_DIR}/lib/phase1.sh"
 
 # ---------------------------------------------------------------------------
-# Parse arguments
-# ---------------------------------------------------------------------------
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case $1 in
-            --config)
-                CONFIG_FILE="$2"
-                shift 2
-                ;;
-            --phase)
-                RUN_PHASE="$2"
-                shift 2
-                ;;
-            --force)
-                FORCE_MODE=true
-                shift
-                ;;
-            --dry-run)
-                DRY_RUN=true
-                shift
-                ;;
-            --reset)
-                init_state_dir
-                reset_state "phase1."
-                reset_state "phase2."
-                exit 0
-                ;;
-            --help|-h)
-                show_help
-                exit 0
-                ;;
+            --config)  CONFIG_FILE="$2"; shift 2 ;;
+            --phase)   RUN_PHASE="$2"; shift 2 ;;
+            --force)   FORCE_MODE=true; shift ;;
+            --dry-run) DRY_RUN=true; shift ;;
+            --reset)   init_state_dir; reset_state "phase1."; reset_state "phase2."; exit 0 ;;
+            --help|-h) show_help; exit 0 ;;
             *)
                 log_error "Unknown option: $1" \
                           "This flag is not recognized" \
@@ -90,18 +58,13 @@ parse_args() {
         exit 1
     fi
 
-    if [[ ! "$CONFIG_FILE" = /* ]]; then
-        CONFIG_FILE="${SCRIPT_DIR}/${CONFIG_FILE}"
-    fi
+    [[ "$CONFIG_FILE" = /* ]] || CONFIG_FILE="${SCRIPT_DIR}/${CONFIG_FILE}"
 }
 
 show_help() {
     cat <<'EOF'
 OpenG2P Base Infrastructure Setup
 ===================================
-
-Sets up the complete base infrastructure on a single Ubuntu 24.04 VM.
-After this completes, run openg2p-environment.sh to create environments.
 
 Usage:
   sudo ./openg2p-infra.sh --config infra-config.yaml [options]
@@ -114,17 +77,9 @@ Options:
   --reset            Clear all infra state markers and exit
   --help             Show this help message
 
-Phases:
-  Phase 1: Host-level (tools, RKE2, Wireguard, NFS, TLS certs, Nginx)
-  Phase 2: Platform-level (Istio, Rancher, Keycloak, Monitoring, Logging)
-
-Steps:
-  1. Copy infra-config.example.yaml → infra-config.yaml and fill in values
-  2. Ensure DNS A records for Rancher and Keycloak hostnames point to this VM
-  3. Run: sudo ./openg2p-infra.sh --config infra-config.yaml
-  4. Wait ~15-25 minutes
-  5. Complete post-install steps (Rancher bootstrap, Rancher-Keycloak integration)
-  6. Then run openg2p-environment.sh to set up an OpenG2P environment
+Domain modes (set in config file):
+  custom  — Your own domains + Let's Encrypt (default, for production)
+  local   — Local DNS + self-signed CA (for sandboxes, no domain needed)
 
 Docs: https://docs.openg2p.org/deployment/deployment-instructions/infrastructure-setup
 EOF
@@ -134,30 +89,23 @@ EOF
 # Phase 2: Platform components via Helmfile
 # ---------------------------------------------------------------------------
 run_phase2() {
-    local step_id="phase2.helmfile"
-
     log_step "2" "Phase 2 — Platform Components (Helmfile)"
 
     ensure_kubeconfig || return 1
 
-    # Verify cluster is healthy
     log_info "Verifying Kubernetes cluster is healthy..."
     if ! kubectl get nodes | grep -qw Ready; then
         log_error "Kubernetes node is not in Ready state" \
-                  "RKE2 may still be initializing or has an issue" \
+                  "RKE2 may still be initializing" \
                   "Check node status and RKE2 logs" \
                   "kubectl get nodes; journalctl -u rke2-server -n 30"
         return 1
     fi
     log_success "Kubernetes cluster is healthy."
 
-    # Install Istio via istioctl (not Helm — Istio uses its own installer)
     install_istio_if_needed || return 1
-
-    # Generate helmfile values from config
     generate_helmfile_infra_values
 
-    # Run Helmfile
     log_info "Running Helmfile sync for platform components..."
     log_info "This may take 10-20 minutes on first run."
     cd "${SCRIPT_DIR}"
@@ -185,17 +133,17 @@ run_phase2() {
 }
 
 # ---------------------------------------------------------------------------
-# Generate helmfile-infra-values.yaml from config
-# ---------------------------------------------------------------------------
 generate_helmfile_infra_values() {
     local values_file="${SCRIPT_DIR}/helmfile-infra-values.yaml"
+    local rancher_host=$(get_rancher_hostname)
+    local keycloak_host=$(get_keycloak_hostname)
 
     cat > "$values_file" <<EOF
 # Auto-generated from infra config — do not edit manually
 # Generated at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
 
-rancher_hostname: "$(cfg 'rancher_hostname')"
-keycloak_hostname: "$(cfg 'keycloak_hostname')"
+rancher_hostname: "${rancher_host}"
+keycloak_hostname: "${keycloak_host}"
 node_ip: "$(cfg 'node_ip')"
 
 rancher:
@@ -209,8 +157,6 @@ EOF
     log_success "Helmfile infra values generated at ${values_file}"
 }
 
-# ---------------------------------------------------------------------------
-# Install Istio via istioctl
 # ---------------------------------------------------------------------------
 install_istio_if_needed() {
     local step_id="phase2.istio"
@@ -239,14 +185,12 @@ install_istio_if_needed() {
     istioctl install -f "$istio_operator" -y || {
         log_error "istioctl install failed" \
                   "Istio could not be installed on the cluster" \
-                  "Check cluster access and istioctl version compatibility" \
-                  "istioctl version; kubectl get nodes" \
-                  "https://istio.io/latest/docs/setup/install/istioctl/"
+                  "Check cluster access and istioctl version" \
+                  "istioctl version; kubectl get nodes"
         return 1
     }
 
     wait_for_deployment "istio-system" "istiod" 300 || return 1
-
     wait_for_command "Istio ingress gateway pods" \
         "kubectl -n istio-system get pods -l istio=ingressgateway -o jsonpath='{.items[*].status.phase}' | grep -q Running" \
         300 10
@@ -256,11 +200,10 @@ install_istio_if_needed() {
 }
 
 # ---------------------------------------------------------------------------
-# Post-deployment summary
-# ---------------------------------------------------------------------------
 show_summary() {
-    local rancher_host=$(cfg "rancher_hostname")
-    local keycloak_host=$(cfg "keycloak_hostname")
+    local domain_mode=$(cfg "domain_mode" "custom")
+    local rancher_host=$(get_rancher_hostname)
+    local keycloak_host=$(get_keycloak_hostname)
 
     echo ""
     echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
@@ -269,20 +212,38 @@ show_summary() {
     echo -e "${GREEN}║                                                              ║${NC}"
     echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}  Rancher:    ${BOLD}https://${rancher_host}${NC}"
-    echo -e "${GREEN}║${NC}  Keycloak:   ${BOLD}https://${keycloak_host}${NC}"
+    echo -e "${GREEN}║${NC}  Domain mode: ${BOLD}${domain_mode}${NC}"
+    echo -e "${GREEN}║${NC}  Rancher:     ${BOLD}https://${rancher_host}${NC}"
+    echo -e "${GREEN}║${NC}  Keycloak:    ${BOLD}https://${keycloak_host}${NC}"
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
     echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${GREEN}║${NC}  ${BOLD}Next steps:${NC}                                                ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}  1. Open Rancher and bootstrap admin password              ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}  2. Integrate Rancher with Keycloak (OIDC)                 ${GREEN}║${NC}"
+
+    if [[ "$domain_mode" == "local" ]]; then
+        local wg_name=$(cfg "wireguard.name" "wireguard_app_users")
+        echo -e "${GREEN}║${NC}  1. Set up Wireguard VPN on your laptop:                   ${GREEN}║${NC}"
+        echo -e "${GREEN}║${NC}     • Copy peer config from: /etc/${wg_name}/peer1/  ${GREEN}║${NC}"
+        echo -e "${GREEN}║${NC}     • The config includes DNS push — once connected,       ${GREEN}║${NC}"
+        echo -e "${GREEN}║${NC}       your laptop will resolve *.openg2p.test automatically ${GREEN}║${NC}"
+        echo -e "${GREEN}║${NC}  2. Install the CA certificate on your laptop to avoid      ${GREEN}║${NC}"
+        echo -e "${GREEN}║${NC}     browser warnings:                                       ${GREEN}║${NC}"
+        echo -e "${GREEN}║${NC}     • CA cert: /etc/openg2p/ca/ca.crt                      ${GREEN}║${NC}"
+        echo -e "${GREEN}║${NC}     • macOS: Import into Keychain → System → Always Trust  ${GREEN}║${NC}"
+        echo -e "${GREEN}║${NC}     • Windows: Import into Trusted Root CAs                ${GREEN}║${NC}"
+        echo -e "${GREEN}║${NC}     • Linux: Copy to /usr/local/share/ca-certificates/     ${GREEN}║${NC}"
+        echo -e "${GREEN}║${NC}              then run: sudo update-ca-certificates          ${GREEN}║${NC}"
+    else
+        echo -e "${GREEN}║${NC}  1. Configure Wireguard VPN on your laptop                 ${GREEN}║${NC}"
+        echo -e "${GREEN}║${NC}     Peer config: /etc/wireguard_app_users/peer1/peer1.conf ${GREEN}║${NC}"
+    fi
+
+    echo -e "${GREEN}║${NC}  3. Open Rancher and bootstrap admin password              ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}  4. Integrate Rancher with Keycloak (OIDC)                 ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}     Docs: https://docs.openg2p.org/deployment/             ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}       deployment-instructions/infrastructure-setup          ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}       #id-11.-integrating-rancher-with-keycloak             ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}  3. Configure Wireguard VPN on your laptop                 ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}     Peer config: /etc/wireguard_app_users/peer1/peer1.conf ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}  4. Run openg2p-environment.sh to create an environment    ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}  5. Run openg2p-environment.sh to create an environment    ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}  Log file: ${LOG_FILE}"
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
@@ -306,29 +267,35 @@ main() {
         reset_state "phase2."
     fi
 
-    # Load and validate config
     load_config "$CONFIG_FILE"
-    validate_config \
-        "node_ip" \
-        "node_name" \
-        "rancher_hostname" \
-        "keycloak_hostname" \
-        "letsencrypt_email"
+
+    # Validate based on domain mode
+    local domain_mode=$(cfg "domain_mode" "custom")
+    log_info "Domain mode: ${BOLD}${domain_mode}${NC}"
+
+    if [[ "$domain_mode" == "local" ]]; then
+        validate_config "node_ip" "node_name"
+    else
+        validate_config "node_ip" "node_name" "rancher_hostname" "keycloak_hostname" "letsencrypt_email"
+    fi
+
+    local rancher_host=$(get_rancher_hostname)
+    local keycloak_host=$(get_keycloak_hostname)
 
     log_info "Deployment log: ${LOG_FILE}"
     log_info "Config file:    ${CONFIG_FILE}"
     log_info "Node:           $(cfg 'node_name') @ $(cfg 'node_ip')"
-    log_info "Rancher:        $(cfg 'rancher_hostname')"
-    log_info "Keycloak:       $(cfg 'keycloak_hostname')"
+    log_info "Rancher:        ${rancher_host}"
+    log_info "Keycloak:       ${keycloak_host}"
     echo ""
 
     case "${RUN_PHASE:-all}" in
         1)
             check_ubuntu_version
             check_system_resources
-            check_dns_for_domains "$(cfg 'node_ip')" \
-                "$(cfg 'rancher_hostname')" \
-                "$(cfg 'keycloak_hostname')"
+            if [[ "$domain_mode" == "custom" ]]; then
+                check_dns_for_domains "$(cfg 'node_ip')" "$rancher_host" "$keycloak_host"
+            fi
             run_phase1
             ;;
         2)
@@ -337,9 +304,9 @@ main() {
         all)
             check_ubuntu_version
             check_system_resources
-            check_dns_for_domains "$(cfg 'node_ip')" \
-                "$(cfg 'rancher_hostname')" \
-                "$(cfg 'keycloak_hostname')"
+            if [[ "$domain_mode" == "custom" ]]; then
+                check_dns_for_domains "$(cfg 'node_ip')" "$rancher_host" "$keycloak_host"
+            fi
             run_phase1
             run_phase2
             show_summary

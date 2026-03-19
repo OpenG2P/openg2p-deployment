@@ -19,7 +19,33 @@ node_ip: ""
 node_name: "openg2p"
 
 # ---------------------------------------------------------------------------
-# Domain configuration
+# Domain mode
+# ---------------------------------------------------------------------------
+# Controls how hostnames and TLS certificates are set up.
+#
+#   "custom" (default) — You provide your own domain names and DNS records.
+#                         TLS certificates are obtained via Let's Encrypt.
+#                         Required for production and public-facing deployments.
+#                         You must fill in rancher_hostname, keycloak_hostname,
+#                         and the TLS section below.
+#
+#   "local"            — No domain names or DNS needed. The script sets up:
+#                         • dnsmasq on the VM for local DNS (*.openg2p.test)
+#                         • A local Certificate Authority with self-signed certs
+#                         • Wireguard DNS push so VPN clients resolve automatically
+#                         Hostnames are auto-derived:
+#                           rancher.openg2p.test, keycloak.openg2p.test
+#                         Great for sandboxes, demos, pilots, and air-gapped setups.
+#                         Can be migrated to "custom" later.
+domain_mode: "custom"
+
+# Local domain base (only used when domain_mode is "local")
+# All hostnames will be <service>.<local_domain>
+# Uses .test TLD (reserved by RFC 2606 for testing, avoids mDNS conflicts)
+local_domain: "openg2p.test"
+
+# ---------------------------------------------------------------------------
+# Domain configuration (only needed when domain_mode is "custom")
 # ---------------------------------------------------------------------------
 # Rancher management UI hostname
 # Example: rancher.openg2p.org
@@ -30,21 +56,21 @@ rancher_hostname: ""
 keycloak_hostname: ""
 
 # ---------------------------------------------------------------------------
-# TLS / Let's Encrypt
+# TLS / Let's Encrypt (only needed when domain_mode is "custom")
 # ---------------------------------------------------------------------------
 # Email address for Let's Encrypt certificate registration
 letsencrypt_email: ""
 
 # Certificate challenge method:
-#   "dns"        — DNS-01 challenge (recommended). The script will pause and
-#                  ask you to create a TXT record at your DNS provider.
-#                  Works even if port 80 is not open. Supports wildcards.
+#   "dns"            — DNS-01 challenge (recommended). The script will pause and
+#                      ask you to create a TXT record at your DNS provider.
+#                      Works even if port 80 is not open. Supports wildcards.
 #   "dns-cloudflare" — Automated DNS-01 via Cloudflare API. Requires
-#                  cloudflare_api_token to be set below. Fully hands-off.
+#                      cloudflare_api_token to be set below. Fully hands-off.
 #   "dns-route53"    — Automated DNS-01 via AWS Route 53. Requires
-#                  AWS credentials configured on the machine.
-#   "http"       — HTTP-01 challenge. Requires port 80 open to the internet.
-#                  Simplest but least likely to work in restricted networks.
+#                      AWS credentials configured on the machine.
+#   "http"           — HTTP-01 challenge. Requires port 80 open to the internet.
+#                      Simplest but least likely to work in restricted networks.
 letsencrypt_challenge: "dns"
 
 # Cloudflare API token (only needed if letsencrypt_challenge is "dns-cloudflare")
