@@ -24,16 +24,36 @@
 keycloak_get_token() {
     local kc_url="$1"
     local kc_password="$2"
+    local kc_username="${3:-}"
 
-    local token_response
-    token_response=$(curl -sk -X POST "${kc_url}/realms/master/protocol/openid-connect/token" \
-        -H "Content-Type: application/x-www-form-urlencoded" \
-        -d "username=admin" \
-        -d "password=${kc_password}" \
-        -d "grant_type=password" \
-        -d "client_id=admin-cli" 2>/dev/null)
+    # If username not specified, try email-as-username first (the state after
+    # our script enables it), then fall back to plain "admin"
+    local token_response token
+    local usernames_to_try
 
-    echo "$token_response" | jq -r '.access_token // empty'
+    # Try the provided email/username first (works after email-as-username is enabled),
+    # then fall back to "admin" (works on fresh installs before email is configured)
+    if [[ -n "$kc_username" && "$kc_username" != "admin" ]]; then
+        usernames_to_try=("$kc_username" "admin")
+    else
+        usernames_to_try=("admin")
+    fi
+
+    for uname in "${usernames_to_try[@]}"; do
+        token_response=$(curl -sk -X POST "${kc_url}/realms/master/protocol/openid-connect/token" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -d "username=${uname}" \
+            -d "password=${kc_password}" \
+            -d "grant_type=password" \
+            -d "client_id=admin-cli" 2>/dev/null)
+        token=$(echo "$token_response" | jq -r '.access_token // empty')
+        if [[ -n "$token" ]]; then
+            echo "$token"
+            return 0
+        fi
+    done
+
+    echo ""
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -268,7 +288,7 @@ run_phase3() {
     log_success "Retrieved Keycloak admin password."
 
     local kc_token
-    kc_token=$(keycloak_get_token "$keycloak_url" "$kc_admin_password")
+    kc_token=$(keycloak_get_token "$keycloak_url" "$kc_admin_password" "$admin_email")
 
     if [[ -z "$kc_token" ]]; then
         log_error "Could not get Keycloak admin access token" \
@@ -363,7 +383,7 @@ JSONEOF
     fi
 
     # Refresh token and re-fetch client to get UUID
-    kc_token=$(keycloak_get_token "$keycloak_url" "$kc_admin_password")
+    kc_token=$(keycloak_get_token "$keycloak_url" "$kc_admin_password" "$admin_email")
     all_clients=$(keycloak_api GET "${keycloak_url}/admin/realms/master/clients?max=200" "$kc_token")
     local client_uuid
     client_uuid=$(echo "$all_clients" | jq -r --arg cid "$saml_client_id" '.[] | select(.clientId == $cid) | .id' 2>/dev/null | head -1)
@@ -408,7 +428,7 @@ JSONEOF
     # ── Step 3.8: Disable Client Signature Required ──────────────────────
     log_info "Disabling Client Signature Required on SAML client..."
 
-    kc_token=$(keycloak_get_token "$keycloak_url" "$kc_admin_password")
+    kc_token=$(keycloak_get_token "$keycloak_url" "$kc_admin_password" "$admin_email")
     keycloak_api PUT "${keycloak_url}/admin/realms/master/clients/${client_uuid}" "$kc_token" \
         "{\"attributes\":{\"saml.client.signature\":\"false\"}}" > /dev/null 2>&1
 
