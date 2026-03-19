@@ -112,15 +112,15 @@ run_phase2() {
 
     if [[ "$DRY_RUN" == "true" ]]; then
         log_info "[DRY RUN] Would execute: helmfile -f helmfile-infra.yaml sync"
-        helmfile -f helmfile-infra.yaml diff 2>/dev/null || log_warn "helmfile diff may fail on first run (expected)."
+        helmfile -f helmfile-infra.yaml.gotmpl diff 2>/dev/null || log_warn "helmfile diff may fail on first run (expected)."
         return 0
     fi
 
-    helmfile -f helmfile-infra.yaml sync 2>&1 | tee -a "$LOG_FILE" || {
+    helmfile -f helmfile-infra.yaml.gotmpl sync 2>&1 | tee -a "$LOG_FILE" || {
         log_error "Helmfile sync failed" \
                   "One or more Helm releases failed to install" \
                   "Review the output above for specific errors" \
-                  "helmfile -f helmfile-infra.yaml sync --debug 2>&1 | tail -50"
+                  "helmfile -f helmfile-infra.yaml.gotmpl sync --debug 2>&1 | tail -50"
         echo ""
         log_info "Troubleshooting tips:"
         log_info "  1. Check pod status:  kubectl get pods -A | grep -v Running"
