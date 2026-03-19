@@ -415,9 +415,9 @@ JSONEOF
     log_info "Adding SAML protocol mappers..."
 
     local mappers='[
-        {"name":"X500 email","protocol":"saml","protocolMapper":"saml-user-property-idp-mapper","consentRequired":false,"config":{"attribute.nameformat":"urn:oasis:names:tc:SAML:2.0:attrname-format:uri","user.attribute":"email","friendly.name":"email","attribute.name":"email"}},
-        {"name":"X500 givenName","protocol":"saml","protocolMapper":"saml-user-property-idp-mapper","consentRequired":false,"config":{"attribute.nameformat":"urn:oasis:names:tc:SAML:2.0:attrname-format:uri","user.attribute":"firstName","friendly.name":"givenName","attribute.name":"givenName"}},
-        {"name":"X500 surname","protocol":"saml","protocolMapper":"saml-user-property-idp-mapper","consentRequired":false,"config":{"attribute.nameformat":"urn:oasis:names:tc:SAML:2.0:attrname-format:uri","user.attribute":"lastName","friendly.name":"surname","attribute.name":"surname"}},
+        {"name":"X500 email","protocol":"saml","protocolMapper":"saml-user-property-mapper","consentRequired":false,"config":{"attribute.nameformat":"urn:oasis:names:tc:SAML:2.0:attrname-format:uri","user.attribute":"email","friendly.name":"email","attribute.name":"email"}},
+        {"name":"X500 givenName","protocol":"saml","protocolMapper":"saml-user-property-mapper","consentRequired":false,"config":{"attribute.nameformat":"urn:oasis:names:tc:SAML:2.0:attrname-format:uri","user.attribute":"firstName","friendly.name":"givenName","attribute.name":"givenName"}},
+        {"name":"X500 surname","protocol":"saml","protocolMapper":"saml-user-property-mapper","consentRequired":false,"config":{"attribute.nameformat":"urn:oasis:names:tc:SAML:2.0:attrname-format:uri","user.attribute":"lastName","friendly.name":"surname","attribute.name":"surname"}},
         {"name":"role list","protocol":"saml","protocolMapper":"saml-role-list-mapper","consentRequired":false,"config":{"single":"true","attribute.nameformat":"Basic","friendly.name":"","attribute.name":"Role"}}
     ]'
 
@@ -431,9 +431,16 @@ JSONEOF
             log_info "  Mapper '${mapper_name}' already exists — skipping."
             continue
         fi
-        keycloak_api POST "${keycloak_url}/admin/realms/master/clients/${client_uuid}/protocol-mappers/models" \
-            "$kc_token" "$mapper" > /dev/null 2>&1
-        log_info "  Added mapper: ${mapper_name}"
+        local mapper_response
+        mapper_response=$(keycloak_api POST "${keycloak_url}/admin/realms/master/clients/${client_uuid}/protocol-mappers/models" \
+            "$kc_token" "$mapper")
+        local mapper_error
+        mapper_error=$(echo "$mapper_response" | jq -r '.errorMessage // .error // empty' 2>/dev/null)
+        if [[ -n "$mapper_error" ]]; then
+            log_warn "  Failed to add mapper '${mapper_name}': ${mapper_error}"
+        else
+            log_info "  Added mapper: ${mapper_name}"
+        fi
     done
 
     log_success "SAML protocol mappers configured."
