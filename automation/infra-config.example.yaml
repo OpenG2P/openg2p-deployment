@@ -109,9 +109,10 @@ wireguard:
 rancher:
   version: "2.12.3"
   replicas: "1"
-  # Admin password for Rancher. Auto-generated if left empty.
-  # Stored in K8s secret cattle-system/rancher-secret after bootstrap.
-  admin_password: ""
+  # Admin password is auto-managed — do not set here.
+  # On fresh install: auto-generated and saved to K8s secret cattle-system/rancher-secret
+  # On re-run: read from the K8s secret
+  # Override: RANCHER_ADMIN_PASSWORD=xxx sudo ./openg2p-infra.sh ...
 
 # ---------------------------------------------------------------------------
 # Keycloak
