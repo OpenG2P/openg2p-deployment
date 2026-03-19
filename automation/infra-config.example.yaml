@@ -91,12 +91,12 @@ rke2_token: ""
 # Wireguard VPN
 # ---------------------------------------------------------------------------
 wireguard:
-  name: "wireguard_app_users"
   subnet: "10.15.0.0/16"
   port: "51820"
   peers: "254"
-  # Subnet of cluster nodes that Wireguard clients can access
-  # Leave empty if not restricting
+  # Subnet that Wireguard clients can access (AllowedIPs in peer config)
+  # Default "0.0.0.0/0" routes all traffic through VPN
+  # Set to your node's subnet (e.g. "172.16.0.0/24") to route only cluster traffic
   cluster_subnet: ""
 
 # ---------------------------------------------------------------------------

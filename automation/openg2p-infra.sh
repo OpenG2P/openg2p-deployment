@@ -221,9 +221,8 @@ show_summary() {
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
 
     if [[ "$domain_mode" == "local" ]]; then
-        local wg_name=$(cfg "wireguard.name" "wireguard_app_users")
         echo -e "${GREEN}║${NC}  1. Set up Wireguard VPN on your laptop:                   ${GREEN}║${NC}"
-        echo -e "${GREEN}║${NC}     • Copy peer config from: /etc/${wg_name}/peer1/  ${GREEN}║${NC}"
+        echo -e "${GREEN}║${NC}     • Copy peer config from: /etc/wireguard/peers/peer1/  ${GREEN}║${NC}"
         echo -e "${GREEN}║${NC}     • The config includes DNS push — once connected,       ${GREEN}║${NC}"
         echo -e "${GREEN}║${NC}       your laptop will resolve *.openg2p.test automatically ${GREEN}║${NC}"
         echo -e "${GREEN}║${NC}  2. Install the CA certificate on your laptop to avoid      ${GREEN}║${NC}"
@@ -235,7 +234,7 @@ show_summary() {
         echo -e "${GREEN}║${NC}              then run: sudo update-ca-certificates          ${GREEN}║${NC}"
     else
         echo -e "${GREEN}║${NC}  1. Configure Wireguard VPN on your laptop                 ${GREEN}║${NC}"
-        echo -e "${GREEN}║${NC}     Peer config: /etc/wireguard_app_users/peer1/peer1.conf ${GREEN}║${NC}"
+        echo -e "${GREEN}║${NC}     Peer config: /etc/wireguard/peers/peer1/peer1.conf    ${GREEN}║${NC}"
     fi
 
     echo -e "${GREEN}║${NC}  3. Open Rancher and bootstrap admin password              ${GREEN}║${NC}"

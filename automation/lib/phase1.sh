@@ -268,75 +268,169 @@ PROFILE
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 4: Wireguard VPN
+# Step 4: Wireguard VPN (native — runs as a systemd service, not a K8s pod)
 # ─────────────────────────────────────────────────────────────────────────────
 phase1_step4_wireguard() {
     local step_id="phase1.wireguard"
     skip_if_done "$step_id" "Wireguard VPN" && return 0
 
-    log_step "1.4" "Installing Wireguard VPN"
+    log_step "1.4" "Installing Wireguard VPN (native)"
 
-    local wg_name=$(cfg "wireguard.name" "wireguard_app_users")
-    local wg_subnet=$(cfg "wireguard.subnet" "10.15.0.0/16")
+    local node_ip=$(cfg "node_ip")
     local wg_port=$(cfg "wireguard.port" "51820")
+    local wg_subnet=$(cfg "wireguard.subnet" "10.15.0.0/16")
     local wg_peers=$(cfg "wireguard.peers" "254")
-    local cluster_subnet=$(cfg "wireguard.cluster_subnet" "")
-    local wg_script="${REPO_ROOT}/kubernetes/wireguard/wg.sh"
+    local allowed_ips=$(cfg "wireguard.cluster_subnet" "0.0.0.0/0")
+    local domain_mode=$(cfg "domain_mode" "custom")
+    local wg_iface="wg0"
+    local peer_dir="/etc/wireguard/peers"
 
-    if [[ ! -f "$wg_script" ]]; then
-        log_error "Wireguard install script not found at ${wg_script}" \
-                  "The openg2p-deployment repo may be incomplete" \
-                  "Ensure you have cloned the full repo" \
-                  "ls -la ${REPO_ROOT}/kubernetes/wireguard/"
-        return 1
-    fi
-
-    if kubectl -n wireguard-system get daemonset "${wg_name//_/-}" &>/dev/null; then
-        log_success "Wireguard DaemonSet already exists."
+    # Idempotency: if wg0 is already up and peer configs exist, skip
+    if systemctl is-active --quiet "wg-quick@${wg_iface}" 2>/dev/null && [[ -d "$peer_dir/peer1" ]]; then
+        log_success "Wireguard is already running (wg-quick@${wg_iface})."
         mark_step_done "$step_id"
         return 0
     fi
 
-    log_info "Deploying Wireguard: name=${wg_name}, subnet=${wg_subnet}, port=${wg_port}, peers=${wg_peers}"
+    # Install wireguard-tools (kernel module is built-in on Ubuntu 24.04)
+    install_if_missing "wireguard" \
+        "wg version" \
+        "apt-get install -y -qq wireguard-tools > /dev/null 2>&1" \
+        "https://www.wireguard.com/install/"
 
-    cd "${REPO_ROOT}/kubernetes/wireguard"
-    if [[ -n "$cluster_subnet" ]]; then
-        WG_MODE=k8s bash wg.sh "$wg_name" "$wg_subnet" "$wg_port" "$wg_peers" "$cluster_subnet"
-    else
-        WG_MODE=k8s bash wg.sh "$wg_name" "$wg_subnet" "$wg_port" "$wg_peers"
-    fi || {
-        log_error "Wireguard installation failed" \
-                  "The wg.sh script exited with an error" \
-                  "Check Wireguard pod logs" \
-                  "kubectl -n wireguard-system logs -l app=${wg_name//_/-}"
-        return 1
-    }
-    cd - > /dev/null
-
-    sleep 5
-    wait_for_command "Wireguard pod to start" \
-        "kubectl -n wireguard-system get pods -l app=${wg_name//_/-} -o jsonpath='{.items[0].status.phase}' | grep -q Running" \
-        120 10 || {
-        log_warn "Wireguard pod may still be starting. Check manually later."
-    }
-
-    local domain_mode=$(cfg "domain_mode" "custom")
-    if [[ "$domain_mode" == "local" ]]; then
-        local node_ip=$(cfg "node_ip")
-        log_info "Updating Wireguard peer configs to push DNS server (${node_ip})..."
-        local peer_dir="/etc/${wg_name}"
-        if [[ -d "$peer_dir" ]]; then
-            find "$peer_dir" -name "peer*.conf" -type f | while read -r pconf; do
-                if ! grep -q "^DNS" "$pconf"; then
-                    sed -i "/^\[Interface\]/a DNS = ${node_ip}" "$pconf"
-                    log_info "  Updated: $(basename "$pconf")"
-                fi
-            done
-        fi
+    # Enable IP forwarding (required for VPN routing)
+    sysctl -w net.ipv4.ip_forward=1 > /dev/null
+    if ! grep -q "^net.ipv4.ip_forward=1" /etc/sysctl.conf 2>/dev/null; then
+        echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
     fi
 
-    log_info "Wireguard peer configs are at: /etc/${wg_name}/"
-    log_info "Share the peer1.conf file with the DevOps team for VPN access."
+    # Parse subnet: e.g. "10.15.0.0/16" -> base="10.15" mask="16"
+    local subnet_base subnet_mask
+    subnet_base=$(echo "$wg_subnet" | cut -d'/' -f1)
+    subnet_mask=$(echo "$wg_subnet" | cut -d'/' -f2)
+
+    # Extract first two octets for IP generation (assumes /16 subnet)
+    local octet1 octet2
+    octet1=$(echo "$subnet_base" | cut -d'.' -f1)
+    octet2=$(echo "$subnet_base" | cut -d'.' -f2)
+
+    log_info "Generating Wireguard keys and configs..."
+    log_info "  Interface: ${wg_iface}, Port: ${wg_port}, Subnet: ${wg_subnet}, Peers: ${wg_peers}"
+
+    mkdir -p /etc/wireguard
+    chmod 700 /etc/wireguard
+
+    # Generate server keys
+    local server_privkey server_pubkey
+    server_privkey=$(wg genkey)
+    server_pubkey=$(echo "$server_privkey" | wg pubkey)
+
+    # Server IP is .0.1 in the subnet
+    local server_ip="${octet1}.${octet2}.0.1/${subnet_mask}"
+
+    # Build server config header
+    cat > "/etc/wireguard/${wg_iface}.conf" <<EOF
+# OpenG2P Wireguard server — auto-generated by openg2p-infra.sh
+[Interface]
+Address = ${server_ip}
+ListenPort = ${wg_port}
+PrivateKey = ${server_privkey}
+PostUp = iptables -A FORWARD -i ${wg_iface} -j ACCEPT; iptables -A FORWARD -o ${wg_iface} -j ACCEPT; iptables -t nat -A POSTROUTING -o eth+ -j MASQUERADE
+PostDown = iptables -D FORWARD -i ${wg_iface} -j ACCEPT; iptables -D FORWARD -o ${wg_iface} -j ACCEPT; iptables -t nat -D POSTROUTING -o eth+ -j MASQUERADE
+EOF
+
+    # DNS line for peer configs (only in local mode)
+    local peer_dns_line=""
+    if [[ "$domain_mode" == "local" ]]; then
+        peer_dns_line="DNS = ${node_ip}"
+    fi
+
+    # Generate peer configs
+    mkdir -p "$peer_dir"
+    local peer_num=1
+    local peer_octet3=0
+    local peer_octet4=2  # .0.1 is the server, peers start at .0.2
+
+    while [[ $peer_num -le $wg_peers ]]; do
+        local peer_privkey peer_pubkey peer_psk
+        peer_privkey=$(wg genkey)
+        peer_pubkey=$(echo "$peer_privkey" | wg pubkey)
+        peer_psk=$(wg genpsk)
+
+        local peer_ip="${octet1}.${octet2}.${peer_octet3}.${peer_octet4}"
+
+        # Add peer to server config
+        cat >> "/etc/wireguard/${wg_iface}.conf" <<EOF
+
+# peer${peer_num}
+[Peer]
+PublicKey = ${peer_pubkey}
+PresharedKey = ${peer_psk}
+AllowedIPs = ${peer_ip}/32
+EOF
+
+        # Write individual peer config file
+        mkdir -p "${peer_dir}/peer${peer_num}"
+        cat > "${peer_dir}/peer${peer_num}/peer${peer_num}.conf" <<EOF
+[Interface]
+Address = ${peer_ip}/${subnet_mask}
+PrivateKey = ${peer_privkey}
+${peer_dns_line}
+
+[Peer]
+PublicKey = ${server_pubkey}
+PresharedKey = ${peer_psk}
+Endpoint = ${node_ip}:${wg_port}
+AllowedIPs = ${allowed_ips}
+PersistentKeepalive = 25
+EOF
+
+        # Advance IP: .0.2, .0.3, ... .0.255, .1.0, .1.1, ...
+        ((peer_octet4++))
+        if [[ $peer_octet4 -gt 255 ]]; then
+            peer_octet4=0
+            ((peer_octet3++))
+        fi
+        ((peer_num++))
+    done
+
+    chmod 600 /etc/wireguard/${wg_iface}.conf
+    chmod -R 600 "$peer_dir"
+    # Directories need execute bit to be traversable
+    find "$peer_dir" -type d -exec chmod 700 {} \;
+
+    log_success "Generated server config and ${wg_peers} peer configs."
+
+    # Enable and start Wireguard
+    log_info "Starting Wireguard (wg-quick@${wg_iface})..."
+    systemctl enable "wg-quick@${wg_iface}"
+    systemctl start "wg-quick@${wg_iface}" || {
+        log_error "Wireguard failed to start" \
+                  "wg-quick@${wg_iface} could not be started" \
+                  "Check the Wireguard config and system logs" \
+                  "journalctl -u wg-quick@${wg_iface} -n 20 --no-pager; cat /etc/wireguard/${wg_iface}.conf"
+        return 1
+    }
+
+    # Verify it's running
+    if wg show "$wg_iface" &>/dev/null; then
+        log_success "Wireguard interface ${wg_iface} is up."
+    else
+        log_error "Wireguard interface ${wg_iface} is not active" \
+                  "wg-quick started but the interface may not have come up" \
+                  "Check logs and config" \
+                  "wg show; journalctl -u wg-quick@${wg_iface} -n 20"
+        return 1
+    fi
+
+    log_info ""
+    log_info "Peer configs are at: ${peer_dir}/"
+    log_info "  Example: ${peer_dir}/peer1/peer1.conf"
+    log_info "Copy a peer config to your laptop and import into Wireguard client."
+    if [[ "$domain_mode" == "local" ]]; then
+        log_info "DNS push is enabled — VPN clients will resolve *.openg2p.test automatically."
+    fi
+    log_info ""
 
     mark_step_done "$step_id"
 }
