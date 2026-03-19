@@ -3,7 +3,7 @@
 # OpenG2P Deployment Automation — Phase 1: Host-Level Setup
 # =============================================================================
 # Installs all host-level components on the VM: tools, RKE2, Wireguard, NFS,
-# Let's Encrypt certs (Rancher + Keycloak), and Nginx reverse proxy.
+# Let's Encrypt certs (Rancher + Keycloak via DNS-01), and Nginx reverse proxy.
 # Sourced by openg2p-infra.sh — do not run directly.
 # =============================================================================
 
@@ -93,7 +93,7 @@ phase1_step2_firewall() {
     fi
 
     log_info "Firewall: ufw disabled. Ensure your external firewall allows ports:"
-    log_info "  TCP: 6443, 9345, 10250, 30080, 30443, 80, 443"
+    log_info "  TCP: 6443, 9345, 10250, 30080, 30443, 443"
     log_info "  UDP: $(cfg 'wireguard.port' '51820')"
     log_info "  TCP: 2049 (NFS — internal only)"
 
@@ -114,7 +114,6 @@ phase1_step3_rke2() {
     local node_ip=$(cfg "node_ip")
     local rke2_token=$(cfg "rke2_token" "openg2p-$(openssl rand -hex 16)")
 
-    # Check if RKE2 is already running
     if systemctl is-active --quiet rke2-server 2>/dev/null; then
         log_info "RKE2 is already running. Verifying..."
         ensure_kubeconfig
@@ -125,7 +124,6 @@ phase1_step3_rke2() {
         fi
     fi
 
-    # Create RKE2 config
     log_info "Creating RKE2 configuration..."
     mkdir -p /etc/rancher/rke2
     cat > /etc/rancher/rke2/config.yaml <<EOF
@@ -162,16 +160,13 @@ EOF
         return 1
     }
 
-    # Set up kubeconfig
     ensure_kubeconfig
 
-    # Persist PATH and KUBECONFIG for future sessions
     cat > /etc/profile.d/openg2p-k8s.sh <<'PROFILE'
 export PATH="$PATH:/var/lib/rancher/rke2/bin"
 export KUBECONFIG="/etc/rancher/rke2/rke2.yaml"
 PROFILE
 
-    # Wait for node to be ready
     wait_for_command "Kubernetes node to be Ready" \
         "kubectl get nodes | grep -w Ready" \
         300 10 || {
@@ -213,7 +208,6 @@ phase1_step4_wireguard() {
         return 1
     fi
 
-    # Check if Wireguard is already deployed
     if kubectl -n wireguard-system get daemonset "${wg_name//_/-}" &>/dev/null; then
         log_success "Wireguard DaemonSet already exists."
         mark_step_done "$step_id"
@@ -342,7 +336,7 @@ phase1_step6_nfs_csi() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 7: Let's Encrypt TLS Certificates (Rancher + Keycloak only)
+# Step 7: Let's Encrypt TLS Certificates (DNS-01 challenge by default)
 # ─────────────────────────────────────────────────────────────────────────────
 phase1_step7_certificates() {
     local step_id="phase1.certificates"
@@ -351,21 +345,50 @@ phase1_step7_certificates() {
     log_step "1.7" "Obtaining Let's Encrypt TLS certificates"
 
     local email=$(cfg "letsencrypt_email")
+    local challenge=$(cfg "letsencrypt_challenge" "dns")
     local rancher_host=$(cfg "rancher_hostname")
     local keycloak_host=$(cfg "keycloak_hostname")
 
+    # Install certbot
     install_if_missing "certbot" \
         "certbot --version" \
         "apt-get install -y -qq certbot > /dev/null 2>&1" \
         "https://certbot.eff.org/"
 
-    # Stop nginx temporarily if running (certbot standalone needs port 80)
-    if systemctl is-active --quiet nginx 2>/dev/null; then
-        log_info "Stopping Nginx temporarily for certificate generation..."
-        systemctl stop nginx
-    fi
+    # Install DNS plugin if needed
+    case "$challenge" in
+        dns-cloudflare)
+            install_if_missing "certbot-dns-cloudflare" \
+                "pip3 show certbot-dns-cloudflare" \
+                "apt-get install -y -qq python3-certbot-dns-cloudflare > /dev/null 2>&1 || pip3 install certbot-dns-cloudflare --break-system-packages" \
+                "https://certbot-dns-cloudflare.readthedocs.io/"
 
-    # Check if certs already exist for both
+            local cf_token=$(cfg "cloudflare_api_token")
+            if [[ -z "$cf_token" ]]; then
+                log_error "Cloudflare API token not set" \
+                          "letsencrypt_challenge is 'dns-cloudflare' but cloudflare_api_token is empty" \
+                          "Set cloudflare_api_token in your config file" \
+                          "" \
+                          "https://dash.cloudflare.com/profile/api-tokens"
+                return 1
+            fi
+
+            # Write credentials file
+            mkdir -p /etc/letsencrypt
+            cat > /etc/letsencrypt/cloudflare.ini <<EOF
+dns_cloudflare_api_token = ${cf_token}
+EOF
+            chmod 600 /etc/letsencrypt/cloudflare.ini
+            ;;
+        dns-route53)
+            install_if_missing "certbot-dns-route53" \
+                "pip3 show certbot-dns-route53" \
+                "apt-get install -y -qq python3-certbot-dns-route53 > /dev/null 2>&1 || pip3 install certbot-dns-route53 --break-system-packages" \
+                "https://certbot-dns-route53.readthedocs.io/"
+            ;;
+    esac
+
+    # Check if certs already exist
     local certs_exist=true
     for domain in "$rancher_host" "$keycloak_host"; do
         if [[ ! -d "/etc/letsencrypt/live/${domain}" ]]; then
@@ -380,37 +403,116 @@ phase1_step7_certificates() {
         return 0
     fi
 
-    log_info "Requesting certificates from Let's Encrypt..."
-    log_info "Ensure port 80 is reachable from the internet for ACME challenge."
-
-    # Rancher cert
-    if [[ ! -d "/etc/letsencrypt/live/${rancher_host}" ]]; then
-        log_info "Requesting cert for ${rancher_host}..."
-        certbot certonly --standalone --non-interactive --agree-tos \
-            --email "$email" -d "$rancher_host" || {
-            log_error "Certificate generation failed for ${rancher_host}" \
-                      "Let's Encrypt ACME challenge failed" \
-                      "Ensure port 80 is open and DNS points to this machine's public IP" \
-                      "certbot certonly --standalone -d ${rancher_host} --dry-run" \
-                      "https://docs.openg2p.org/deployment/deployment-guide/ssl-certificates-using-letsencrypt"
-            return 1
-        }
+    # Stop nginx if running (needed for http challenge only, but safe either way)
+    if systemctl is-active --quiet nginx 2>/dev/null; then
+        log_info "Stopping Nginx temporarily for certificate generation..."
+        systemctl stop nginx
     fi
 
-    # Keycloak cert
-    if [[ ! -d "/etc/letsencrypt/live/${keycloak_host}" ]]; then
-        log_info "Requesting cert for ${keycloak_host}..."
-        certbot certonly --standalone --non-interactive --agree-tos \
-            --email "$email" -d "$keycloak_host" || {
-            log_error "Certificate generation failed for ${keycloak_host}" \
-                      "Let's Encrypt ACME challenge failed" \
-                      "Ensure port 80 is open and DNS points to this machine" \
-                      "certbot certonly --standalone -d ${keycloak_host} --dry-run"
-            return 1
-        }
-    fi
+    log_info "Requesting certificates from Let's Encrypt (challenge: ${challenge})..."
 
-    log_success "TLS certificates obtained. Stored in /etc/letsencrypt/live/"
+    # Request cert for each domain
+    for domain in "$rancher_host" "$keycloak_host"; do
+        if [[ -d "/etc/letsencrypt/live/${domain}" ]]; then
+            log_success "Certificate for ${domain} already exists — skipping."
+            continue
+        fi
+
+        log_info "Requesting certificate for ${domain}..."
+
+        case "$challenge" in
+            dns)
+                # Manual DNS-01: certbot pauses and tells the user what TXT record to create
+                log_info "Using manual DNS-01 challenge."
+                log_info "Certbot will ask you to create a TXT record at your DNS provider."
+                log_info "You will need to:"
+                log_info "  1. Log in to your DNS provider (Route53, Cloudflare, GoDaddy, etc.)"
+                log_info "  2. Create the TXT record that certbot displays"
+                log_info "  3. Wait a moment for DNS propagation"
+                log_info "  4. Press Enter to continue"
+                echo ""
+
+                certbot certonly \
+                    --manual \
+                    --preferred-challenges dns \
+                    --agree-tos \
+                    --email "$email" \
+                    -d "$domain" || {
+                    log_error "Certificate generation failed for ${domain}" \
+                              "DNS-01 challenge failed — the TXT record may not have propagated" \
+                              "Verify the TXT record exists: dig TXT _acme-challenge.${domain}" \
+                              "dig TXT _acme-challenge.${domain}" \
+                              "https://docs.openg2p.org/deployment/deployment-guide/ssl-certificates-using-letsencrypt"
+                    return 1
+                }
+                ;;
+
+            dns-cloudflare)
+                # Automated DNS-01 via Cloudflare plugin
+                certbot certonly \
+                    --dns-cloudflare \
+                    --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
+                    --dns-cloudflare-propagation-seconds 30 \
+                    --non-interactive \
+                    --agree-tos \
+                    --email "$email" \
+                    -d "$domain" || {
+                    log_error "Certificate generation failed for ${domain}" \
+                              "Cloudflare DNS-01 challenge failed" \
+                              "Check your Cloudflare API token and DNS zone permissions" \
+                              "cat /var/log/letsencrypt/letsencrypt.log | tail -30" \
+                              "https://certbot-dns-cloudflare.readthedocs.io/"
+                    return 1
+                }
+                ;;
+
+            dns-route53)
+                # Automated DNS-01 via Route53 plugin
+                certbot certonly \
+                    --dns-route53 \
+                    --dns-route53-propagation-seconds 30 \
+                    --non-interactive \
+                    --agree-tos \
+                    --email "$email" \
+                    -d "$domain" || {
+                    log_error "Certificate generation failed for ${domain}" \
+                              "Route53 DNS-01 challenge failed" \
+                              "Check your AWS credentials and Route53 hosted zone" \
+                              "aws sts get-caller-identity; aws route53 list-hosted-zones" \
+                              "https://certbot-dns-route53.readthedocs.io/"
+                    return 1
+                }
+                ;;
+
+            http)
+                # HTTP-01 challenge — requires port 80 open to internet
+                certbot certonly \
+                    --standalone \
+                    --non-interactive \
+                    --agree-tos \
+                    --email "$email" \
+                    -d "$domain" || {
+                    log_error "Certificate generation failed for ${domain}" \
+                              "HTTP-01 challenge failed — port 80 may not be reachable" \
+                              "Ensure port 80 is open to the internet and DNS points to this machine" \
+                              "certbot certonly --standalone -d ${domain} --dry-run" \
+                              "https://docs.openg2p.org/deployment/deployment-guide/ssl-certificates-using-letsencrypt"
+                    return 1
+                }
+                ;;
+
+            *)
+                log_error "Unknown certificate challenge method: '${challenge}'" \
+                          "Valid values: dns, dns-cloudflare, dns-route53, http" \
+                          "Set letsencrypt_challenge in your config file"
+                return 1
+                ;;
+        esac
+
+        log_success "Certificate obtained for ${domain}."
+    done
+
+    log_success "All TLS certificates obtained. Stored in /etc/letsencrypt/live/"
 
     mark_step_done "$step_id"
 }
@@ -453,7 +555,6 @@ phase1_step8_nginx() {
 
     rm -f /etc/nginx/sites-enabled/default
 
-    # Create the upstream and base HTTP redirect (shared)
     cat > /etc/nginx/sites-available/openg2p-infra.conf <<EOF
 upstream istio_ingress {
     server ${node_ip}:30080;
@@ -558,7 +659,6 @@ run_phase1() {
     phase1_step2_firewall
     phase1_step3_rke2
 
-    # From here on, kubectl must work
     ensure_kubeconfig
 
     phase1_step4_wireguard

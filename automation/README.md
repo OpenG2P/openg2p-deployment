@@ -13,7 +13,7 @@ Automated single-node deployment of the complete OpenG2P platform — from bare 
 
 Matches [Infrastructure Setup](https://docs.openg2p.org/deployment/deployment-instructions/infrastructure-setup) docs.
 
-**Phase 1 (bash on host):** tools, firewall, RKE2, Wireguard, NFS, Let's Encrypt certs, Nginx
+**Phase 1 (bash on host):** tools, firewall, RKE2, Wireguard, NFS, Let's Encrypt certs (DNS-01), Nginx
 
 **Phase 2 (Helmfile on K8s):** Istio, Rancher + ingress, Keycloak + ingress, Prometheus/Grafana, FluentD logging
 
@@ -33,7 +33,7 @@ Creates a Kubernetes namespace, adds environment-specific Istio gateway, TLS cer
 | **Access** | Root/sudo on the VM |
 | **DNS** | A records for Rancher and Keycloak hostnames pointing to the VM's IP |
 | **Internet** | Required for packages, Helm charts, Let's Encrypt |
-| **Port 80** | Must be reachable from the internet (ACME challenge) |
+| **DNS access** | Ability to create TXT records at your DNS provider (for Let's Encrypt DNS-01 challenge) |
 
 ## Quick Start — Infrastructure
 
@@ -49,6 +49,21 @@ sudo ./openg2p-infra.sh --config infra-config.yaml
 ```
 
 Takes ~15-25 minutes. Idempotent — re-run on failure.
+
+## TLS Certificate Methods
+
+The script uses **DNS-01 challenge by default** — it pauses and tells you exactly what TXT record to create at your DNS provider. This works even when port 80 is blocked, which is common in government/restricted environments.
+
+Set `letsencrypt_challenge` in your config to choose a method:
+
+| Method | Config value | How it works |
+|---|---|---|
+| **Manual DNS** (default) | `dns` | Script pauses, shows TXT record to create, waits for you to confirm |
+| **Cloudflare automated** | `dns-cloudflare` | Fully automated via Cloudflare API token — no manual steps |
+| **Route53 automated** | `dns-route53` | Fully automated via AWS credentials — no manual steps |
+| **HTTP challenge** | `http` | Requires port 80 open to internet — simplest but least portable |
+
+For Cloudflare automation, also set `cloudflare_api_token` in your config. The token needs "Zone:DNS:Edit" permission.
 
 ## Command Options
 
@@ -91,6 +106,9 @@ automation/
 
 **Script failed — what do I do?**
 Re-run it. Completed steps are skipped. Error messages include diagnostic commands.
+
+**DNS-01 challenge failed?**
+Verify the TXT record was created: `dig TXT _acme-challenge.<your-domain>`. DNS propagation can take a few minutes. Some DNS providers have a delay before records are queryable.
 
 **Check cluster status:**
 ```bash
