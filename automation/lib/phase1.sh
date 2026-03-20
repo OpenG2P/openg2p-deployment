@@ -232,6 +232,14 @@ phase1_step2_firewall() {
         log_info "  ICMP      Ping"
     fi
 
+    # ── Wireguard VPN peers (trusted, allow all) ──────────────────────
+    # VPN peers are authenticated via Wireguard keys — allow them full
+    # access to services on this node (DNS, HTTPS, K8s API, etc.)
+    local wg_subnet_cidr
+    wg_subnet_cidr=$(cfg "wireguard.subnet" "10.15.0.0/16")
+    log_info "Allowing all traffic from Wireguard peers (${wg_subnet_cidr})..."
+    ufw_allow "Wireguard subnet (all)" from "$wg_subnet_cidr"  || return 1
+
     # Enable ufw (non-interactive)
     log_info "Enabling ufw..."
     ufw --force enable > /dev/null
@@ -697,6 +705,18 @@ EOF
             cat /etc/resolv.conf >> /tmp/resolv.conf 2>/dev/null
             mv /tmp/resolv.conf /etc/resolv.conf
         }
+    fi
+
+    # Ensure the VM's own hostname resolves locally. dnsmasq is configured
+    # with no-hosts (skip /etc/hosts), and on cloud VMs the hostname
+    # (e.g. ip-172-29-9-21) is normally resolved via cloud DNS. With dnsmasq
+    # as primary resolver, hostname lookups fail — causing "sudo: unable to
+    # resolve host" warnings on every sudo command.
+    local vm_hostname
+    vm_hostname=$(hostname 2>/dev/null || true)
+    if [[ -n "$vm_hostname" ]] && ! grep -q "$vm_hostname" /etc/hosts 2>/dev/null; then
+        log_info "Adding hostname '${vm_hostname}' to /etc/hosts..."
+        echo "127.0.0.1 ${vm_hostname}" >> /etc/hosts
     fi
 
     log_success "dnsmasq configured. All *.${local_domain} resolves to ${node_ip}."
