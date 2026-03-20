@@ -683,6 +683,149 @@ CRTBEOF2
         log_success "Rancher access mode and cluster owner configured."
     fi
 
+    # ── Step 3.11: Create custom project RoleTemplates ────────────────────
+    # Rancher's built-in project roles (project-member, read-only) both include
+    # full secrets access. We create two additional roles that exclude secrets,
+    # which are essential for multi-tenant environments where not every user
+    # should see database passwords, API keys, etc.
+    log_info "Creating custom project RoleTemplates..."
+
+    # Role: Project Member (No Secrets)
+    # Full CRUD on workloads, networking, config — but zero access to secrets.
+    if kubectl get roletemplates.management.cattle.io project-member-no-secrets &>/dev/null; then
+        log_info "RoleTemplate 'project-member-no-secrets' already exists — skipping."
+    else
+        log_info "Creating RoleTemplate 'project-member-no-secrets'..."
+        kubectl create -f - <<'RTEOF'
+apiVersion: management.cattle.io/v3
+kind: RoleTemplate
+metadata:
+  name: project-member-no-secrets
+  labels:
+    cattle.io/creator: openg2p-automation
+displayName: "Project Member (No Secrets)"
+context: project
+builtin: false
+rules:
+  # Workloads: full CRUD
+  - apiGroups: ["", "apps", "batch"]
+    resources:
+      - pods
+      - pods/log
+      - pods/portforward
+      - pods/exec
+      - replicationcontrollers
+      - deployments
+      - daemonsets
+      - statefulsets
+      - replicasets
+      - jobs
+      - cronjobs
+    verbs: ["*"]
+  # Networking: full CRUD
+  - apiGroups: ["", "networking.k8s.io"]
+    resources:
+      - services
+      - endpoints
+      - ingresses
+      - networkpolicies
+    verbs: ["*"]
+  # Config (no secrets): full CRUD
+  - apiGroups: [""]
+    resources:
+      - configmaps
+      - serviceaccounts
+      - persistentvolumeclaims
+    verbs: ["*"]
+  # Events, quotas, namespaces: read-only
+  - apiGroups: [""]
+    resources:
+      - events
+      - resourcequotas
+      - limitranges
+      - namespaces
+    verbs: ["get", "list", "watch"]
+  # Autoscaling
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["*"]
+  # Policy
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["*"]
+RTEOF
+        if [[ $? -eq 0 ]]; then
+            log_success "RoleTemplate 'project-member-no-secrets' created."
+        else
+            log_warn "Failed to create RoleTemplate 'project-member-no-secrets'."
+        fi
+    fi
+
+    # Role: Project Read-Only (No Secrets)
+    # Read-only on all resources except secrets. Cannot create, update, or delete anything.
+    if kubectl get roletemplates.management.cattle.io project-readonly-no-secrets &>/dev/null; then
+        log_info "RoleTemplate 'project-readonly-no-secrets' already exists — skipping."
+    else
+        log_info "Creating RoleTemplate 'project-readonly-no-secrets'..."
+        kubectl create -f - <<'RTEOF'
+apiVersion: management.cattle.io/v3
+kind: RoleTemplate
+metadata:
+  name: project-readonly-no-secrets
+  labels:
+    cattle.io/creator: openg2p-automation
+displayName: "Project Read-Only (No Secrets)"
+context: project
+builtin: false
+rules:
+  # Workloads: read-only
+  - apiGroups: ["", "apps", "batch"]
+    resources:
+      - pods
+      - pods/log
+      - replicationcontrollers
+      - deployments
+      - daemonsets
+      - statefulsets
+      - replicasets
+      - jobs
+      - cronjobs
+    verbs: ["get", "list", "watch"]
+  # Networking: read-only
+  - apiGroups: ["", "networking.k8s.io"]
+    resources:
+      - services
+      - endpoints
+      - ingresses
+      - networkpolicies
+    verbs: ["get", "list", "watch"]
+  # Config (no secrets): read-only
+  - apiGroups: [""]
+    resources:
+      - configmaps
+      - serviceaccounts
+      - persistentvolumeclaims
+      - events
+      - resourcequotas
+      - limitranges
+      - namespaces
+    verbs: ["get", "list", "watch"]
+  # Autoscaling: read-only
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+  # Policy: read-only
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch"]
+RTEOF
+        if [[ $? -eq 0 ]]; then
+            log_success "RoleTemplate 'project-readonly-no-secrets' created."
+        else
+            log_warn "Failed to create RoleTemplate 'project-readonly-no-secrets'."
+        fi
+    fi
+
     # ── Done ─────────────────────────────────────────────────────────────
     log_success "Rancher-Keycloak SAML integration complete."
     log_info ""

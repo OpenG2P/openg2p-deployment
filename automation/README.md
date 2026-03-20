@@ -218,7 +218,28 @@ To override the Rancher admin password on re-runs:
 sudo RANCHER_ADMIN_PASSWORD=mypassword ./openg2p-infra.sh --config infra-config.yaml --phase 3
 ```
 
-### Step 6: Next
+### Step 6: User Access & Roles
+
+The script creates four project-level roles for assigning users to environments (Rancher Projects):
+
+| Role | Secrets Access | Permissions |
+|---|---|---|
+| **Project Owner** (built-in) | Full | Full control of the project and all its namespaces |
+| **Project Member** (built-in) | Full | Create/edit/delete workloads, services, configs, secrets |
+| **Project Member (No Secrets)** | None | Same as Project Member, but cannot view or manage secrets |
+| **Project Read-Only (No Secrets)** | None | View-only access to workloads, services, configs — no secrets |
+
+**To give a user access to an environment:**
+
+1. Create the user in **Keycloak** (Admin Console → Users → Add user). Use their email as the username.
+2. In **Rancher**, go to the Project (environment) → Members → Add Member.
+3. Search for the user by email and assign one of the roles above.
+
+The user can then log in to Rancher via "Login with Keycloak" using their email address.
+
+> **Note:** The Rancher `admin` global role (super admin) has access to everything. The initial admin user configured during setup already has this role.
+
+### Step 7: Next
 
 Run `openg2p-environment.sh` to create an OpenG2P environment (coming soon).
 
