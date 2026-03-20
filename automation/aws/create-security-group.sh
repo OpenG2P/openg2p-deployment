@@ -25,7 +25,7 @@ set -euo pipefail
 # Defaults
 # ---------------------------------------------------------------------------
 SG_NAME="openg2p-single-node"
-SG_DESCRIPTION="OpenG2P single-node K8s cluster — SSH, HTTPS, Wireguard, RKE2, etcd, CNI, NodePorts"
+SG_DESCRIPTION="OpenG2P single-node K8s cluster - SSH, HTTPS, Wireguard, RKE2, etcd, CNI, NodePorts"
 VPC_ID=""
 VPC_CIDR=""
 REGION=""
