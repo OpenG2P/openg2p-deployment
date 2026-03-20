@@ -168,12 +168,64 @@ phase1_step2_firewall() {
     local step_id="phase1.firewall"
     skip_if_done "$step_id" "Firewall setup" && return 0
 
-    log_step "1.2" "Configuring firewall"
+    log_step "1.2" "Configuring firewall (ufw)"
 
-    if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
-        log_info "Disabling ufw (RKE2 manages its own iptables rules)..."
-        ufw disable
-    fi
+    local node_ip=$(cfg "node_ip")
+    local wg_port=$(cfg "wireguard.port" "51820")
+    local domain_mode=$(cfg "domain_mode" "custom")
+
+    # Install ufw if not present
+    install_if_missing "ufw" \
+        "command -v ufw" \
+        "apt-get install -y -qq ufw > /dev/null 2>&1"
+
+    # Reset ufw to clean state (non-interactive)
+    log_info "Resetting ufw to clean state..."
+    ufw --force reset > /dev/null 2>&1
+
+    # Default policy: deny inbound, allow outbound
+    ufw default deny incoming > /dev/null 2>&1
+    ufw default allow outgoing > /dev/null 2>&1
+
+    # ── Public access (from anywhere) ────────────────────────────────────
+    log_info "Allowing public ports..."
+    ufw allow 22/tcp comment 'SSH'                    > /dev/null 2>&1
+    ufw allow 443/tcp comment 'HTTPS (Nginx)'         > /dev/null 2>&1
+    ufw allow 80/tcp comment 'HTTP (redirect/LE)'     > /dev/null 2>&1
+    ufw allow "${wg_port}/udp" comment 'Wireguard VPN' > /dev/null 2>&1
+
+    # ── Inter-node / VPC (for multi-node scaling) ────────────────────────
+    # These ports only need to be reachable from other cluster nodes.
+    # We allow from the node's /16 subnet as a reasonable VPC-level scope.
+    # On a single-node setup these are accessed locally; the rules are
+    # pre-configured so that adding worker nodes later "just works."
+    local vpc_cidr
+    vpc_cidr=$(echo "$node_ip" | awk -F. '{printf "%s.%s.0.0/16", $1, $2}')
+    log_info "Allowing inter-node ports from ${vpc_cidr}..."
+
+    # K8s API server
+    ufw allow from "$vpc_cidr" to any port 6443 proto tcp comment 'K8s API'          > /dev/null 2>&1
+    # RKE2 supervisor (agent node registration)
+    ufw allow from "$vpc_cidr" to any port 9345 proto tcp comment 'RKE2 supervisor'  > /dev/null 2>&1
+    # Kubelet API
+    ufw allow from "$vpc_cidr" to any port 10250 proto tcp comment 'Kubelet'         > /dev/null 2>&1
+    # etcd (client + peer)
+    ufw allow from "$vpc_cidr" to any port 2379 proto tcp comment 'etcd client'      > /dev/null 2>&1
+    ufw allow from "$vpc_cidr" to any port 2380 proto tcp comment 'etcd peer'        > /dev/null 2>&1
+    # VXLAN — Canal/Flannel CNI pod networking
+    ufw allow from "$vpc_cidr" to any port 8472 proto udp comment 'VXLAN (CNI)'      > /dev/null 2>&1
+    # Node metrics (Prometheus scrape target)
+    ufw allow from "$vpc_cidr" to any port 9796 proto tcp comment 'Node metrics'     > /dev/null 2>&1
+    # NodePort range — Istio ingress uses 30080, 30521, 30432 within this range
+    ufw allow from "$vpc_cidr" to any port 30000:32767 proto tcp comment 'NodePort range' > /dev/null 2>&1
+    # NFS — internal only (localhost + VPC for multi-node)
+    ufw allow from "$vpc_cidr" to any port 2049 proto tcp comment 'NFS'              > /dev/null 2>&1
+    # ICMP (ping) for diagnostics
+    ufw allow from "$vpc_cidr" proto icmp comment 'ICMP ping'                        > /dev/null 2>&1
+
+    # Enable ufw (non-interactive)
+    log_info "Enabling ufw..."
+    ufw --force enable > /dev/null 2>&1
 
     # Increase inotify limits — RKE2/K8s exhausts the defaults, causing
     # "Too many open files" errors for apt, systemd, and other tools
@@ -187,10 +239,10 @@ phase1_step2_firewall() {
         echo "fs.inotify.max_user_instances=1024" >> /etc/sysctl.conf
     fi
 
-    log_info "Firewall: ufw disabled. Ensure your external firewall allows ports:"
-    log_info "  TCP: 6443, 9345, 10250, 30080, 30443, 443"
-    log_info "  UDP: $(cfg 'wireguard.port' '51820')"
-    log_info "  TCP: 2049 (NFS — internal only)"
+    log_success "Firewall configured. Rules:"
+    ufw status numbered 2>/dev/null | while IFS= read -r line; do
+        log_info "  $line"
+    done
 
     mark_step_done "$step_id"
 }
