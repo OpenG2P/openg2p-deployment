@@ -602,62 +602,62 @@ JSONEOF
 
         log_success "Access mode set to 'unrestricted'."
 
-        # Add Keycloak admin as Owner on the local cluster via ClusterRoleTemplateBinding
+        # Add Keycloak admin as Owner on the local cluster via ClusterRoleTemplateBinding.
+        # The Rancher v3 API rejects CRTB creation for external auth users who haven't
+        # logged in yet ("users.management.cattle.io not found"). So we create the CRTB
+        # directly via kubectl on the CRD — the Rancher controller will reconcile it,
+        # and when the user logs in via SAML for the first time, they'll match the binding.
+        # NOTE: Rancher CRTBs use top-level fields (not under spec:).
         local keycloak_principal="keycloak_user://${admin_email}"
+        local crtb_name="crtb-keycloak-admin"
 
-        # Check if binding already exists
+        # Check if binding already exists (by name or by principal)
         local existing_crtb
-        existing_crtb=$(rancher_api GET "${rancher_url}/v3/clusterRoleTemplateBindings?clusterId=local" "$rancher_token" | \
-            jq -r --arg pid "$keycloak_principal" '.data[] | select(.userPrincipalId == $pid) | .id' 2>/dev/null | head -1)
+        existing_crtb=$(kubectl -n local get clusterroletemplatebinding "${crtb_name}" 2>/dev/null && echo "exists" || echo "")
+        if [[ -z "$existing_crtb" ]]; then
+            existing_crtb=$(kubectl -n local get clusterroletemplatebinding -o json 2>/dev/null | \
+                jq -r --arg pid "$keycloak_principal" '.items[] | select(.userPrincipalName == $pid) | .metadata.name' 2>/dev/null | head -1)
+        fi
 
         if [[ -n "$existing_crtb" ]]; then
-            log_info "Keycloak admin already has a role on local cluster — skipping."
+            log_info "Keycloak admin already has a CRTB on local cluster — skipping."
         else
-            log_info "Adding ${admin_email} as Owner on local cluster..."
-            local crtb_response
-            crtb_response=$(rancher_api POST "${rancher_url}/v3/clusterRoleTemplateBindings" "$rancher_token" \
-                "{\"clusterId\":\"local\",\"roleTemplateId\":\"cluster-owner\",\"userPrincipalId\":\"${keycloak_principal}\"}")
-            local crtb_id crtb_error
-            crtb_id=$(echo "$crtb_response" | jq -r '.id // empty' 2>/dev/null)
-            crtb_error=$(echo "$crtb_response" | jq -r '.message // .code // empty' 2>/dev/null)
-            if [[ -n "$crtb_id" ]]; then
-                log_success "Keycloak admin added as Owner on local cluster (CRTB: ${crtb_id})."
-            elif [[ -n "$crtb_error" ]]; then
-                log_warn "Could not add cluster owner binding: ${crtb_error}"
-                log_warn "Full response: $(echo "$crtb_response" | jq -c '.' 2>/dev/null)"
-                log_warn "Trying via kubectl as fallback..."
-                # Create CRTB directly via kubectl as fallback
-                kubectl apply -f - > /dev/null 2>&1 <<CRTBEOF
+            log_info "Adding ${admin_email} as Owner on local cluster via kubectl..."
+            kubectl create -f - <<CRTBEOF
 apiVersion: management.cattle.io/v3
 kind: ClusterRoleTemplateBinding
 metadata:
-  generateName: crtb-keycloak-admin-
+  name: ${crtb_name}
   namespace: local
-spec:
-  clusterName: local
-  roleTemplateName: cluster-owner
-  userPrincipalName: ${keycloak_principal}
+clusterName: local
+roleTemplateName: cluster-owner
+userPrincipalName: ${keycloak_principal}
 CRTBEOF
-                if [[ $? -eq 0 ]]; then
-                    log_success "Keycloak admin added as Owner via kubectl."
-                else
-                    log_warn "kubectl CRTB fallback also failed."
-                    log_warn "You may need to add the user manually in Rancher UI:"
-                    log_warn "  Cluster > local > Cluster Members > Add > ${admin_email} > Owner"
-                fi
+            if [[ $? -eq 0 ]]; then
+                log_success "Keycloak admin added as Owner on local cluster."
             else
-                log_warn "CRTB creation returned unexpected response: $(echo "$crtb_response" | jq -c '.' 2>/dev/null)"
+                log_warn "Failed to create CRTB for Keycloak admin."
+                log_warn "You may need to add the user manually in Rancher UI:"
+                log_warn "  Cluster > local > Cluster Members > Add > ${admin_email} > Owner"
             fi
         fi
 
         # Also ensure the Rancher local admin user retains cluster owner access
         if [[ -n "$local_admin_principal" ]]; then
-            existing_crtb=$(rancher_api GET "${rancher_url}/v3/clusterRoleTemplateBindings?clusterId=local" "$rancher_token" | \
-                jq -r --arg pid "$local_admin_principal" '.data[] | select(.userPrincipalId == $pid) | .id' 2>/dev/null | head -1)
-            if [[ -z "$existing_crtb" ]]; then
-                rancher_api POST "${rancher_url}/v3/clusterRoleTemplateBindings" "$rancher_token" \
-                    "{\"clusterId\":\"local\",\"roleTemplateId\":\"cluster-owner\",\"userPrincipalId\":\"${local_admin_principal}\"}" \
-                    > /dev/null 2>&1
+            local local_crtb_exists
+            local_crtb_exists=$(kubectl -n local get clusterroletemplatebinding -o json 2>/dev/null | \
+                jq -r --arg pid "$local_admin_principal" '.items[] | select(.userPrincipalName == $pid) | .metadata.name' 2>/dev/null | head -1)
+            if [[ -z "$local_crtb_exists" ]]; then
+                kubectl create -f - > /dev/null 2>&1 <<CRTBEOF2
+apiVersion: management.cattle.io/v3
+kind: ClusterRoleTemplateBinding
+metadata:
+  name: crtb-local-admin
+  namespace: local
+clusterName: local
+roleTemplateName: cluster-owner
+userPrincipalName: ${local_admin_principal}
+CRTBEOF2
             fi
         fi
 
