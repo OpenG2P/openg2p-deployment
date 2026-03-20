@@ -179,20 +179,33 @@ phase1_step2_firewall() {
         "command -v ufw" \
         "apt-get install -y -qq ufw > /dev/null 2>&1"
 
+    # Helper: add ufw rule, log it, fail clearly if it errors
+    ufw_allow() {
+        local desc="$1"; shift
+        if ! ufw allow "$@" > /dev/null; then
+            log_error "ufw rule failed: ${desc}" \
+                      "Command: ufw allow $*" \
+                      "Check ufw version and syntax" \
+                      "ufw --version"
+            return 1
+        fi
+        log_info "  ${desc}"
+    }
+
     # Reset ufw to clean state (non-interactive)
     log_info "Resetting ufw to clean state..."
     ufw --force reset > /dev/null 2>&1
 
     # Default policy: deny inbound, allow outbound
-    ufw default deny incoming > /dev/null 2>&1
-    ufw default allow outgoing > /dev/null 2>&1
+    ufw default deny incoming > /dev/null
+    ufw default allow outgoing > /dev/null
 
     # ── Public access (from anywhere) ────────────────────────────────────
     log_info "Allowing public ports..."
-    ufw allow 22/tcp comment 'SSH'                    > /dev/null 2>&1
-    ufw allow 443/tcp comment 'HTTPS (Nginx)'         > /dev/null 2>&1
-    ufw allow 80/tcp comment 'HTTP (redirect/LE)'     > /dev/null 2>&1
-    ufw allow "${wg_port}/udp" comment 'Wireguard VPN' > /dev/null 2>&1
+    ufw_allow "TCP 22    SSH"              22/tcp                         || return 1
+    ufw_allow "TCP 443   HTTPS (Nginx)"    443/tcp                        || return 1
+    ufw_allow "TCP 80    HTTP (redirect)"  80/tcp                         || return 1
+    ufw_allow "UDP ${wg_port}  Wireguard"  "${wg_port}/udp"               || return 1
 
     # ── Inter-node / VPC (for multi-node scaling) ────────────────────────
     # These ports only need to be reachable from other cluster nodes.
@@ -203,29 +216,25 @@ phase1_step2_firewall() {
     vpc_cidr=$(echo "$node_ip" | awk -F. '{printf "%s.%s.0.0/16", $1, $2}')
     log_info "Allowing inter-node ports from ${vpc_cidr}..."
 
-    # K8s API server
-    ufw allow from "$vpc_cidr" to any port 6443 proto tcp comment 'K8s API'          > /dev/null 2>&1
-    # RKE2 supervisor (agent node registration)
-    ufw allow from "$vpc_cidr" to any port 9345 proto tcp comment 'RKE2 supervisor'  > /dev/null 2>&1
-    # Kubelet API
-    ufw allow from "$vpc_cidr" to any port 10250 proto tcp comment 'Kubelet'         > /dev/null 2>&1
-    # etcd (client + peer)
-    ufw allow from "$vpc_cidr" to any port 2379 proto tcp comment 'etcd client'      > /dev/null 2>&1
-    ufw allow from "$vpc_cidr" to any port 2380 proto tcp comment 'etcd peer'        > /dev/null 2>&1
-    # VXLAN — Canal/Flannel CNI pod networking
-    ufw allow from "$vpc_cidr" to any port 8472 proto udp comment 'VXLAN (CNI)'      > /dev/null 2>&1
-    # Node metrics (Prometheus scrape target)
-    ufw allow from "$vpc_cidr" to any port 9796 proto tcp comment 'Node metrics'     > /dev/null 2>&1
-    # NodePort range — Istio ingress uses 30080, 30521, 30432 within this range
-    ufw allow from "$vpc_cidr" to any port 30000:32767 proto tcp comment 'NodePort range' > /dev/null 2>&1
-    # NFS — internal only (localhost + VPC for multi-node)
-    ufw allow from "$vpc_cidr" to any port 2049 proto tcp comment 'NFS'              > /dev/null 2>&1
-    # ICMP (ping) for diagnostics
-    ufw allow from "$vpc_cidr" proto icmp comment 'ICMP ping'                        > /dev/null 2>&1
+    ufw_allow "TCP 6443  K8s API"          from "$vpc_cidr" to any port 6443 proto tcp          || return 1
+    ufw_allow "TCP 9345  RKE2 supervisor"  from "$vpc_cidr" to any port 9345 proto tcp          || return 1
+    ufw_allow "TCP 10250 Kubelet"          from "$vpc_cidr" to any port 10250 proto tcp         || return 1
+    ufw_allow "TCP 2379  etcd client"      from "$vpc_cidr" to any port 2379 proto tcp          || return 1
+    ufw_allow "TCP 2380  etcd peer"        from "$vpc_cidr" to any port 2380 proto tcp          || return 1
+    ufw_allow "UDP 8472  VXLAN (CNI)"      from "$vpc_cidr" to any port 8472 proto udp          || return 1
+    ufw_allow "TCP 9796  Node metrics"     from "$vpc_cidr" to any port 9796 proto tcp          || return 1
+    ufw_allow "TCP 30000-32767 NodePorts"  from "$vpc_cidr" to any port 30000:32767 proto tcp   || return 1
+    ufw_allow "TCP 2049  NFS"              from "$vpc_cidr" to any port 2049 proto tcp          || return 1
+    # ICMP doesn't use ports — different syntax
+    if ! ufw allow from "$vpc_cidr" proto icmp > /dev/null; then
+        log_warn "Could not add ICMP rule (non-critical, continuing)."
+    else
+        log_info "  ICMP      Ping"
+    fi
 
     # Enable ufw (non-interactive)
     log_info "Enabling ufw..."
-    ufw --force enable > /dev/null 2>&1
+    ufw --force enable > /dev/null
 
     # Increase inotify limits — RKE2/K8s exhausts the defaults, causing
     # "Too many open files" errors for apt, systemd, and other tools
