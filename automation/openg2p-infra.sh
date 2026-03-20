@@ -92,6 +92,7 @@ EOF
 show_summary() {
     local domain_mode=$(cfg "domain_mode" "custom")
     local node_ip=$(cfg "node_ip")
+    local cluster_display_name=$(cfg "cluster_name" "openg2p")
     local rancher_host=$(get_rancher_hostname)
     local keycloak_host=$(get_keycloak_hostname)
     local local_domain=$(cfg "local_domain" "openg2p.test")
@@ -104,6 +105,7 @@ show_summary() {
     echo -e "${GREEN}║                                                              ║${NC}"
     echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${GREEN}║${NC}  Domain mode: ${BOLD}${domain_mode}${NC}"
+    echo -e "${GREEN}║${NC}  Cluster:     ${BOLD}${cluster_display_name}${NC}"
     echo -e "${GREEN}║${NC}  Rancher:     ${BOLD}https://${rancher_host}${NC}"
     echo -e "${GREEN}║${NC}  Keycloak:    ${BOLD}https://${keycloak_host}${NC}"
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
@@ -217,7 +219,8 @@ main() {
 
     log_info "Deployment log: ${LOG_FILE}"
     log_info "Config file:    ${CONFIG_FILE}"
-    log_info "Node:           $(cfg 'node_name') @ $(cfg 'node_ip')"
+    log_info "Cluster:        $(cfg 'cluster_name' 'openg2p')"
+    log_info "Node:           $(cfg 'node_name' 'node1') @ $(cfg 'node_ip')"
     log_info "Rancher:        ${rancher_host}"
     log_info "Keycloak:       ${keycloak_host}"
     echo ""

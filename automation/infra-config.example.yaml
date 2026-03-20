@@ -9,14 +9,17 @@
 # =============================================================================
 
 # ---------------------------------------------------------------------------
-# Node configuration
+# Node and cluster configuration
 # ---------------------------------------------------------------------------
 # Internal/private IP address of this VM (used for NFS, Nginx, K8s)
 node_ip: ""
 
-# A short name for this node (used in K8s node labels and NFS paths)
-# Example: openg2p-dev
-node_name: "openg2p"
+# A short name for this K8s node (used in RKE2 node-name, visible in kubectl get nodes)
+node_name: "node1"
+
+# Display name for the Rancher cluster (shown in the Rancher UI).
+# Also used as the NFS export path prefix (/srv/nfs/<cluster_name>).
+cluster_name: "openg2p"
 
 # ---------------------------------------------------------------------------
 # Domain mode

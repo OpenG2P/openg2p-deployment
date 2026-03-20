@@ -268,6 +268,25 @@ run_phase3() {
 
     log_success "Rancher admin ready. Password saved to cattle-system/rancher-secret."
 
+    # ── Step 3.2b: Set Rancher cluster display name ──────────────────────
+    local cluster_display_name=$(cfg "cluster_name" "openg2p")
+    if [[ "$cluster_display_name" != "local" ]]; then
+        log_info "Setting Rancher cluster display name to '${cluster_display_name}'..."
+        local rename_response
+        rename_response=$(rancher_api PUT "${rancher_url}/v3/clusters/local" "$rancher_token" \
+            "{\"name\":\"${cluster_display_name}\"}")
+        local rename_error
+        rename_error=$(echo "$rename_response" | jq -r '.message // empty' 2>/dev/null)
+        if [[ -n "$rename_error" ]]; then
+            log_warn "API rename failed (${rename_error}), trying kubectl patch..."
+            kubectl patch clusters.management.cattle.io local --type=merge \
+                -p "{\"spec\":{\"displayName\":\"${cluster_display_name}\"}}" > /dev/null 2>&1 || \
+                log_warn "Could not rename cluster. You can rename it manually in Rancher UI."
+        else
+            log_success "Rancher cluster display name set to '${cluster_display_name}'."
+        fi
+    fi
+
     # ── Step 3.3: Get Keycloak admin password ────────────────────────────
     log_info "Retrieving Keycloak admin credentials..."
 

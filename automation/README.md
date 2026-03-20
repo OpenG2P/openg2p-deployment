@@ -64,11 +64,12 @@ sudo chmod +x openg2p-infra.sh
 sudo ./openg2p-infra.sh --config infra-config.yaml
 ```
 
-**Local mode minimal config** — only 4 fields needed:
+**Local mode minimal config** — only `node_ip` is required (everything else has defaults):
 ```yaml
 node_ip: "172.16.0.10"       # Your VM's private IP
-node_name: "openg2p"
 domain_mode: "local"
+cluster_name: "openg2p"      # Display name in Rancher UI (default: openg2p)
+node_name: "node1"           # K8s node name (default: node1)
 keycloak:
   admin_email: "admin@example.com"  # For Rancher-Keycloak SSO
 ```

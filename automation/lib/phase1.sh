@@ -205,7 +205,7 @@ phase1_step3_rke2() {
     log_step "1.3" "Installing RKE2 Kubernetes cluster"
 
     local rke2_version=$(cfg "rke2_version" "v1.33.6+rke2r1")
-    local node_name=$(cfg "node_name")
+    local node_name=$(cfg "node_name" "node1")
     local node_ip=$(cfg "node_ip")
     local rke2_token=$(cfg "rke2_token" "openg2p-$(openssl rand -hex 16)")
 
@@ -479,7 +479,7 @@ phase1_step5_nfs_server() {
 
     log_step "1.5" "Installing NFS server"
 
-    local cluster_name=$(cfg "node_name" "openg2p")
+    local cluster_name=$(cfg "cluster_name" "openg2p")
     local nfs_path="/srv/nfs/${cluster_name}"
     local nfs_script="${REPO_ROOT}/nfs-server/install-nfs-server.sh"
 
@@ -524,7 +524,7 @@ phase1_step6_nfs_csi() {
     log_step "1.6" "Installing NFS CSI driver on Kubernetes"
 
     local node_ip=$(cfg "node_ip")
-    local cluster_name=$(cfg "node_name" "openg2p")
+    local cluster_name=$(cfg "cluster_name" "openg2p")
     local nfs_path="/srv/nfs/${cluster_name}"
     local csi_script="${REPO_ROOT}/kubernetes/nfs-client/install-nfs-csi-driver.sh"
 
