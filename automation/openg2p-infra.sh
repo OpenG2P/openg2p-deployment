@@ -271,4 +271,10 @@ main() {
     fi
 }
 
-main "$@" 2>&1 | tee -a "$LOG_FILE"
+# Redirect all output to both console and log file.
+# We use exec + process substitution instead of piping (main | tee) because
+# piping runs main in a subshell where set -e is disabled for pipeline
+# commands, which could mask failures and let the script continue silently.
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+main "$@"

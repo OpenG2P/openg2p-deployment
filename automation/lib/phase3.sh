@@ -45,7 +45,7 @@ keycloak_get_token() {
             -d "password=${kc_password}" \
             -d "grant_type=password" \
             -d "client_id=admin-cli" 2>/dev/null)
-        token=$(echo "$token_response" | jq -r '.access_token // empty')
+        token=$(echo "$token_response" | jq -r '.access_token // empty' 2>/dev/null || true)
         if [[ -n "$token" ]]; then
             echo "$token"
             return 0
@@ -107,7 +107,7 @@ rancher_try_login() {
     response=$(curl -sk -X POST "${url}/v3-public/localProviders/local?action=login" \
         -H "Content-Type: application/json" \
         -d "{\"username\":\"admin\",\"password\":\"${password}\"}" 2>/dev/null)
-    echo "$response" | jq -r '.token // empty'
+    echo "$response" | jq -r '.token // empty' 2>/dev/null || true
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -179,7 +179,7 @@ run_phase3() {
     if [[ -z "$rancher_token" ]]; then
         local secret_password
         secret_password=$(kubectl -n cattle-system get secret rancher-secret \
-            -o jsonpath='{.data.adminPassword}' 2>/dev/null | base64 -d 2>/dev/null)
+            -o jsonpath='{.data.adminPassword}' 2>/dev/null | base64 -d 2>/dev/null || true)
         if [[ -n "$secret_password" ]]; then
             log_info "Trying password from K8s secret cattle-system/rancher-secret..."
             rancher_token=$(rancher_try_login "$rancher_url" "$secret_password")
@@ -197,13 +197,13 @@ run_phase3() {
         log_info "Trying bootstrap password (fresh install)..."
         local bootstrap_password
         bootstrap_password=$(kubectl -n cattle-system get secret bootstrap-secret \
-            -o jsonpath='{.data.bootstrapPassword}' 2>/dev/null | base64 -d 2>/dev/null)
+            -o jsonpath='{.data.bootstrapPassword}' 2>/dev/null | base64 -d 2>/dev/null || true)
 
         if [[ -z "$bootstrap_password" ]]; then
             bootstrap_password=$(kubectl -n cattle-system get pods -l app=rancher \
                 -o jsonpath='{.items[0].metadata.name}' 2>/dev/null | \
                 xargs -I{} kubectl -n cattle-system logs {} 2>/dev/null | \
-                grep "Bootstrap Password:" | head -1 | awk '{print $NF}')
+                grep "Bootstrap Password:" | head -1 | awk '{print $NF}' || true)
         fi
 
         if [[ -n "$bootstrap_password" ]]; then
@@ -228,7 +228,7 @@ run_phase3() {
     if [[ -z "$rancher_token" ]]; then
         log_warn "All passwords failed. Force-resetting via kubectl exec..."
         local reset_output
-        reset_output=$(kubectl -n cattle-system exec deploy/rancher -- reset-password 2>/dev/null)
+        reset_output=$(kubectl -n cattle-system exec deploy/rancher -- reset-password 2>/dev/null || true)
         local reset_password
         reset_password=$(echo "$reset_output" | tail -1 | tr -d '[:space:]')
 
@@ -292,7 +292,7 @@ run_phase3() {
 
     local kc_admin_password
     kc_admin_password=$(kubectl -n keycloak-system get secret keycloak \
-        -o jsonpath='{.data.admin-password}' 2>/dev/null | base64 -d 2>/dev/null)
+        -o jsonpath='{.data.admin-password}' 2>/dev/null | base64 -d 2>/dev/null || true)
 
     if [[ -z "$kc_admin_password" ]]; then
         log_error "Could not retrieve Keycloak admin password" \
@@ -363,7 +363,7 @@ run_phase3() {
 
     local all_clients existing_client_id
     all_clients=$(keycloak_api GET "${keycloak_url}/admin/realms/master/clients?max=200" "$kc_token")
-    existing_client_id=$(echo "$all_clients" | jq -r --arg cid "$saml_client_id" '.[] | select(.clientId == $cid) | .id' 2>/dev/null | head -1)
+    existing_client_id=$(echo "$all_clients" | jq -r --arg cid "$saml_client_id" '.[] | select(.clientId == $cid) | .id' 2>/dev/null | head -1 || true)
 
     if [[ -n "$existing_client_id" ]]; then
         log_info "SAML client already exists on Keycloak — updating."
@@ -412,7 +412,7 @@ JSONEOF
     kc_token=$(keycloak_get_token "$keycloak_url" "$kc_admin_password" "$admin_email")
     all_clients=$(keycloak_api GET "${keycloak_url}/admin/realms/master/clients?max=200" "$kc_token")
     local client_uuid
-    client_uuid=$(echo "$all_clients" | jq -r --arg cid "$saml_client_id" '.[] | select(.clientId == $cid) | .id' 2>/dev/null | head -1)
+    client_uuid=$(echo "$all_clients" | jq -r --arg cid "$saml_client_id" '.[] | select(.clientId == $cid) | .id' 2>/dev/null | head -1 || true)
 
     if [[ -z "$client_uuid" ]]; then
         log_error "Failed to create SAML client on Keycloak" \
@@ -593,7 +593,7 @@ JSONEOF
         # Get the local admin's principal ID so we can include it in allowedPrincipalIds
         local local_admin_principal
         local_admin_principal=$(rancher_api GET "${rancher_url}/v3/users?username=admin" "$rancher_token" | \
-            jq -r '.data[0].principalIds[0] // empty' 2>/dev/null)
+            jq -r '.data[0].principalIds[0] // empty' 2>/dev/null || true)
 
         # Set access mode to unrestricted — allows any authenticated Keycloak user to
         # access Rancher. The CRTB (below) controls what they can see/do.
@@ -635,7 +635,7 @@ JSONEOF
         existing_crtb=$(kubectl -n local get clusterroletemplatebinding "${crtb_name}" 2>/dev/null && echo "exists" || echo "")
         if [[ -z "$existing_crtb" ]]; then
             existing_crtb=$(kubectl -n local get clusterroletemplatebinding -o json 2>/dev/null | \
-                jq -r --arg pid "$keycloak_principal" '.items[] | select(.userPrincipalName == $pid) | .metadata.name' 2>/dev/null | head -1)
+                jq -r --arg pid "$keycloak_principal" '.items[] | select(.userPrincipalName == $pid) | .metadata.name' 2>/dev/null | head -1 || true)
         fi
 
         if [[ -n "$existing_crtb" ]]; then
@@ -665,7 +665,7 @@ CRTBEOF
         if [[ -n "$local_admin_principal" ]]; then
             local local_crtb_exists
             local_crtb_exists=$(kubectl -n local get clusterroletemplatebinding -o json 2>/dev/null | \
-                jq -r --arg pid "$local_admin_principal" '.items[] | select(.userPrincipalName == $pid) | .metadata.name' 2>/dev/null | head -1)
+                jq -r --arg pid "$local_admin_principal" '.items[] | select(.userPrincipalName == $pid) | .metadata.name' 2>/dev/null | head -1 || true)
             if [[ -z "$local_crtb_exists" ]]; then
                 kubectl create -f - > /dev/null 2>&1 <<CRTBEOF2
 apiVersion: management.cattle.io/v3

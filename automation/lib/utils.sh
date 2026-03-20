@@ -290,7 +290,7 @@ check_prerequisites() {
                   "Resize the VM to at least ${required_cpus} vCPUs" \
                   "nproc" \
                   "https://docs.openg2p.org/deployment/resource-requirements#single-node"
-        ((failures++))
+        failures=$((failures + 1))
     else
         log_success "CPU cores: ${actual_cpus} vCPU — OK."
     fi
@@ -299,7 +299,8 @@ check_prerequisites() {
     local required_ram_gb=64
     local required_ram_min_gb=60  # Allow slight variance (hypervisors sometimes report less)
     local actual_ram_kb
-    actual_ram_kb=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}')
+    actual_ram_kb=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || true)
+    actual_ram_kb=${actual_ram_kb:-0}
     local actual_ram_gb=$(( actual_ram_kb / 1024 / 1024 ))
 
     log_info "Checking RAM... (required: ${required_ram_gb} GB)"
@@ -309,7 +310,7 @@ check_prerequisites() {
                   "Resize the VM to at least ${required_ram_gb} GB RAM" \
                   "free -g" \
                   "https://docs.openg2p.org/deployment/resource-requirements#single-node"
-        ((failures++))
+        failures=$((failures + 1))
     else
         log_success "RAM: ${actual_ram_gb} GB — OK."
     fi
@@ -318,9 +319,11 @@ check_prerequisites() {
     local required_disk_gb=128
     local required_disk_min_gb=100  # Allow some used space on a 128GB disk
     local actual_disk_gb
-    actual_disk_gb=$(df -BG / 2>/dev/null | tail -1 | awk '{print $2}' | tr -d 'G')
+    actual_disk_gb=$(df -BG / 2>/dev/null | tail -1 | awk '{print $2}' | tr -d 'G' || true)
+    actual_disk_gb=${actual_disk_gb:-0}
     local free_disk_gb
-    free_disk_gb=$(df -BG / 2>/dev/null | tail -1 | awk '{print $4}' | tr -d 'G')
+    free_disk_gb=$(df -BG / 2>/dev/null | tail -1 | awk '{print $4}' | tr -d 'G' || true)
+    free_disk_gb=${free_disk_gb:-0}
 
     log_info "Checking disk... (required: ${required_disk_gb} GB SSD)"
     if [[ $actual_disk_gb -lt $required_disk_min_gb ]]; then
@@ -329,7 +332,7 @@ check_prerequisites() {
                   "Resize the disk to at least ${required_disk_gb} GB" \
                   "df -h /" \
                   "https://docs.openg2p.org/deployment/resource-requirements#single-node"
-        ((failures++))
+        failures=$((failures + 1))
     else
         log_success "Disk: ${actual_disk_gb} GB total, ${free_disk_gb} GB free — OK."
     fi
@@ -337,7 +340,7 @@ check_prerequisites() {
     # ── SSD check (best effort) ──────────────────────────────────────────
     log_info "Checking disk type..."
     local root_device
-    root_device=$(findmnt -no SOURCE / 2>/dev/null | sed 's/[0-9]*$//' | sed 's|/dev/||')
+    root_device=$(findmnt -no SOURCE / 2>/dev/null | sed 's/[0-9]*$//' | sed 's|/dev/||' || true)
     # Strip partition numbers and mapper prefixes
     root_device=$(echo "$root_device" | sed 's|mapper/||' | sed 's/-part.*//' | sed 's/p$//')
     local rotational=""
@@ -392,7 +395,7 @@ check_dns_resolution() {
     log_info "Checking DNS resolution for ${domain}..."
 
     local resolved_ip
-    resolved_ip=$(dig +short "$domain" 2>/dev/null | tail -1)
+    resolved_ip=$(dig +short "$domain" 2>/dev/null | tail -1 || true)
 
     if [[ -z "$resolved_ip" ]]; then
         log_error "DNS resolution failed for '${domain}'" \
