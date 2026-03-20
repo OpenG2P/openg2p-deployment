@@ -342,10 +342,10 @@ run_phase3() {
     fi
 
     keycloak_api PUT "${keycloak_url}/admin/realms/master/users/${admin_user_id}" "$kc_token" \
-        "{\"email\":\"${admin_email}\",\"emailVerified\":true,\"firstName\":\"Admin\",\"lastName\":\"User\"}" \
+        "{\"username\":\"${admin_email}\",\"email\":\"${admin_email}\",\"emailVerified\":true,\"firstName\":\"Admin\",\"lastName\":\"User\"}" \
         > /dev/null 2>&1
 
-    log_success "Keycloak admin email set to ${admin_email}."
+    log_success "Keycloak admin username and email set to ${admin_email}."
 
     # ── Step 3.5: Enable email-as-username in master realm ───────────────
     log_info "Enabling 'email as username' in master realm..."
@@ -686,13 +686,12 @@ CRTBEOF2
     # ── Done ─────────────────────────────────────────────────────────────
     log_success "Rancher-Keycloak SAML integration complete."
     log_info ""
-    log_info "  Rancher admin password: ${rancher_admin_password}"
-    log_info "  Keycloak admin email:   ${admin_email}"
     log_info "  Rancher login URL:      ${rancher_url}"
     log_info "  Keycloak admin URL:     ${keycloak_url}/admin/"
     log_info ""
-    log_info "  The Rancher login page should now show 'Login with Keycloak'."
-    log_info "  Use the Keycloak admin email (${admin_email}) to log in."
+    log_info "  Login with Keycloak:    Click 'Login with Keycloak' on the Rancher login page."
+    log_info "                          Username: ${admin_email} (Keycloak admin email)"
+    log_info "  Local admin login:      Username: admin  |  Password: ${rancher_admin_password}"
     log_info ""
 
     # Save for summary display

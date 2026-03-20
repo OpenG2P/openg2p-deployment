@@ -135,7 +135,7 @@ If the VM has a public IP different from `node_ip` (e.g., AWS with a public + pr
 
 Import `peer1.conf` into the [Wireguard client app](https://www.wireguard.com/install/) on your laptop and activate the tunnel.
 
-The default is **split tunnel** — only Wireguard subnet + VPC traffic routes through the VPN, your internet stays direct and fast. To route all traffic through the VPN (full tunnel), set `wireguard.cluster_subnet: "0.0.0.0/0"` in your config.
+The default is **split tunnel** — only Wireguard subnet + VPC traffic routes through the VPN, your internet stays direct and fast.
 
 ### Step 2: DNS resolution (local mode only)
 
@@ -203,9 +203,12 @@ Requires Wireguard VPN to be active (the K8s API is on the private IP).
 
 Rancher-Keycloak SAML integration is done automatically by the script (Phase 3). Open Rancher at `https://rancher.<domain>` — you should see a **"Login with Keycloak"** button.
 
-Login using the Keycloak admin email configured in `keycloak.admin_email` (default: `admin@openg2p.org`). The Keycloak admin password is stored in the K8s secret `keycloak-system/keycloak` (key: `admin-password`).
+**Keycloak login (recommended):** Click "Login with Keycloak" and use the email address configured in `keycloak.admin_email` (default: `admin@openg2p.org`) as the username. The Keycloak admin password is stored in the K8s secret `keycloak-system/keycloak` (key: `admin-password`):
+```bash
+sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml kubectl -n keycloak-system get secret keycloak -o jsonpath='{.data.admin-password}' | base64 -d && echo
+```
 
-The Rancher admin password is auto-generated and saved to K8s secret `cattle-system/rancher-secret`. To retrieve it:
+**Local admin login:** Rancher also has a built-in local admin account with username **`admin`**. The password is auto-generated and saved to K8s secret `cattle-system/rancher-secret`:
 ```bash
 sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml kubectl -n cattle-system get secret rancher-secret -o jsonpath='{.data.adminPassword}' | base64 -d && echo
 ```

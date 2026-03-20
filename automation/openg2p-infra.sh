@@ -96,10 +96,9 @@ show_summary() {
     local rancher_host=$(get_rancher_hostname)
     local keycloak_host=$(get_keycloak_hostname)
     local local_domain=$(cfg "local_domain" "openg2p.test")
-    local allowed_ips=$(cfg "wireguard.cluster_subnet" "")
-    if [[ -z "$allowed_ips" ]]; then
-        allowed_ips="split-tunnel"  # default: wg_subnet + vpc_cidr
-    fi
+    local admin_email=$(cfg "keycloak.admin_email" "admin@openg2p.org")
+    # cluster_subnet is an undocumented override; default is split tunnel
+    local allowed_ips=$(cfg "wireguard.cluster_subnet" "split-tunnel")
 
     echo ""
     echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
@@ -164,13 +163,18 @@ show_summary() {
     echo -e "${GREEN}║${NC}      kubectl get nodes                                        ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
     echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${GREEN}║${NC}  ${BOLD}Login:${NC}                                                      ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}  Open https://${rancher_host} and click 'Login with Keycloak' ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}    Username: ${BOLD}${admin_email}${NC}"
+    echo -e "${GREEN}║${NC}    Password: Keycloak admin password (see below)              ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}  ${BOLD}Credentials:${NC}                                               ${GREEN}║${NC}"
     # Show Rancher admin password if saved
     local saved_pw_file="/var/lib/openg2p/deploy-state/rancher-admin-password"
     if [[ -f "$saved_pw_file" ]]; then
         local saved_pw
         saved_pw=$(cat "$saved_pw_file")
-        echo -e "${GREEN}║${NC}  Rancher admin password: ${BOLD}${saved_pw}${NC}"
+        echo -e "${GREEN}║${NC}  Rancher local admin:    user: ${BOLD}admin${NC}  password: ${BOLD}${saved_pw}${NC}"
         echo -e "${GREEN}║${NC}  (also in K8s secret: cattle-system/rancher-secret)         ${GREEN}║${NC}"
     fi
     echo -e "${GREEN}║${NC}  Keycloak admin password: see K8s secret                    ${GREEN}║${NC}"
@@ -178,9 +182,6 @@ show_summary() {
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
     echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${GREEN}║${NC}  ${BOLD}What's next:${NC}                                                ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}  Rancher-Keycloak SAML integration: done automatically.     ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}  Login at https://${rancher_host} with 'Login with Keycloak'. ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}  Run openg2p-environment.sh to create an environment.       ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
     echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
