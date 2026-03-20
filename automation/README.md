@@ -220,14 +220,14 @@ sudo RANCHER_ADMIN_PASSWORD=mypassword ./openg2p-infra.sh --config infra-config.
 
 ### Step 6: User Access & Roles
 
-The script creates four project-level roles for assigning users to environments (Rancher Projects):
+Rancher ships with built-in project roles (`Project Owner`, `Project Member`, `Read-Only`), but all of them include full access to Kubernetes Secrets. Since secrets contain database passwords, API keys, and other sensitive data, this script creates two additional custom roles that exclude secrets access:
 
-| Role | Secrets Access | Permissions |
-|---|---|---|
-| **Project Owner** (built-in) | Full | Full control of the project and all its namespaces |
-| **Project Member** (built-in) | Full | Create/edit/delete workloads, services, configs, secrets |
-| **Project Member (No Secrets)** | None | Same as Project Member, but cannot view or manage secrets |
-| **Project Read-Only (No Secrets)** | None | View-only access to workloads, services, configs — no secrets |
+| Role | Source | Secrets Access | Permissions |
+|---|---|---|---|
+| **Project Owner** | Rancher built-in | Full | Full control of the project and all its namespaces |
+| **Project Member** | Rancher built-in | Full | Create/edit/delete workloads, services, configs, secrets |
+| **Project Member (No Secrets)** | Created by this script | None | Same as Project Member, but cannot view or manage secrets |
+| **Project Read-Only (No Secrets)** | Created by this script | None | View-only access to workloads, services, configs — no secrets |
 
 **To give a user access to an environment:**
 
