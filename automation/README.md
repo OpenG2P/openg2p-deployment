@@ -83,6 +83,26 @@ wireguard:
 
 Takes ~15-25 minutes. Idempotent — re-run on failure.
 
+### AWS EC2: Security Group Setup
+
+Before running the script on an EC2 instance, create and attach the required security group:
+
+```bash
+cd automation/aws
+./create-security-group.sh --vpc-id vpc-xxxxxxxxx [--region ap-south-1]
+```
+
+This creates a security group called `openg2p-single-node` with all the ports needed for OpenG2P (SSH, HTTPS, Wireguard, K8s API, etcd, CNI, NodePorts). Inter-node ports are scoped to the VPC CIDR for multi-node readiness.
+
+After creation, attach it to your instance and disable source/destination check (required for Wireguard):
+
+```bash
+aws ec2 modify-instance-attribute --instance-id i-xxxxxxxxx --groups sg-xxxxxxxxx
+aws ec2 modify-instance-attribute --instance-id i-xxxxxxxxx --no-source-dest-check
+```
+
+The script auto-detects the VPC CIDR. Run `./create-security-group.sh --help` for all options.
+
 ## Command Options
 
 ```bash
@@ -214,6 +234,9 @@ automation/
 │   ├── phase1.sh                  # Phase 1: host-level setup (tools, RKE2, Wireguard, NFS, DNS, TLS, Nginx)
 │   ├── phase2.sh                  # Phase 2: platform components (Istio, Helmfile sync)
 │   └── phase3.sh                  # Phase 3: Rancher-Keycloak SAML integration
+├── aws/
+│   ├── create-security-group.sh   # Creates "openg2p-single-node" SG via AWS CLI
+│   └── security-group.json        # Reference: exported SG rules
 └── charts/
     ├── raw/                       # Minimal chart for applying K8s manifests
     └── istio-install/             # Istio operator YAML for istioctl
