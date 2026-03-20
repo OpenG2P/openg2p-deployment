@@ -176,7 +176,7 @@ show_summary() {
     echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${GREEN}║${NC}  ${BOLD}What's next:${NC}                                                ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}  Rancher-Keycloak SAML integration: done automatically.     ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}  Login at ${rancher_url} with 'Login with Keycloak'.         ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}  Login at https://${rancher_host} with 'Login with Keycloak'. ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}  Run openg2p-environment.sh to create an environment.       ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
