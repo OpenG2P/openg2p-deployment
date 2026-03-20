@@ -96,7 +96,10 @@ show_summary() {
     local rancher_host=$(get_rancher_hostname)
     local keycloak_host=$(get_keycloak_hostname)
     local local_domain=$(cfg "local_domain" "openg2p.test")
-    local allowed_ips=$(cfg "wireguard.cluster_subnet" "0.0.0.0/0")
+    local allowed_ips=$(cfg "wireguard.cluster_subnet" "")
+    if [[ -z "$allowed_ips" ]]; then
+        allowed_ips="split-tunnel"  # default: wg_subnet + vpc_cidr
+    fi
 
     echo ""
     echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
@@ -122,7 +125,11 @@ show_summary() {
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
 
     if [[ "$domain_mode" == "local" ]]; then
-        if [[ "$allowed_ips" != "0.0.0.0/0" ]]; then
+        if [[ "$allowed_ips" == "0.0.0.0/0" ]]; then
+            echo -e "${GREEN}║${NC}  ${BOLD}Step 2: DNS${NC}                                                ${GREEN}║${NC}"
+            echo -e "${GREEN}║${NC}    Full tunnel — DNS push is included in peer config.      ${GREEN}║${NC}"
+            echo -e "${GREEN}║${NC}    All *.${local_domain} resolves automatically.             ${GREEN}║${NC}"
+        else
             echo -e "${GREEN}║${NC}  ${BOLD}Step 2: Per-domain DNS (split tunnel)${NC}                      ${GREEN}║${NC}"
             echo -e "${GREEN}║${NC}    macOS:                                                  ${GREEN}║${NC}"
             echo -e "${GREEN}║${NC}      sudo mkdir -p /etc/resolver                          ${GREEN}║${NC}"
@@ -134,10 +141,6 @@ show_summary() {
             echo -e "${GREEN}║${NC}    Linux:                                                  ${GREEN}║${NC}"
             echo -e "${GREEN}║${NC}      sudo resolvectl dns wg0 ${node_ip}                     ${GREEN}║${NC}"
             echo -e "${GREEN}║${NC}      sudo resolvectl domain wg0 '~${local_domain}'          ${GREEN}║${NC}"
-        else
-            echo -e "${GREEN}║${NC}  ${BOLD}Step 2: DNS${NC}                                                ${GREEN}║${NC}"
-            echo -e "${GREEN}║${NC}    Full tunnel — DNS push is included in peer config.      ${GREEN}║${NC}"
-            echo -e "${GREEN}║${NC}    All *.${local_domain} resolves automatically.             ${GREEN}║${NC}"
         fi
         echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
         echo -e "${GREEN}║${NC}  ${BOLD}Step 3: Install CA certificate${NC}                             ${GREEN}║${NC}"

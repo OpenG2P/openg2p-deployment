@@ -101,9 +101,10 @@ wireguard:
   subnet: "10.15.0.0/16"
   port: "51820"
   peers: "254"
-  # Subnet that Wireguard clients can access (AllowedIPs in peer config)
-  # Default "0.0.0.0/0" routes all traffic through VPN
-  # Set to your node's subnet (e.g. "172.16.0.0/24") to route only cluster traffic
+  # Subnet that Wireguard clients can access (AllowedIPs in peer config).
+  # Default: split tunnel — routes only Wireguard + VPC traffic through VPN.
+  # Set to "0.0.0.0/0" for full tunnel (all traffic through VPN).
+  # Leave empty for the default split tunnel behavior.
   cluster_subnet: ""
 
 # ---------------------------------------------------------------------------

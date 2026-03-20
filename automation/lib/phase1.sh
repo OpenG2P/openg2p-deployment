@@ -371,7 +371,14 @@ phase1_step4_wireguard() {
     local wg_port=$(cfg "wireguard.port" "51820")
     local wg_subnet=$(cfg "wireguard.subnet" "10.15.0.0/16")
     local wg_peers=$(cfg "wireguard.peers" "254")
-    local allowed_ips=$(cfg "wireguard.cluster_subnet" "0.0.0.0/0")
+    # Default: split tunnel — only route Wireguard + VPC traffic through VPN.
+    # Users can set cluster_subnet to "0.0.0.0/0" for full tunnel if preferred.
+    local allowed_ips=$(cfg "wireguard.cluster_subnet" "")
+    if [[ -z "$allowed_ips" ]]; then
+        local vpc_cidr_wg
+        vpc_cidr_wg=$(echo "$node_ip" | awk -F. '{printf "%s.%s.0.0/16", $1, $2}')
+        allowed_ips="${wg_subnet}, ${vpc_cidr_wg}"
+    fi
     local wg_endpoint=$(cfg "wireguard.endpoint" "$node_ip")
     local domain_mode=$(cfg "domain_mode" "custom")
     local wg_iface="wg0"
@@ -432,12 +439,12 @@ PostDown = iptables -D FORWARD -i ${wg_iface} -j ACCEPT; iptables -D FORWARD -o 
 EOF
 
     # DNS line for peer configs:
-    # - Full tunnel (AllowedIPs = 0.0.0.0/0): set DNS to VM so all lookups go through dnsmasq
-    # - Split tunnel (AllowedIPs = specific subnet): skip DNS directive, because it would
-    #   override the client's entire DNS and break normal internet resolution.
-    #   Instead, clients configure per-domain DNS routing (macOS /etc/resolver/, Linux resolvectl).
+    # In local domain mode, clients need to resolve *.openg2p.test via the VM's dnsmasq.
+    # We always include DNS in local mode — on macOS/Windows Wireguard clients this
+    # adds the VM as a DNS server without breaking normal internet resolution.
+    # In custom domain mode, DNS is handled by public DNS (Let's Encrypt domains).
     local peer_dns_line=""
-    if [[ "$domain_mode" == "local" && "$allowed_ips" == "0.0.0.0/0" ]]; then
+    if [[ "$domain_mode" == "local" ]]; then
         peer_dns_line="DNS = ${node_ip}"
     fi
 

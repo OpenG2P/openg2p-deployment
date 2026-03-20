@@ -20,7 +20,7 @@ The infrastructure script supports two modes — set `domain_mode` in your confi
 
 ### Local mode (`domain_mode: local`)
 
-Designed for getting OpenG2P running the same day, with zero external dependencies. The script installs `dnsmasq` on the VM to resolve `*.openg2p.test` to the VM's IP, generates a local Certificate Authority with self-signed certs, and configures Wireguard to push the VM as the DNS server. Once a user connects via Wireguard VPN, their laptop automatically resolves all OpenG2P hostnames.
+Designed for getting OpenG2P running the same day, with zero external dependencies. The script installs `dnsmasq` on the VM to resolve `*.openg2p.test` to the VM's IP, generates a local Certificate Authority with self-signed certs, and configures Wireguard VPN with split tunnel (only cluster traffic routed through VPN). After connecting via Wireguard, follow the post-install steps to configure DNS resolution and install the CA certificate on your laptop.
 
 Hostnames are auto-derived: `rancher.openg2p.test`, `keycloak.openg2p.test`, and later `registry.dev.openg2p.test`, etc.
 
@@ -78,7 +78,6 @@ For AWS or any setup where the public IP differs from `node_ip`, also set:
 ```yaml
 wireguard:
   endpoint: "<public-ip>"     # Public IP for VPN clients
-  cluster_subnet: "172.29.0.0/16"  # Split tunnel (recommended)
 ```
 
 Takes ~15-25 minutes. Idempotent — re-run on failure.
@@ -136,11 +135,11 @@ If the VM has a public IP different from `node_ip` (e.g., AWS with a public + pr
 
 Import `peer1.conf` into the [Wireguard client app](https://www.wireguard.com/install/) on your laptop and activate the tunnel.
 
-**Important for split tunnel:** If you set `wireguard.cluster_subnet` to a specific subnet (not `0.0.0.0/0`), the `AllowedIPs` in the peer config will only route cluster traffic through the VPN — your internet stays normal. However, you'll need per-domain DNS (see Step 2).
+The default is **split tunnel** — only Wireguard subnet + VPC traffic routes through the VPN, your internet stays direct and fast. To route all traffic through the VPN (full tunnel), set `wireguard.cluster_subnet: "0.0.0.0/0"` in your config.
 
-### Step 2: DNS resolution (local mode + split tunnel only)
+### Step 2: DNS resolution (local mode only)
 
-If you're using `domain_mode: local` with split tunnel (`cluster_subnet` set), the Wireguard `DNS` directive is not included (it would break your internet). Configure per-domain DNS instead:
+In local mode, the VM's dnsmasq resolves `*.openg2p.test` hostnames. The peer config includes the VM as a DNS server, which works on most platforms. For reliable resolution, also configure per-domain DNS on your laptop:
 
 **macOS:**
 ```bash
@@ -161,7 +160,9 @@ sudo resolvectl dns wg0 <node_ip>
 sudo resolvectl domain wg0 '~<local_domain>'
 ```
 
-Note: `dig` bypasses the macOS resolver system. Use `dscacheutil -q host -a name rancher.<local_domain>` or `ping` or `curl` to test DNS on macOS.
+This ensures `*.openg2p.test` queries go to the VM's dnsmasq while all other DNS stays normal.
+
+> **Note:** `dig` bypasses the macOS resolver system. Use `dscacheutil -q host -a name rancher.openg2p.test` or `ping` or `curl` to verify DNS on macOS.
 
 ### Step 3: CA certificate (local mode only)
 
@@ -248,7 +249,7 @@ automation/
 Re-run it. Completed steps are skipped. Error messages include diagnostic commands.
 
 **Local DNS not resolving on my laptop?**
-Ensure Wireguard VPN is connected. If using split tunnel, configure per-domain DNS (see Step 2 above). Note: `dig` bypasses the macOS resolver — use `ping` or `dscacheutil` to test instead.
+Ensure Wireguard VPN is connected. Configure per-domain DNS on your laptop (see Step 2 above). On macOS, `dig` bypasses the resolver system — use `ping` or `dscacheutil -q host -a name rancher.openg2p.test` to test instead.
 
 **Browser shows certificate warning in local mode?**
 Install the CA certificate on your laptop (see Local mode section above).
