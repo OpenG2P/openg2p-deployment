@@ -474,12 +474,14 @@ PersistentKeepalive = 25
 EOF
 
         # Advance IP: .0.2, .0.3, ... .0.255, .1.0, .1.1, ...
-        ((peer_octet4++))
+        # Use $(( )) assignment form — (( var++ )) returns exit code 1
+        # when the OLD value is 0, which kills the script under set -e.
+        peer_octet4=$((peer_octet4 + 1))
         if [[ $peer_octet4 -gt 255 ]]; then
             peer_octet4=0
-            ((peer_octet3++))
+            peer_octet3=$((peer_octet3 + 1))
         fi
-        ((peer_num++))
+        peer_num=$((peer_num + 1))
     done
 
     chmod 600 /etc/wireguard/${wg_iface}.conf
