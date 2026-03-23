@@ -14,42 +14,71 @@
 # ---------------------------------------------------------------------------
 # Environment
 # ---------------------------------------------------------------------------
-# Kubernetes namespace for this environment (e.g., dev, qa, staging, pilot)
-# This will also be used as the Rancher project name.
-# You can run this script multiple times with different namespaces
-# to create multiple environments on the same cluster.
-namespace: "dev"
+# Environment name (used as K8s namespace and Rancher project name).
+# Keep it short, lowercase, no hyphens (e.g., dev, qa, staging, pilot).
+# You can run this script multiple times with different environments
+# to create multiple isolated setups on the same cluster.
+environment: "dev"
 
 # Base domain for this environment.
 # Modules will be accessible at: <module>.<base_domain>
-# Example: dev.openg2p.org → registry.dev.openg2p.org
+# Example: dev.openg2p.org → minio.dev.openg2p.org, superset.dev.openg2p.org
+#
+# Local mode: leave empty to auto-derive as <environment>.<local_domain>
+#             (e.g., dev.openg2p.test)
+# Custom mode: must be set explicitly (e.g., dev.openg2p.org)
 base_domain: ""
 
 # ---------------------------------------------------------------------------
-# TLS / Let's Encrypt
+# Infrastructure reference
 # ---------------------------------------------------------------------------
-# Email for Let's Encrypt certificate for this environment's domain
-# Certs will be generated for: base_domain and *.base_domain
-letsencrypt_email: ""
-
-# Node IP (needed for Nginx config update and cert validation)
-node_ip: ""
+# Path to the infra config file (used to inherit node_ip, domain_mode,
+# local_domain, keycloak_hostname, letsencrypt settings, etc.)
+# Relative paths are resolved from the automation/ directory.
+infra_config: "infra-config.yaml"
 
 # ---------------------------------------------------------------------------
-# Keycloak
+# Keycloak client-manager credentials
 # ---------------------------------------------------------------------------
-# Keycloak hostname (must match what was set during infra setup)
-keycloak_hostname: ""
+# These are the credentials for the client-manager user created during
+# infrastructure setup. They were shown in the openg2p-infra.sh output.
+#
+# If left empty, the script will try to read them from the saved state
+# at /var/lib/openg2p/deploy-state/client-manager-password (works when
+# running on the same machine where infra was set up).
+keycloak:
+  client_manager_user: ""
+  client_manager_password: ""
+
+# ---------------------------------------------------------------------------
+# openg2p-commons chart source
+# ---------------------------------------------------------------------------
+commons:
+  # Path to local chart directory (e.g., path to openg2p-commons-deployment repo).
+  # If set and the directory exists, the local chart is used instead of the remote repo.
+  # Leave empty to pull from the remote Helm chart repository.
+  chart_path: ""
+
+  # Remote Helm chart repository URL (used when chart_path is empty)
+  chart_repo: "https://openg2p.github.io/openg2p-helm"
+
+  # Chart version (empty = latest available)
+  chart_version: ""
+
+  # Extra Helm arguments (appended to the helm install/upgrade command)
+  # Example: "--set postgresql.primary.persistence.size=20Gi"
+  extra_helm_args: ""
 
 # ---------------------------------------------------------------------------
 # Modules — set to true/false to enable/disable
 # ---------------------------------------------------------------------------
-# openg2p-commons installs shared components (PostgreSQL on Docker,
-# OpenSearch, MinIO, Kafka, etc.) required by all modules.
-# Must be true if any module below is true.
+# openg2p-commons installs shared components (PostgreSQL, OpenSearch, MinIO,
+# Kafka, Redis, eSignet, KeyManager, ODK, Superset, etc.) required by all
+# modules. Must be true if any module below is true.
 modules:
-  openg2p_commons: true
-  registry: true
-  pbms: true
-  spar: true
-  g2p_bridge: false
+  commons: true
+  # Future modules (not yet implemented in automation):
+  # registry: false
+  # pbms: false
+  # spar: false
+  # g2p_bridge: false

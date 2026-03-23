@@ -249,9 +249,80 @@ The script automatically creates a **`client-manager`** user in Keycloak's maste
 
 The password is also saved on the VM at `/var/lib/openg2p/deploy-state/client-manager-password`. Note it down from the script output — you'll need it when running `openg2p-environment.sh`.
 
-### Step 8: Next
+### Step 8: Create an Environment
 
-Run `openg2p-environment.sh` to create an OpenG2P environment (coming soon).
+After the infrastructure is ready, create one or more environments using `openg2p-environment.sh`. Each environment is an isolated namespace with its own domain, services, and user access.
+
+```bash
+cp env-config.example.yaml env-config.yaml
+# Edit env-config.yaml — for local mode, just set environment name
+sudo ./openg2p-environment.sh --config env-config.yaml
+```
+
+**Local mode minimal config** — everything else is auto-derived from the infra config:
+```yaml
+environment: "dev"
+infra_config: "infra-config.yaml"
+modules:
+  commons: true
+```
+
+This creates namespace `dev` with domain `dev.openg2p.test` and installs openg2p-commons (PostgreSQL, Kafka, MinIO, OpenSearch, Superset, eSignet, ODK, etc.). Services become available at `minio.dev.openg2p.test`, `superset.dev.openg2p.test`, etc.
+
+**Custom mode** — set `base_domain` and Keycloak credentials explicitly:
+```yaml
+environment: "dev"
+base_domain: "dev.openg2p.org"
+infra_config: "infra-config.yaml"
+keycloak:
+  client_manager_user: "client-manager@openg2p.org"
+  client_manager_password: "<from infra script output>"
+modules:
+  commons: true
+```
+
+**Multiple environments** — run the script multiple times with different configs:
+```bash
+sudo ./openg2p-environment.sh --config env-dev.yaml    # dev.openg2p.test
+sudo ./openg2p-environment.sh --config env-qa.yaml     # qa.openg2p.test
+sudo ./openg2p-environment.sh --config env-pilot.yaml  # pilot.openg2p.test
+```
+
+Takes ~15-20 minutes per environment. Idempotent — re-run on failure.
+
+See [Environment Setup Details](#environment-setup-details) below for the full phase breakdown.
+
+## Environment Setup Details
+
+The `openg2p-environment.sh` script runs in two phases:
+
+### Phase 1: Environment Infrastructure
+
+| Step | What | Details |
+|---|---|---|
+| E1.1 | Validate prerequisites | Infra completed, kubeconfig works, client-manager credentials available |
+| E1.2 | TLS certificate | **Local:** wildcard cert `*.dev.openg2p.test` signed by existing CA. **Custom:** Let's Encrypt wildcard cert |
+| E1.3 | Nginx server block | Adds `*.dev.openg2p.test` → Istio ingress (separate config file per environment) |
+| E1.4 | K8s namespace | Creates the namespace if it doesn't exist |
+| E1.5 | Rancher Project | Creates a Rancher Project and moves the namespace into it (for RBAC) |
+| E1.6 | Istio Gateway | Creates Istio Gateway resource for hostname routing |
+| E1.7 | Keycloak secret | Creates `keycloak-client-manager` K8s secret in the namespace |
+
+### Phase 2: Module Installation
+
+| Step | What | Details |
+|---|---|---|
+| E2.1 | openg2p-commons | `helm install --wait --timeout 20m` with all required values. Includes PostgreSQL, Kafka, MinIO, OpenSearch, Redis, Superset, eSignet, ODK, KeyManager, and Keycloak client initialization |
+| *(future)* | Registry, PBMS, SPAR, G2P Bridge | Placeholder steps — will be added as separate Helm installs |
+
+### Environment Command Options
+
+```bash
+sudo ./openg2p-environment.sh --config env-config.yaml              # Full setup
+sudo ./openg2p-environment.sh --config env-config.yaml --phase 1    # Infrastructure only
+sudo ./openg2p-environment.sh --config env-config.yaml --phase 2    # Module install only
+sudo ./openg2p-environment.sh --config env-config.yaml --force       # Re-run everything
+```
 
 ## File Structure
 
@@ -260,15 +331,16 @@ automation/
 ├── openg2p-infra.sh               # Script 1: base infrastructure
 ├── infra-config.example.yaml      # Config for Script 1
 ├── helmfile-infra.yaml.gotmpl     # Helmfile for platform components (Go template)
-├── openg2p-environment.sh         # Script 2: environment setup (coming soon)
+├── openg2p-environment.sh         # Script 2: environment setup
 ├── env-config.example.yaml        # Config for Script 2
-├── helmfile-env.yaml              # Helmfile for environment modules
 ├── README.md
 ├── lib/
 │   ├── utils.sh                   # Shared: logging, state, config, wait helpers
-│   ├── phase1.sh                  # Phase 1: host-level setup (tools, RKE2, Wireguard, NFS, DNS, TLS, Nginx)
-│   ├── phase2.sh                  # Phase 2: platform components (Istio, Helmfile sync)
-│   └── phase3.sh                  # Phase 3: Rancher-Keycloak SAML integration
+│   ├── phase1.sh                  # Infra Phase 1: host setup (tools, RKE2, Wireguard, NFS, DNS, TLS, Nginx)
+│   ├── phase2.sh                  # Infra Phase 2: platform components (Istio, Helmfile sync)
+│   ├── phase3.sh                  # Infra Phase 3: Rancher-Keycloak SAML, roles, client-manager
+│   ├── env-phase1.sh              # Env Phase 1: certs, Nginx, namespace, Rancher project, Istio GW
+│   └── env-phase2.sh              # Env Phase 2: openg2p-commons helm install (future: modules)
 ├── aws/
 │   ├── create-security-group.sh   # Creates "openg2p-single-node" SG via AWS CLI
 │   └── security-group.json        # Reference: exported SG rules
