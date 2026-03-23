@@ -826,6 +826,118 @@ RTEOF
         fi
     fi
 
+    # ── Step 3.12: Create Keycloak client-manager user ──────────────────
+    # This service account is required by later installation scripts (environment
+    # setup, module deployments) to programmatically create Keycloak clients.
+    # Ref: https://docs.openg2p.org/deployment/deployment-instructions/infrastructure-setup#id-10.-keycloak-installation
+    log_info "Creating Keycloak client-manager user..."
+
+    # Refresh Keycloak token (may have expired during Rancher config steps)
+    kc_token=$(keycloak_get_token "$keycloak_url" "$kc_admin_password" "$admin_email")
+    if [[ -z "$kc_token" ]]; then
+        log_warn "Could not refresh Keycloak token for client-manager user creation. Skipping."
+    else
+        # Derive client-manager email from admin_email domain
+        local email_domain
+        email_domain=$(echo "$admin_email" | sed 's/.*@//')
+        local cm_username="client-manager@${email_domain}"
+
+        # Check if client-manager user already exists
+        local cm_users cm_user_id
+        cm_users=$(keycloak_api GET \
+            "${keycloak_url}/admin/realms/master/users?username=${cm_username}&exact=true" "$kc_token")
+        cm_user_id=$(echo "$cm_users" | jq -r '.[0].id // empty' 2>/dev/null || true)
+
+        local cm_password=""
+        if [[ -n "$cm_user_id" ]]; then
+            log_info "Client-manager user '${cm_username}' already exists (ID: ${cm_user_id})."
+            # Read saved password if available
+            local cm_pw_file="/var/lib/openg2p/deploy-state/client-manager-password"
+            if [[ -f "$cm_pw_file" ]]; then
+                cm_password=$(cat "$cm_pw_file")
+            else
+                # User exists but no saved password — generate new one and reset
+                cm_password="openg2p-$(openssl rand -hex 8)"
+                log_info "Resetting client-manager password (no saved password found)..."
+                keycloak_api PUT \
+                    "${keycloak_url}/admin/realms/master/users/${cm_user_id}/reset-password" \
+                    "$kc_token" \
+                    "{\"type\":\"password\",\"value\":\"${cm_password}\",\"temporary\":false}" \
+                    > /dev/null 2>&1
+            fi
+        else
+            # Create the user with a random password
+            cm_password="openg2p-$(openssl rand -hex 8)"
+            log_info "Creating user '${cm_username}' in master realm..."
+            keycloak_api POST "${keycloak_url}/admin/realms/master/users" "$kc_token" \
+                "{\"username\":\"${cm_username}\",\"email\":\"${cm_username}\",\"emailVerified\":true,\"enabled\":true,\"credentials\":[{\"type\":\"password\",\"value\":\"${cm_password}\",\"temporary\":false}]}" \
+                > /dev/null 2>&1
+
+            # Fetch the new user's ID
+            cm_users=$(keycloak_api GET \
+                "${keycloak_url}/admin/realms/master/users?username=${cm_username}&exact=true" "$kc_token")
+            cm_user_id=$(echo "$cm_users" | jq -r '.[0].id // empty' 2>/dev/null || true)
+
+            if [[ -z "$cm_user_id" ]]; then
+                log_warn "Failed to create client-manager user '${cm_username}'."
+                log_warn "Create manually in Keycloak: Admin Console → Users → Add user"
+            fi
+        fi
+
+        # Assign realm-management client roles: manage-clients, query-clients, view-clients
+        if [[ -n "$cm_user_id" ]]; then
+            # Get the realm-management client UUID (built-in client that holds realm management roles)
+            local rm_clients rm_client_id
+            rm_clients=$(keycloak_api GET \
+                "${keycloak_url}/admin/realms/master/clients?clientId=master-realm&max=5" "$kc_token")
+            rm_client_id=$(echo "$rm_clients" | jq -r '.[0].id // empty' 2>/dev/null || true)
+
+            if [[ -z "$rm_client_id" ]]; then
+                # Fallback: try realm-management client (non-master realms use this name)
+                rm_clients=$(keycloak_api GET \
+                    "${keycloak_url}/admin/realms/master/clients?clientId=realm-management&max=5" "$kc_token")
+                rm_client_id=$(echo "$rm_clients" | jq -r '.[0].id // empty' 2>/dev/null || true)
+            fi
+
+            if [[ -n "$rm_client_id" ]]; then
+                # Fetch available client roles and filter the ones we need
+                local available_roles
+                available_roles=$(keycloak_api GET \
+                    "${keycloak_url}/admin/realms/master/clients/${rm_client_id}/roles" "$kc_token")
+
+                local roles_to_assign="[]"
+                for role_name in manage-clients query-clients view-clients; do
+                    local role_json
+                    role_json=$(echo "$available_roles" | jq -c --arg rn "$role_name" \
+                        '[.[] | select(.name == $rn)] | .[0] // empty' 2>/dev/null || true)
+                    if [[ -n "$role_json" && "$role_json" != "null" ]]; then
+                        roles_to_assign=$(echo "$roles_to_assign" | jq -c --argjson r "$role_json" '. + [$r]')
+                    else
+                        log_warn "  Role '${role_name}' not found on client '${rm_client_id}'."
+                    fi
+                done
+
+                local role_count
+                role_count=$(echo "$roles_to_assign" | jq 'length' 2>/dev/null || true)
+                if [[ "$role_count" -gt 0 ]]; then
+                    log_info "Assigning ${role_count} client roles to '${cm_username}'..."
+                    keycloak_api POST \
+                        "${keycloak_url}/admin/realms/master/users/${cm_user_id}/role-mappings/clients/${rm_client_id}" \
+                        "$kc_token" "$roles_to_assign" > /dev/null 2>&1
+                    log_success "Client roles assigned: manage-clients, query-clients, view-clients."
+                fi
+            else
+                log_warn "Could not find realm management client. Assign roles manually."
+            fi
+
+            # Save password for summary display and future runs
+            echo "${cm_password}" > /var/lib/openg2p/deploy-state/client-manager-password
+            chmod 600 /var/lib/openg2p/deploy-state/client-manager-password
+
+            log_success "Client-manager user '${cm_username}' ready."
+        fi
+    fi
+
     # ── Done ─────────────────────────────────────────────────────────────
     log_success "Rancher-Keycloak SAML integration complete."
     log_info ""

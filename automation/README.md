@@ -239,7 +239,17 @@ The user can then log in to Rancher via "Login with Keycloak" using their email 
 
 > **Note:** The Rancher `admin` global role (super admin) has access to everything. The initial admin user configured during setup already has this role.
 
-### Step 7: Next
+### Step 7: Client-Manager Credentials
+
+The script automatically creates a **`client-manager`** user in Keycloak's master realm. This service account is required by the environment setup script (`openg2p-environment.sh`) to programmatically create Keycloak clients for each environment.
+
+- **Username:** `client-manager@<your-domain>` (derived from `keycloak.admin_email` domain, e.g., `client-manager@openg2p.org`)
+- **Password:** Auto-generated and displayed in the script's final output
+- **Roles:** `manage-clients`, `query-clients`, `view-clients` (restricted — no admin access)
+
+The password is also saved on the VM at `/var/lib/openg2p/deploy-state/client-manager-password`. Note it down from the script output — you'll need it when running `openg2p-environment.sh`.
+
+### Step 8: Next
 
 Run `openg2p-environment.sh` to create an OpenG2P environment (coming soon).
 
