@@ -24,8 +24,8 @@ get_commons_chart_ref() {
         log_warn "commons.chart_path '${chart_path}' not found. Falling back to remote chart."
     fi
 
-    # Use remote chart from repo
-    echo "openg2p-commons"
+    # Use remote chart from repo (must be repo_name/chart_name)
+    echo "openg2p/openg2p-commons"
 }
 
 ensure_helm_repo() {
@@ -109,7 +109,7 @@ env_phase2_step1_commons() {
     )
 
     # Add chart version if specified (only for remote charts)
-    if [[ -n "$chart_version" && "$chart_ref" == "openg2p-commons" ]]; then
+    if [[ -n "$chart_version" && "$chart_ref" == "openg2p/openg2p-commons" ]]; then
         helm_args+=(--version "$chart_version")
     fi
 
