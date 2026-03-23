@@ -86,19 +86,33 @@ env_phase2_step1_commons() {
     # Ensure helm repo is configured (for remote charts)
     ensure_helm_repo || return 1
 
-    # Check if already installed
+    # Always fresh install. If a stale/failed release exists, uninstall it first.
+    # openg2p-commons uses post-install hooks (keycloak-init, client-secrets-sync,
+    # postgres-init) that only run on install, not upgrade. Also, bitnami subcharts
+    # require current passwords on upgrade which are lost if the previous install
+    # failed. A clean install is the reliable path.
     if helm status "$release_name" -n "$env_name" &>/dev/null; then
-        log_info "Helm release '${release_name}' already exists in '${env_name}'."
-        log_info "Running helm upgrade..."
-        local helm_action="upgrade"
-    else
-        log_info "Installing openg2p-commons..."
-        local helm_action="install"
+        log_warn "Stale Helm release '${release_name}' found in '${env_name}'. Uninstalling first..."
+        helm uninstall "$release_name" -n "$env_name" --wait --timeout 5m || {
+            log_warn "helm uninstall returned non-zero. Continuing with install..."
+        }
+        # Clean up leftover secrets and PVCs that can cause conflicts on reinstall
+        log_info "Cleaning up leftover secrets and PVCs..."
+        kubectl -n "$env_name" delete secrets -l "app.kubernetes.io/instance=${release_name}" --ignore-not-found > /dev/null 2>&1 || true
+        kubectl -n "$env_name" delete pvc -l "app.kubernetes.io/instance=${release_name}" --ignore-not-found > /dev/null 2>&1 || true
+        # Recreate the keycloak-client-manager secret (was deleted by label cleanup)
+        if [[ -n "$cm_pass" ]] && ! kubectl -n "$env_name" get secret keycloak-client-manager &>/dev/null; then
+            kubectl -n "$env_name" create secret generic keycloak-client-manager \
+                --from-literal=keycloak-client-manager-password="$cm_pass" > /dev/null 2>&1 || true
+        fi
+        sleep 5
     fi
+
+    log_info "Installing openg2p-commons..."
 
     # Build helm command
     local -a helm_args=(
-        "$helm_action" "$release_name" "$chart_ref"
+        install "$release_name" "$chart_ref"
         -n "$env_name"
         --set "global.baseDomain=${base_domain}"
         --set "global.keycloakBaseUrl=${keycloak_url}"
@@ -126,12 +140,12 @@ env_phase2_step1_commons() {
     log_info "Keycloak: ${keycloak_url}"
     log_info "User:     ${cm_user}"
     log_info ""
-    log_info "Running: helm ${helm_action} ${release_name} ..."
+    log_info "Running: helm install ${release_name} ..."
     log_info "(this may take 15-20 minutes — Helm waits for all hooks to complete)"
     echo ""
 
     if ! helm "${helm_args[@]}"; then
-        log_error "Helm ${helm_action} failed for openg2p-commons" \
+        log_error "Helm install failed for openg2p-commons" \
                   "The chart installation did not complete successfully" \
                   "Check pod status and logs" \
                   "kubectl get pods -n ${env_name} --field-selector=status.phase!=Running"
@@ -145,7 +159,7 @@ env_phase2_step1_commons() {
         return 1
     fi
 
-    log_success "Helm ${helm_action} completed for openg2p-commons."
+    log_success "openg2p-commons installed successfully."
 
     # Verify deployments are ready
     log_info "Verifying all deployments are ready..."
