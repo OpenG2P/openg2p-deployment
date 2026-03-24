@@ -17,6 +17,22 @@
 # =============================================================================
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Helper: get Keycloak internal URL for pod-to-pod communication
+# ─────────────────────────────────────────────────────────────────────────────
+# In local mode (self-signed certs), pods can't trust the external HTTPS URL.
+# Instead, they talk to Keycloak via the internal K8s service over plain HTTP.
+# In custom mode (Let's Encrypt), the external URL is publicly trusted, so
+# no internal URL is needed.
+get_keycloak_internal_url() {
+    local domain_mode=$(cfg "domain_mode" "custom")
+    if [[ "$domain_mode" == "local" ]]; then
+        echo "http://keycloak.keycloak-system.svc.cluster.local"
+    else
+        echo ""
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Helpers: resolve chart references
 # ─────────────────────────────────────────────────────────────────────────────
 # Resolves a chart reference: local path if available, else repo_name/chart_name.
@@ -238,12 +254,24 @@ env_phase2_step1_commons_base() {
         extra=($extra_args)
     fi
 
+    # In local mode, pods use the internal Keycloak HTTP URL to avoid
+    # TLS trust issues with the self-signed CA certificate.
+    local keycloak_internal_url=$(get_keycloak_internal_url)
+    local -a kc_internal_args=()
+    if [[ -n "$keycloak_internal_url" ]]; then
+        log_info "Local mode: pods will use internal Keycloak URL: ${keycloak_internal_url}"
+        kc_internal_args=(
+            --set "global.keycloakInternalUrl=${keycloak_internal_url}"
+            --set "keycloak-init.keycloak.url=${keycloak_internal_url}"
+        )
+    fi
+
     helm_install_chart "$env_name" "$release_name" "$chart_ref" "$chart_version" \
         "openg2p-commons-base" \
         --set "global.baseDomain=${base_domain}" \
         --set "global.keycloakBaseUrl=${keycloak_url}" \
-        --set "keycloak-init.keycloak.url=${keycloak_url}" \
         --set "keycloak-init.keycloak.user=${cm_user}" \
+        "${kc_internal_args[@]}" \
         "${extra[@]}" \
         || return 1
 
@@ -341,11 +369,19 @@ env_phase2_step2_commons_services() {
         extra=($extra_args)
     fi
 
+    # In local mode, pass internal Keycloak URL
+    local keycloak_internal_url=$(get_keycloak_internal_url)
+    local -a kc_internal_args=()
+    if [[ -n "$keycloak_internal_url" ]]; then
+        kc_internal_args=(--set "global.keycloakInternalUrl=${keycloak_internal_url}")
+    fi
+
     # Services chart needs references to base chart's infrastructure services
     helm_install_chart "$env_name" "$release_name" "$chart_ref" "$chart_version" \
         "openg2p-commons-services" \
         --set "global.baseDomain=${base_domain}" \
         --set "global.keycloakBaseUrl=${keycloak_url}" \
+        "${kc_internal_args[@]}" \
         --set "global.postgresqlHost=${base_release}-postgresql" \
         --set "global.redisInstallationName=${base_release}-redis" \
         --set "global.redisAuthInstallationName=${base_release}-redis-auth" \
