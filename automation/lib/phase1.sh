@@ -727,6 +727,84 @@ EOF
     fi
 
     log_success "dnsmasq configured. All *.${local_domain} resolves to ${node_ip}."
+
+    # Configure CoreDNS to forward local domain queries to dnsmasq.
+    # Pods use CoreDNS (kube-system/rke2-coredns-rke2-coredns) for DNS, which
+    # doesn't know about our local domains. We add a custom server block that
+    # forwards *.openg2p.test to dnsmasq on the node IP.
+    # This runs after dnsmasq is up but before K8s is necessarily ready,
+    # so we save the config and apply it after RKE2 starts (in run_phase1).
+    log_info "Preparing CoreDNS custom config for ${local_domain} -> dnsmasq..."
+    mkdir -p /var/lib/openg2p/deploy-state
+    cat > /var/lib/openg2p/deploy-state/coredns-custom.yaml <<DNSEOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rke2-coredns-rke2-coredns-custom
+  namespace: kube-system
+data:
+  openg2p.server: |
+    ${local_domain}:53 {
+      errors
+      cache 30
+      forward . ${node_ip}
+    }
+DNSEOF
+    log_info "CoreDNS custom config saved. Will be applied after RKE2 starts."
+
+    mark_step_done "$step_id"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 7b: Apply CoreDNS custom config (local mode only)
+# ─────────────────────────────────────────────────────────────────────────────
+# In local mode, pods inside the cluster need to resolve *.openg2p.test.
+# CoreDNS only knows about cluster.local — we add a custom server block
+# that forwards local domain queries to dnsmasq on the node.
+# RKE2's CoreDNS watches the ConfigMap rke2-coredns-rke2-coredns-custom
+# and auto-reloads when it changes.
+phase1_step7b_coredns_custom() {
+    local domain_mode=$(cfg "domain_mode" "custom")
+    [[ "$domain_mode" == "local" ]] || return 0
+
+    local step_id="phase1.coredns_custom"
+    skip_if_done "$step_id" "CoreDNS custom config" && return 0
+
+    local coredns_file="/var/lib/openg2p/deploy-state/coredns-custom.yaml"
+    if [[ ! -f "$coredns_file" ]]; then
+        log_info "No CoreDNS custom config found — skipping."
+        return 0
+    fi
+
+    log_info "Applying CoreDNS custom config for local domain forwarding..."
+    ensure_kubeconfig || return 1
+
+    kubectl apply -f "$coredns_file" || {
+        log_error "Failed to apply CoreDNS custom config" \
+                  "kubectl apply failed" \
+                  "Check CoreDNS ConfigMap" \
+                  "kubectl -n kube-system get configmap rke2-coredns-rke2-coredns-custom -o yaml"
+        return 1
+    }
+
+    # Restart CoreDNS to pick up the change immediately
+    kubectl -n kube-system rollout restart deployment rke2-coredns-rke2-coredns > /dev/null 2>&1 || true
+    sleep 5
+
+    # Verify: resolve the local domain from inside CoreDNS
+    local local_domain=$(cfg "local_domain" "openg2p.test")
+    local node_ip=$(cfg "node_ip")
+    local test_ip
+    test_ip=$(kubectl run dns-test --rm -i --restart=Never --image=busybox:1.36 \
+        -- nslookup "keycloak.${local_domain}" 2>/dev/null | grep -A1 "Name:" | tail -1 | awk '{print $2}' || true)
+
+    if [[ "$test_ip" == "$node_ip" ]]; then
+        log_success "CoreDNS resolves keycloak.${local_domain} -> ${node_ip} from inside pods."
+    else
+        log_warn "CoreDNS verification returned '${test_ip}' (expected ${node_ip})."
+        log_warn "CoreDNS may still be reloading. Pods should resolve after a few seconds."
+    fi
+
     mark_step_done "$step_id"
 }
 
@@ -1059,6 +1137,7 @@ run_phase1() {
     phase1_step5_nfs_server
     phase1_step6_nfs_csi
     phase1_step7_local_dns      # Only runs in local mode
+    phase1_step7b_coredns_custom  # Apply CoreDNS forward for local domain
     phase1_step8_certificates   # Branches: local CA or Let's Encrypt
     phase1_step9_nginx          # Uses certs from whichever mode
 
