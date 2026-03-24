@@ -315,8 +315,21 @@ run_phase3() {
     fi
     log_success "Keycloak admin token acquired."
 
-    # ── Step 3.4: Configure Keycloak admin email ─────────────────────────
-    log_info "Configuring Keycloak admin user email..."
+    # ── Step 3.4: Enable email-as-username in master realm ───────────────
+    # This must happen BEFORE updating the admin user's username to the email,
+    # otherwise Keycloak may silently reject the username change.
+    log_info "Enabling 'email as username' in master realm..."
+
+    keycloak_api PUT "${keycloak_url}/admin/realms/master" "$kc_token" \
+        "{\"registrationEmailAsUsername\":true}" > /dev/null 2>&1
+
+    log_success "Email-as-username enabled in master realm."
+
+    # ── Step 3.5: Configure Keycloak admin user (email + username) ───────
+    log_info "Configuring Keycloak admin user..."
+
+    # Refresh token — realm config change may invalidate the old one
+    kc_token=$(keycloak_get_token "$keycloak_url" "$kc_admin_password" "$admin_email")
 
     # Find admin user — try by username "admin" first, then by email
     local admin_users admin_user_id
@@ -346,14 +359,6 @@ run_phase3() {
         > /dev/null 2>&1
 
     log_success "Keycloak admin username and email set to ${admin_email}."
-
-    # ── Step 3.5: Enable email-as-username in master realm ───────────────
-    log_info "Enabling 'email as username' in master realm..."
-
-    keycloak_api PUT "${keycloak_url}/admin/realms/master" "$kc_token" \
-        "{\"registrationEmailAsUsername\":true}" > /dev/null 2>&1
-
-    log_success "Email-as-username enabled in master realm."
 
     # ── Step 3.6: Create SAML client for Rancher on Keycloak ─────────────
     log_info "Creating SAML client for Rancher on Keycloak..."
