@@ -310,10 +310,15 @@ The `openg2p-environment.sh` script runs in two phases:
 
 ### Phase 2: Module Installation
 
+openg2p-commons is split into two Helm charts installed sequentially:
+
 | Step | What | Details |
 |---|---|---|
-| E2.1 | openg2p-commons | `helm install --wait --timeout 20m` with all required values. Includes PostgreSQL, Kafka, MinIO, OpenSearch, Redis, Superset, eSignet, ODK, KeyManager, and Keycloak client initialization |
+| E2.1 | openg2p-commons-base | Infrastructure layer: PostgreSQL, Kafka, MinIO, OpenSearch, Redis, SoftHSM, keycloak-init, postgres-init |
+| E2.2 | openg2p-commons-services | Application layer: eSignet, KeyManager, Superset, ODK, master-data, reporting, mock-identity-system. Depends on base for DB/cache/storage connectivity |
 | *(future)* | Registry, PBMS, SPAR, G2P Bridge | Placeholder steps — will be added as separate Helm installs |
+
+The services chart automatically connects to base infrastructure via `global.postgresqlHost`, `global.redisInstallationName`, etc. derived from the base release name (`commons-base`).
 
 ### Environment Command Options
 

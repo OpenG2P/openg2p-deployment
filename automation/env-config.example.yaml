@@ -51,30 +51,38 @@ keycloak:
   client_manager_password: ""
 
 # ---------------------------------------------------------------------------
-# openg2p-commons chart source
+# openg2p-commons-base (infrastructure: PostgreSQL, Kafka, MinIO, etc.)
 # ---------------------------------------------------------------------------
-commons:
-  # Path to local chart directory (e.g., path to openg2p-commons-deployment repo).
-  # If set and the directory exists, the local chart is used instead of the remote repo.
-  # Leave empty to pull from the remote Helm chart repository.
+# Installed first. Provides databases, message queues, and keycloak-init.
+commons_base:
+  # Chart name in the Helm repo (or local directory name)
+  chart_name: "openg2p-commons-base"
+  # Path to local chart directory. Leave empty for remote Helm chart.
   chart_path: ""
-
-  # Remote Helm chart repository URL (used when chart_path is empty)
   chart_repo: "https://openg2p.github.io/openg2p-helm"
+  chart_version: "2.0.0-develop"
+  # Extra Helm arguments (e.g., "--set postgresql.primary.persistence.size=20Gi")
+  extra_helm_args: ""
 
-  # Chart version (empty = latest available)
-  chart_version: ""
-
-  # Extra Helm arguments (appended to the helm install/upgrade command)
-  # Example: "--set postgresql.primary.persistence.size=20Gi"
+# ---------------------------------------------------------------------------
+# openg2p-commons-services (apps: eSignet, KeyManager, Superset, ODK, etc.)
+# ---------------------------------------------------------------------------
+# Installed second. Depends on commons-base for PostgreSQL, Redis, etc.
+commons_services:
+  # Chart name in the Helm repo (or local directory name)
+  chart_name: "openg2p-commons-services"
+  # Path to local chart directory. Leave empty for remote Helm chart.
+  chart_path: ""
+  chart_repo: "https://openg2p.github.io/openg2p-helm"
+  chart_version: "2.0.0-develop"
+  # Extra Helm arguments
   extra_helm_args: ""
 
 # ---------------------------------------------------------------------------
 # Modules — set to true/false to enable/disable
 # ---------------------------------------------------------------------------
-# openg2p-commons installs shared components (PostgreSQL, OpenSearch, MinIO,
-# Kafka, Redis, eSignet, KeyManager, ODK, Superset, etc.) required by all
-# modules. Must be true if any module below is true.
+# commons installs both charts above (base + services).
+# Must be true if any future module below is true.
 modules:
   commons: true
   # Future modules (not yet implemented in automation):
