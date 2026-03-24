@@ -198,10 +198,28 @@ env_phase2_step1_commons_base() {
     # Clean uninstall if stale release exists (full cleanup: secrets + PVCs)
     clean_uninstall_release "$env_name" "$release_name" "full"
 
-    # Recreate keycloak-client-manager secret (may have been deleted by full cleanup)
-    if [[ -n "$cm_pass" ]] && ! kubectl -n "$env_name" get secret keycloak-client-manager &>/dev/null; then
-        kubectl -n "$env_name" create secret generic keycloak-client-manager \
-            --from-literal=keycloak-client-manager-password="$cm_pass" > /dev/null 2>&1 || true
+    # Always ensure keycloak-client-manager secret exists before install.
+    # It may have been deleted by full cleanup above, by a manual uninstall,
+    # or may never have been created if phase 1 was skipped.
+    if [[ -n "$cm_pass" ]]; then
+        if kubectl -n "$env_name" get secret keycloak-client-manager &>/dev/null; then
+            log_info "Secret 'keycloak-client-manager' already exists."
+        else
+            log_info "Creating secret 'keycloak-client-manager' in namespace '${env_name}'..."
+            kubectl -n "$env_name" create secret generic keycloak-client-manager \
+                --from-literal=keycloak-client-manager-password="$cm_pass" || {
+                log_error "Failed to create keycloak-client-manager secret" \
+                          "This secret is required by the commons chart" \
+                          "Check namespace and credentials"
+                return 1
+            }
+            log_success "Secret 'keycloak-client-manager' created."
+        fi
+    else
+        log_error "Keycloak client-manager password not available" \
+                  "Cannot create the required keycloak-client-manager secret" \
+                  "Set keycloak.client_manager_password in env config or check saved state"
+        return 1
     fi
 
     log_info "Chart:    ${chart_ref}"

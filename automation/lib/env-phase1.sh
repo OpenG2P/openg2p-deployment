@@ -493,9 +493,10 @@ GWEOF
 env_phase1_step7_keycloak_secret() {
     local env_name=$(cfg "environment")
     local step_id="env-${env_name}.phase1.keycloak_secret"
-    skip_if_done "$step_id" "Keycloak secret in '${env_name}'" && return 0
 
-    log_step "E1.7" "Creating Keycloak client-manager secret in namespace '${env_name}'"
+    # Always verify the secret exists on the cluster — don't trust the state
+    # marker alone, because cleanup/uninstall may have deleted it.
+    log_step "E1.7" "Ensuring Keycloak client-manager secret in namespace '${env_name}'"
 
     ensure_kubeconfig || return 1
 
@@ -510,6 +511,7 @@ env_phase1_step7_keycloak_secret() {
     if kubectl -n "$env_name" get secret keycloak-client-manager &>/dev/null; then
         log_info "Secret 'keycloak-client-manager' already exists in namespace '${env_name}'."
     else
+        log_info "Creating secret 'keycloak-client-manager'..."
         kubectl -n "$env_name" create secret generic keycloak-client-manager \
             --from-literal=keycloak-client-manager-password="$cm_pass" || {
             log_error "Failed to create keycloak-client-manager secret" \
