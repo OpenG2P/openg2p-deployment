@@ -268,15 +268,21 @@ check_prerequisites() {
 
     # ── Ubuntu version check ──────────────────────────────────────────────
     log_info "Checking Ubuntu version..."
-    if [[ ! "$VERSION_ID" =~ ^24\.04 ]]; then
+    local ubuntu_major
+    ubuntu_major=$(echo "$VERSION_ID" | cut -d. -f1)
+    if [[ "$ubuntu_major" -lt 24 ]]; then
         log_error "Unsupported Ubuntu version: ${VERSION_ID}" \
-                  "OpenG2P requires Ubuntu 24.04 LTS" \
-                  "You are running Ubuntu ${VERSION_ID}. Please upgrade or reinstall with 24.04 LTS." \
+                  "OpenG2P requires Ubuntu 24.04 LTS or later" \
+                  "You are running Ubuntu ${VERSION_ID}. Please upgrade or reinstall with 24.04 LTS or later." \
                   "lsb_release -a" \
                   "https://ubuntu.com/download/server"
         exit 1
     fi
-    log_success "Ubuntu version: ${VERSION_ID} — OK."
+    if [[ "$VERSION_ID" != "24.04" ]]; then
+        log_warn "Ubuntu ${VERSION_ID} detected. Tested on 24.04 LTS — proceeding."
+    else
+        log_success "Ubuntu version: ${VERSION_ID} — OK."
+    fi
 
     # ── CPU check ─────────────────────────────────────────────────────────
     local required_cpus=16
