@@ -526,6 +526,46 @@ env_phase1_step7_keycloak_secret() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Step 1.8: CA certificate ConfigMap (local mode only)
+# ─────────────────────────────────────────────────────────────────────────────
+# In local mode, services inside pods need to trust our self-signed CA
+# when talking to https://keycloak.openg2p.test. We create a ConfigMap
+# with the CA cert so it can be mounted into pods and added to trust stores.
+env_phase1_step8_ca_configmap() {
+    local domain_mode=$(cfg "domain_mode" "custom")
+    [[ "$domain_mode" == "local" ]] || return 0
+
+    local env_name=$(cfg "environment")
+    log_step "E1.8" "Creating CA certificate ConfigMap in namespace '${env_name}'"
+
+    ensure_kubeconfig || return 1
+
+    local ca_cert="/etc/openg2p/ca/ca.crt"
+    if [[ ! -f "$ca_cert" ]]; then
+        log_error "CA certificate not found at ${ca_cert}" \
+                  "The infra script should have created the CA" \
+                  "Re-run openg2p-infra.sh phase 1"
+        return 1
+    fi
+
+    if kubectl -n "$env_name" get configmap openg2p-ca-cert &>/dev/null; then
+        log_info "ConfigMap 'openg2p-ca-cert' already exists — updating..."
+        kubectl -n "$env_name" create configmap openg2p-ca-cert \
+            --from-file=ca.crt="$ca_cert" --dry-run=client -o yaml | \
+            kubectl apply -f - > /dev/null 2>&1
+    else
+        kubectl -n "$env_name" create configmap openg2p-ca-cert \
+            --from-file=ca.crt="$ca_cert" || {
+            log_error "Failed to create CA cert ConfigMap" \
+                      "kubectl create configmap failed"
+            return 1
+        }
+    fi
+
+    log_success "ConfigMap 'openg2p-ca-cert' created with CA certificate."
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Run all Phase 1 steps
 # ─────────────────────────────────────────────────────────────────────────────
 run_env_phase1() {
@@ -540,6 +580,7 @@ run_env_phase1() {
     env_phase1_step5_rancher_project
     env_phase1_step6_istio_gateway
     env_phase1_step7_keycloak_secret
+    env_phase1_step8_ca_configmap
 
     log_success "Phase 1 complete — environment infrastructure for '${env_name}' is ready."
 }
