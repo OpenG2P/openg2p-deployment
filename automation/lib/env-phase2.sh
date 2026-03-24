@@ -129,6 +129,7 @@ helm_install_chart() {
     local -a helm_args=(
         install "$release_name" "$chart_ref"
         -n "$env_name"
+        --wait
         --timeout 20m
     )
 
@@ -228,19 +229,36 @@ env_phase2_step1_commons_base() {
         "${extra[@]}" \
         || return 1
 
-    # Verify StatefulSets and Deployments are ready
-    log_info "Verifying infrastructure resources are ready..."
-    local not_ready
-    not_ready=$(kubectl get deployments,statefulsets -n "$env_name" -o json 2>/dev/null | \
-        jq -r '.items[] | select((.status.readyReplicas // 0) != (.status.replicas // 1)) | "\(.kind)/\(.metadata.name)"' 2>/dev/null || true)
+    # Wait until ALL StatefulSets and Deployments are fully ready.
+    # This is critical — services chart must not start until PostgreSQL,
+    # Kafka, Redis, etc. are all accepting connections.
+    log_info "Waiting for all base infrastructure to be fully ready..."
+    local wait_timeout=900  # 15 minutes
+    local wait_interval=15
+    local wait_elapsed=0
 
-    if [[ -n "$not_ready" ]]; then
-        log_warn "Some resources are not yet fully ready:"
-        echo "$not_ready" | while read -r res; do
-            log_warn "  - ${res}"
-        done
-    else
-        log_success "All base infrastructure resources in '${env_name}' are ready."
+    while [[ $wait_elapsed -lt $wait_timeout ]]; do
+        local not_ready
+        not_ready=$(kubectl get deployments,statefulsets -n "$env_name" -o json 2>/dev/null | \
+            jq -r '.items[] | select((.status.readyReplicas // 0) != (.status.replicas // 1)) | "\(.kind)/\(.metadata.name)"' 2>/dev/null || true)
+
+        if [[ -z "$not_ready" ]]; then
+            log_success "All base infrastructure resources in '${env_name}' are ready."
+            break
+        fi
+
+        echo -ne "\r  Waiting for: $(echo "$not_ready" | tr '\n' ', ')... ${wait_elapsed}s/${wait_timeout}s"
+        sleep "$wait_interval"
+        wait_elapsed=$((wait_elapsed + wait_interval))
+    done
+
+    if [[ $wait_elapsed -ge $wait_timeout ]]; then
+        echo ""
+        log_error "Base infrastructure not ready after ${wait_timeout}s" \
+                  "Some resources did not become ready in time" \
+                  "Check pod status" \
+                  "kubectl get pods -n ${env_name} --field-selector=status.phase!=Running"
+        return 1
     fi
 
     mark_step_done "$step_id"
@@ -320,20 +338,34 @@ env_phase2_step2_commons_services() {
         "${extra[@]}" \
         || return 1
 
-    # Verify deployments are ready
-    log_info "Verifying all service deployments are ready..."
-    local not_ready
-    not_ready=$(kubectl get deployments -n "$env_name" -o json 2>/dev/null | \
-        jq -r '.items[] | select((.status.availableReplicas // 0) != (.status.replicas // 1)) | .metadata.name' 2>/dev/null || true)
+    # Wait until ALL deployments are fully ready before marking complete.
+    log_info "Waiting for all service deployments to be fully ready..."
+    local wait_timeout=900  # 15 minutes
+    local wait_interval=15
+    local wait_elapsed=0
 
-    if [[ -n "$not_ready" ]]; then
-        log_warn "Some deployments are not yet fully ready:"
-        echo "$not_ready" | while read -r dep; do
-            log_warn "  - ${dep}"
-        done
-        log_warn "They may still be starting. Check: kubectl get pods -n ${env_name}"
-    else
-        log_success "All deployments in '${env_name}' are ready."
+    while [[ $wait_elapsed -lt $wait_timeout ]]; do
+        local not_ready
+        not_ready=$(kubectl get deployments -n "$env_name" -o json 2>/dev/null | \
+            jq -r '.items[] | select((.status.availableReplicas // 0) != (.status.replicas // 1)) | .metadata.name' 2>/dev/null || true)
+
+        if [[ -z "$not_ready" ]]; then
+            log_success "All deployments in '${env_name}' are ready."
+            break
+        fi
+
+        echo -ne "\r  Waiting for: $(echo "$not_ready" | tr '\n' ', ')... ${wait_elapsed}s/${wait_timeout}s"
+        sleep "$wait_interval"
+        wait_elapsed=$((wait_elapsed + wait_interval))
+    done
+
+    if [[ $wait_elapsed -ge $wait_timeout ]]; then
+        echo ""
+        log_error "Service deployments not ready after ${wait_timeout}s" \
+                  "Some deployments did not become ready in time" \
+                  "Check pod status" \
+                  "kubectl get pods -n ${env_name} --field-selector=status.phase!=Running"
+        return 1
     fi
 
     mark_step_done "$step_id"
