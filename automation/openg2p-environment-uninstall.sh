@@ -19,7 +19,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE=""
-ENV_NAME=""
 
 source "${SCRIPT_DIR}/lib/utils.sh"
 source "${SCRIPT_DIR}/lib/env-phase1.sh"
@@ -28,9 +27,8 @@ source "${SCRIPT_DIR}/lib/env-phase1.sh"
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case $1 in
-            --config)      CONFIG_FILE="$2"; shift 2 ;;
-            --environment) ENV_NAME="$2"; shift 2 ;;
-            --help|-h)     show_help; exit 0 ;;
+            --config)  CONFIG_FILE="$2"; shift 2 ;;
+            --help|-h) show_help; exit 0 ;;
             *)
                 log_error "Unknown option: $1" \
                           "This flag is not recognized" \
@@ -41,17 +39,15 @@ parse_args() {
         esac
     done
 
-    if [[ -z "$CONFIG_FILE" && -z "$ENV_NAME" ]]; then
-        log_error "No environment specified" \
-                  "Use --config <file> or --environment <name>" \
-                  "Example: $0 --config env-config.yaml" \
-                  "$0 --help"
+    if [[ -z "$CONFIG_FILE" ]]; then
+        log_error "No config file specified" \
+                  "The --config flag is required" \
+                  "Provide the same config used during environment setup" \
+                  "$0 --config env-config.yaml"
         exit 1
     fi
 
-    if [[ -n "$CONFIG_FILE" ]]; then
-        [[ "$CONFIG_FILE" = /* ]] || CONFIG_FILE="${SCRIPT_DIR}/${CONFIG_FILE}"
-    fi
+    [[ "$CONFIG_FILE" = /* ]] || CONFIG_FILE="${SCRIPT_DIR}/${CONFIG_FILE}"
 }
 
 show_help() {
@@ -61,12 +57,10 @@ OpenG2P Environment Uninstall
 
 Usage:
   sudo ./openg2p-environment-uninstall.sh --config env-config.yaml
-  sudo ./openg2p-environment-uninstall.sh --environment qa
 
 Options:
-  --config <file>          Path to environment config file
-  --environment <name>     Environment name (namespace) to delete
-  --help                   Show this help message
+  --config <file>    Path to environment config file (required)
+  --help             Show this help message
 
 WARNING: This permanently deletes ALL data in the environment including
 databases, files, secrets, and Kubernetes resources. This is IRREVERSIBLE.
@@ -82,22 +76,21 @@ main() {
     check_root "$@"
     ensure_kubeconfig || exit 1
 
-    # Determine environment name
-    if [[ -n "$CONFIG_FILE" ]]; then
+    # Load config
+    load_config "$CONFIG_FILE"
+    local ENV_NAME=$(cfg "environment")
+
+    # Load infra config for domain_mode, local_domain, node_ip
+    local infra_config_path=$(cfg "infra_config" "infra-config.yaml")
+    [[ "$infra_config_path" = /* ]] || infra_config_path="${SCRIPT_DIR}/${infra_config_path}"
+    if [[ -f "$infra_config_path" ]]; then
+        load_config "$infra_config_path"
         load_config "$CONFIG_FILE"
-        ENV_NAME=$(cfg "environment")
-        # Load infra config for domain_mode, local_domain, node_ip
-        local infra_config_path=$(cfg "infra_config" "infra-config.yaml")
-        [[ "$infra_config_path" = /* ]] || infra_config_path="${SCRIPT_DIR}/${infra_config_path}"
-        if [[ -f "$infra_config_path" ]]; then
-            load_config "$infra_config_path"
-            load_config "$CONFIG_FILE"
-        fi
     fi
 
     if [[ -z "$ENV_NAME" ]]; then
         log_error "Could not determine environment name" \
-                  "Set 'environment' in config or use --environment flag"
+                  "The 'environment' key is missing or empty in your config"
         exit 1
     fi
 

@@ -334,8 +334,6 @@ sudo ./openg2p-environment.sh --config env-config.yaml --force       # Re-run ev
 **Remove a single environment** (keeps infrastructure and other environments intact):
 ```bash
 sudo ./openg2p-environment-uninstall.sh --config env-config.yaml
-# Or by name:
-sudo ./openg2p-environment-uninstall.sh --environment qa
 ```
 
 This permanently deletes: Helm releases, databases, secrets, PVCs/PVs, Istio Gateway, Nginx config, Rancher Project, and the namespace.
