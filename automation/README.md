@@ -329,14 +329,34 @@ sudo ./openg2p-environment.sh --config env-config.yaml --phase 2    # Module ins
 sudo ./openg2p-environment.sh --config env-config.yaml --force       # Re-run everything
 ```
 
+### Uninstalling
+
+**Remove a single environment** (keeps infrastructure and other environments intact):
+```bash
+sudo ./openg2p-environment-uninstall.sh --config env-config.yaml
+# Or by name:
+sudo ./openg2p-environment-uninstall.sh --environment qa
+```
+
+This permanently deletes: Helm releases, databases, secrets, PVCs/PVs, Istio Gateway, Nginx config, Rancher Project, and the namespace.
+
+**Remove the entire infrastructure** (destroys everything — all environments, the K8s cluster, VPN, DNS):
+```bash
+sudo ./openg2p-infra-uninstall.sh
+```
+
+Requires typing `DELETE EVERYTHING` to confirm. Removes: RKE2 cluster, Wireguard VPN, dnsmasq, Nginx, NFS exports, TLS certificates, and all state. The VM is left clean for a fresh installation.
+
 ## File Structure
 
 ```
 automation/
 ├── openg2p-infra.sh               # Script 1: base infrastructure
+├── openg2p-infra-uninstall.sh     # Uninstall: tears down entire infrastructure
 ├── infra-config.example.yaml      # Config for Script 1
 ├── helmfile-infra.yaml.gotmpl     # Helmfile for platform components (Go template)
 ├── openg2p-environment.sh         # Script 2: environment setup
+├── openg2p-environment-uninstall.sh  # Uninstall: removes a single environment
 ├── env-config.example.yaml        # Config for Script 2
 ├── README.md
 ├── lib/

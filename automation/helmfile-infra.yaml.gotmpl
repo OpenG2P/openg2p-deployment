@@ -140,6 +140,11 @@ releases:
         proxy: edge
         proxyHeaders: xforwarded
         production: true
+        extraEnvVars:
+          - name: KC_HOSTNAME
+            value: {{ .Values.keycloak_hostname | quote }}
+          - name: KC_HOSTNAME_STRICT
+            value: "false"
 
   - name: keycloak-ingress
     namespace: keycloak-system
