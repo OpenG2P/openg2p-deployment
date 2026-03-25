@@ -36,31 +36,50 @@ get_keycloak_hostname() {
 # have nested subshells that break when passed through eval
 # ─────────────────────────────────────────────────────────────────────────────
 install_kubectl() {
+    local version="${1:-v1.33.6}"
     if kubectl version --client &>/dev/null; then
         log_success "kubectl is already installed."
         return 0
     fi
-    log_info "Installing kubectl..."
-    local kube_version
-    kube_version=$(curl -sL https://dl.k8s.io/release/stable.txt)
-    if [[ -z "$kube_version" ]]; then
-        log_error "Failed to fetch latest kubectl version" \
-                  "Could not reach https://dl.k8s.io" \
-                  "Check internet connectivity" \
-                  "curl -sL https://dl.k8s.io/release/stable.txt" \
-                  "https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/"
-        return 1
-    fi
-    curl -sLO "https://dl.k8s.io/release/${kube_version}/bin/linux/amd64/kubectl" || {
-        log_error "Failed to download kubectl ${kube_version}" \
+    log_info "Installing kubectl ${version}..."
+    curl -sLO "https://dl.k8s.io/release/${version}/bin/linux/amd64/kubectl" || {
+        log_error "Failed to download kubectl ${version}" \
                   "Download from dl.k8s.io failed" \
                   "Check internet connectivity" \
-                  "curl -sLO https://dl.k8s.io/release/${kube_version}/bin/linux/amd64/kubectl"
+                  "curl -sLO https://dl.k8s.io/release/${version}/bin/linux/amd64/kubectl" \
+                  "https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/"
         return 1
     }
     install -m 0755 kubectl /usr/local/bin/kubectl
     rm -f kubectl
-    log_success "kubectl ${kube_version} installed."
+    log_success "kubectl ${version} installed."
+}
+
+install_helm() {
+    local version="${1:-3.17.3}"
+    if helm version &>/dev/null; then
+        log_success "helm is already installed."
+        return 0
+    fi
+    log_info "Installing Helm v${version}..."
+    local url="https://get.helm.sh/helm-v${version}-linux-amd64.tar.gz"
+    curl -sL "$url" -o /tmp/helm.tar.gz || {
+        log_error "Failed to download Helm v${version}" \
+                  "Download from get.helm.sh failed" \
+                  "Check internet connectivity" \
+                  "curl -sL ${url}" \
+                  "https://helm.sh/docs/intro/install/"
+        return 1
+    }
+    tar xzf /tmp/helm.tar.gz -C /tmp linux-amd64/helm || {
+        log_error "Failed to extract Helm archive" \
+                  "The downloaded file may be corrupt"
+        rm -f /tmp/helm.tar.gz
+        return 1
+    }
+    install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
+    rm -rf /tmp/helm.tar.gz /tmp/linux-amd64
+    log_success "Helm v${version} installed."
 }
 
 install_istioctl() {
@@ -139,20 +158,17 @@ phase1_step1_tools() {
     }
     log_success "Basic tools installed (wget, curl, jq, openssl, dig)."
 
-    install_kubectl || return 1
+    install_kubectl "v1.33.6" || return 1
 
-    install_if_missing "helm" \
-        "helm version" \
-        "curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash" \
-        "https://helm.sh/docs/intro/install/"
+    install_helm "3.17.3" || return 1
 
     install_istioctl "1.24.1" || return 1
 
     install_helmfile "1.1.0" || return 1
 
     if ! helm plugin list 2>/dev/null | grep -q diff; then
-        log_info "Installing helm-diff plugin (required by Helmfile)..."
-        helm plugin install https://github.com/databus23/helm-diff || {
+        log_info "Installing helm-diff plugin v3.9.14 (required by Helmfile)..."
+        helm plugin install https://github.com/databus23/helm-diff --version v3.9.14 || {
             log_warn "helm-diff plugin install failed. Helmfile may still work with --skip-diff-on-install."
         }
     fi
@@ -657,7 +673,7 @@ phase1_step7_local_dns() {
 
     install_if_missing "dnsmasq" \
         "dnsmasq --version" \
-        "apt-get install -y -qq dnsmasq > /dev/null 2>&1" \
+        "apt-get install -y -qq dnsmasq=2.90-* > /dev/null 2>&1 || apt-get install -y -qq dnsmasq > /dev/null 2>&1" \
         "https://thekelleys.org.uk/dnsmasq/doc.html"
 
     if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
