@@ -11,7 +11,7 @@ fi
 echo "\n$(tput setaf 9)[ Install NFS Server ] $(tput sgr 0)"
 
 apt update
-apt install nfs-kernel-server -y
+apt install nfs-kernel-server=1:2.6.4-* -y || apt install nfs-kernel-server -y
 
 echo "\n$(tput setaf 9)[ Add User For NFS ] $(tput sgr 0)"
 useradd $NFS_USER
