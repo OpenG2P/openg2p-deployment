@@ -329,6 +329,27 @@ sudo ./openg2p-environment.sh --config env-config.yaml --phase 2    # Module ins
 sudo ./openg2p-environment.sh --config env-config.yaml --force       # Re-run everything
 ```
 
+### Migrating from Local to Custom Domain
+
+When your sandbox is ready for a real domain name, migrate without reinstalling:
+
+```bash
+cp migrate-config.example.yaml migrate-config.yaml
+# Edit: set new_rancher_hostname, new_keycloak_hostname, letsencrypt_email
+# List environments to migrate with their new base_domain
+sudo ./openg2p-migrate-domain.sh --config migrate-config.yaml
+```
+
+This is a **non-destructive** operation — no data loss, no service reinstall. It:
+- Validates DNS records for new hostnames
+- Obtains Let's Encrypt certificates
+- Updates Nginx, Keycloak, Rancher, SAML, Istio Gateway
+- Helm upgrades each environment's commons charts with new domain
+- Updates infra-config.yaml and env-config.yaml (backups: `*.pre-migration`)
+- Removes CoreDNS local domain forward
+
+After migration, you can remove `/etc/resolver` entries and the self-signed CA from your laptop.
+
 ### Uninstalling
 
 **Remove a single environment** (keeps infrastructure and other environments intact):
@@ -356,6 +377,8 @@ automation/
 ├── openg2p-environment.sh         # Script 2: environment setup
 ├── openg2p-environment-uninstall.sh  # Uninstall: removes a single environment
 ├── env-config.example.yaml        # Config for Script 2
+├── openg2p-migrate-domain.sh      # Migrate: local → custom domain
+├── migrate-config.example.yaml    # Config for domain migration
 ├── README.md
 ├── lib/
 │   ├── utils.sh                   # Shared: logging, state, config, wait helpers
