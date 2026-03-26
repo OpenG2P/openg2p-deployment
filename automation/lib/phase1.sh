@@ -836,12 +836,47 @@ phase1_step8_certificates() {
     skip_if_done "$step_id" "TLS certificates" && return 0
 
     local domain_mode=$(cfg "domain_mode" "custom")
+    local tls_method=$(cfg "tls.method" "")
+
     if [[ "$domain_mode" == "local" ]]; then
         phase1_step8_certificates_local
+    elif [[ "$tls_method" == "provided" ]]; then
+        phase1_step8_certificates_provided
     else
         phase1_step8_certificates_letsencrypt
     fi
     mark_step_done "$step_id"
+}
+
+phase1_step8_certificates_provided() {
+    log_step "1.8" "Installing user-provided TLS certificates"
+
+    local rancher_host=$(get_rancher_hostname)
+    local keycloak_host=$(get_keycloak_hostname)
+
+    local rancher_cert_src=$(cfg "tls.rancher_cert" "")
+    local rancher_key_src=$(cfg "tls.rancher_key" "")
+    local keycloak_cert_src=$(cfg "tls.keycloak_cert" "")
+    local keycloak_key_src=$(cfg "tls.keycloak_key" "")
+
+    # If only one pair is provided, assume it's a wildcard for both
+    if [[ -z "$keycloak_cert_src" && -n "$rancher_cert_src" ]]; then
+        keycloak_cert_src="$rancher_cert_src"
+        keycloak_key_src="$rancher_key_src"
+        log_info "Using same certificate for both Rancher and Keycloak (wildcard assumed)."
+    fi
+
+    if [[ -z "$rancher_cert_src" || -z "$rancher_key_src" ]]; then
+        log_error "tls.rancher_cert and tls.rancher_key are required when tls.method is 'provided'" \
+                  "Set the paths to your certificate and key files in the config" \
+                  "Check tls section in your config file"
+        return 1
+    fi
+
+    install_provided_cert "$rancher_host" "$rancher_cert_src" "$rancher_key_src" || return 1
+    install_provided_cert "$keycloak_host" "$keycloak_cert_src" "$keycloak_key_src" || return 1
+
+    log_success "User-provided TLS certificates installed."
 }
 
 phase1_step8_certificates_local() {
@@ -923,8 +958,9 @@ EOF
 phase1_step8_certificates_letsencrypt() {
     log_step "1.8" "Obtaining Let's Encrypt TLS certificates"
 
-    local email=$(cfg "letsencrypt_email")
-    local challenge=$(cfg "letsencrypt_challenge" "dns")
+    # Support both new tls.* keys and legacy top-level keys
+    local email=$(cfg "tls.letsencrypt_email" "$(cfg 'letsencrypt_email' '')")
+    local challenge=$(cfg "tls.letsencrypt_challenge" "$(cfg 'letsencrypt_challenge' 'dns')")
     local rancher_host=$(get_rancher_hostname)
     local keycloak_host=$(get_keycloak_hostname)
 
@@ -938,7 +974,7 @@ phase1_step8_certificates_letsencrypt() {
             install_if_missing "certbot-dns-cloudflare" \
                 "pip3 show certbot-dns-cloudflare" \
                 "apt-get install -y -qq python3-certbot-dns-cloudflare > /dev/null 2>&1 || pip3 install certbot-dns-cloudflare --break-system-packages"
-            local cf_token=$(cfg "cloudflare_api_token")
+            local cf_token=$(cfg "tls.cloudflare_api_token" "$(cfg 'cloudflare_api_token' '')")
             if [[ -z "$cf_token" ]]; then
                 log_error "Cloudflare API token not set" \
                           "cloudflare_api_token is empty in config" \
@@ -1027,18 +1063,10 @@ phase1_step9_nginx() {
         "https://nginx.org/en/linux_packages.html"
 
     local rancher_cert rancher_key keycloak_cert keycloak_key
-    if [[ "$domain_mode" == "local" ]]; then
-        local certs_dir="/etc/openg2p/certs"
-        rancher_cert="${certs_dir}/${rancher_host}/fullchain.pem"
-        rancher_key="${certs_dir}/${rancher_host}/privkey.pem"
-        keycloak_cert="${certs_dir}/${keycloak_host}/fullchain.pem"
-        keycloak_key="${certs_dir}/${keycloak_host}/privkey.pem"
-    else
-        rancher_cert="/etc/letsencrypt/live/${rancher_host}/fullchain.pem"
-        rancher_key="/etc/letsencrypt/live/${rancher_host}/privkey.pem"
-        keycloak_cert="/etc/letsencrypt/live/${keycloak_host}/fullchain.pem"
-        keycloak_key="/etc/letsencrypt/live/${keycloak_host}/privkey.pem"
-    fi
+    rancher_cert=$(get_cert_path "$rancher_host" "cert")
+    rancher_key=$(get_cert_path "$rancher_host" "key")
+    keycloak_cert=$(get_cert_path "$keycloak_host" "cert")
+    keycloak_key=$(get_cert_path "$keycloak_host" "key")
 
     for cert in "$rancher_cert" "$rancher_key" "$keycloak_cert" "$keycloak_key"; do
         if [[ ! -f "$cert" ]]; then

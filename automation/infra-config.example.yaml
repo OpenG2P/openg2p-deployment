@@ -59,27 +59,39 @@ rancher_hostname: ""
 keycloak_hostname: ""
 
 # ---------------------------------------------------------------------------
-# TLS / Let's Encrypt (only needed when domain_mode is "custom")
+# TLS Certificates (only needed when domain_mode is "custom")
 # ---------------------------------------------------------------------------
-# Email address for Let's Encrypt certificate registration
-letsencrypt_email: ""
+tls:
+  # How to obtain TLS certificates:
+  #   "letsencrypt" (default) — Automatically obtain certs from Let's Encrypt.
+  #                              Requires letsencrypt_email and internet access.
+  #   "provided"              — You supply your own cert and key files.
+  #                              Set the paths below. Supports wildcard certs.
+  method: "letsencrypt"
 
-# Certificate challenge method:
-#   "dns"            — DNS-01 challenge (recommended). The script will pause and
-#                      ask you to create a TXT record at your DNS provider.
-#                      Works even if port 80 is not open. Supports wildcards.
-#   "dns-cloudflare" — Automated DNS-01 via Cloudflare API. Requires
-#                      cloudflare_api_token to be set below. Fully hands-off.
-#   "dns-route53"    — Automated DNS-01 via AWS Route 53. Requires
-#                      AWS credentials configured on the machine.
-#   "http"           — HTTP-01 challenge. Requires port 80 open to the internet.
-#                      Simplest but least likely to work in restricted networks.
-letsencrypt_challenge: "dns"
+  # --- Let's Encrypt settings (only when method is "letsencrypt") ---
 
-# Cloudflare API token (only needed if letsencrypt_challenge is "dns-cloudflare")
-# Create a token at: https://dash.cloudflare.com/profile/api-tokens
-# Token must have "Zone:DNS:Edit" permission for your domain.
-cloudflare_api_token: ""
+  # Email for Let's Encrypt registration
+  letsencrypt_email: ""
+
+  # Challenge method:
+  #   "dns"            — Manual DNS-01 (recommended). Script pauses for TXT record.
+  #   "dns-cloudflare" — Automated via Cloudflare API token.
+  #   "dns-route53"    — Automated via AWS Route 53 credentials.
+  #   "http"           — HTTP-01. Requires port 80 open to internet.
+  letsencrypt_challenge: "dns"
+
+  # Cloudflare API token (only if challenge is "dns-cloudflare")
+  cloudflare_api_token: ""
+
+  # --- User-provided certificate paths (only when method is "provided") ---
+  # Paths to fullchain (cert + intermediate CA) and private key files.
+  # If you have a single wildcard cert, set rancher_cert/key and leave
+  # keycloak_cert/key empty — the same cert will be used for both.
+  rancher_cert: ""
+  rancher_key: ""
+  keycloak_cert: ""
+  keycloak_key: ""
 
 # ---------------------------------------------------------------------------
 # RKE2 Kubernetes

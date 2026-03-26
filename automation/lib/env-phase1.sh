@@ -123,14 +123,41 @@ env_phase1_step2_certificates() {
     skip_if_done "$step_id" "TLS certificates for ${env_name}" && return 0
 
     local domain_mode=$(cfg "domain_mode" "custom")
+    local tls_method=$(cfg "tls.method" "")
     local base_domain=$(get_env_base_domain)
 
     if [[ "$domain_mode" == "local" ]]; then
         env_phase1_step2_certificates_local "$base_domain"
+    elif [[ "$tls_method" == "provided" ]]; then
+        env_phase1_step2_certificates_provided "$base_domain"
     else
         env_phase1_step2_certificates_letsencrypt "$base_domain"
     fi
     mark_step_done "$step_id"
+}
+
+env_phase1_step2_certificates_provided() {
+    local base_domain="$1"
+    log_step "E1.2" "Installing user-provided TLS certificate for *.${base_domain}"
+
+    local cert_src=$(cfg "tls.cert" "")
+    local key_src=$(cfg "tls.key" "")
+
+    # Fall back to infra-level rancher cert if env-level not set (wildcard reuse)
+    if [[ -z "$cert_src" ]]; then
+        cert_src=$(cfg "tls.rancher_cert" "")
+        key_src=$(cfg "tls.rancher_key" "")
+    fi
+
+    if [[ -z "$cert_src" || -z "$key_src" ]]; then
+        log_error "tls.cert and tls.key are required when tls.method is 'provided'" \
+                  "Set the paths to your wildcard certificate and key in the config" \
+                  "Check the tls section in your env config"
+        return 1
+    fi
+
+    install_provided_cert "$base_domain" "$cert_src" "$key_src" || return 1
+    log_success "User-provided certificate installed for *.${base_domain}."
 }
 
 env_phase1_step2_certificates_local() {
@@ -276,13 +303,8 @@ env_phase1_step3_nginx() {
     local base_domain=$(get_env_base_domain)
 
     local env_cert env_key
-    if [[ "$domain_mode" == "local" ]]; then
-        env_cert="/etc/openg2p/certs/${base_domain}/fullchain.pem"
-        env_key="/etc/openg2p/certs/${base_domain}/privkey.pem"
-    else
-        env_cert="/etc/letsencrypt/live/${base_domain}/fullchain.pem"
-        env_key="/etc/letsencrypt/live/${base_domain}/privkey.pem"
-    fi
+    env_cert=$(get_cert_path "$base_domain" "cert")
+    env_key=$(get_cert_path "$base_domain" "key")
 
     for f in "$env_cert" "$env_key"; do
         if [[ ! -f "$f" ]]; then

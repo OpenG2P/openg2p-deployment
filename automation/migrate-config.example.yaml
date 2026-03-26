@@ -29,12 +29,27 @@ new_domain_mode: "custom"
 new_rancher_hostname: "rancher.openg2p.org"
 new_keycloak_hostname: "keycloak.openg2p.org"
 
-# Let's Encrypt settings for the new domain
-letsencrypt_email: "admin@openg2p.org"
-# Challenge method: dns (manual), dns-cloudflare, dns-route53, http
-letsencrypt_challenge: "dns"
-# Cloudflare API token (only if challenge is dns-cloudflare)
-cloudflare_api_token: ""
+# ---------------------------------------------------------------------------
+# TLS certificates for the new domain
+# ---------------------------------------------------------------------------
+tls:
+  # How to obtain TLS certificates:
+  #   "letsencrypt" — Automatically obtain from Let's Encrypt (default).
+  #   "provided"    — You supply your own cert and key files.
+  method: "letsencrypt"
+
+  # --- Let's Encrypt settings (when method is "letsencrypt") ---
+  letsencrypt_email: "admin@openg2p.org"
+  letsencrypt_challenge: "dns"
+  cloudflare_api_token: ""
+
+  # --- User-provided certificate paths (when method is "provided") ---
+  # For Rancher and Keycloak. If you have a single wildcard cert,
+  # set rancher_cert/key and leave keycloak_cert/key empty.
+  rancher_cert: ""
+  rancher_key: ""
+  keycloak_cert: ""
+  keycloak_key: ""
 
 # ---------------------------------------------------------------------------
 # Environments to migrate
@@ -45,6 +60,9 @@ environments:
   - name: "dev"
     config_file: "env-config.yaml"
     new_base_domain: "dev.openg2p.org"
+    # For tls.method "provided", set the wildcard cert for this environment:
+    # cert: "/path/to/dev.openg2p.org.fullchain.pem"
+    # key: "/path/to/dev.openg2p.org.privkey.pem"
 #  - name: "qa"
 #    config_file: "env-qa-config.yaml"
 #    new_base_domain: "qa.openg2p.org"

@@ -138,8 +138,7 @@ migrate_infra() {
     local new_rancher_host=$(cfg "new_rancher_hostname")
     local new_keycloak_host=$(cfg "new_keycloak_hostname")
     local new_domain_mode=$(cfg "new_domain_mode" "custom")
-    local le_email=$(cfg "letsencrypt_email")
-    local le_challenge=$(cfg "letsencrypt_challenge" "dns")
+    local tls_method=$(cfg "tls.method" "letsencrypt")
     local node_ip=$(cfg "node_ip")
 
     if [[ -z "$new_rancher_host" || -z "$new_keycloak_host" ]]; then
@@ -151,30 +150,52 @@ migrate_infra() {
     log_info "Validating DNS records for new hostnames..."
     check_dns_for_domains "$node_ip" "$new_rancher_host" "$new_keycloak_host"
 
-    # ── M1.2: Obtain Let's Encrypt certs ────────────────────────────────
-    log_info "Obtaining Let's Encrypt certificates..."
-
-    # Temporarily set config values so the existing cert function works
-    CONFIG["letsencrypt_email"]="$le_email"
-    CONFIG["letsencrypt_challenge"]="$le_challenge"
+    # ── M1.2: Obtain/install TLS certificates ───────────────────────────
+    # Temporarily set config values so cert functions resolve correctly
     CONFIG["rancher_hostname"]="$new_rancher_host"
     CONFIG["keycloak_hostname"]="$new_keycloak_host"
     CONFIG["domain_mode"]="custom"
+    CONFIG["tls.method"]="$tls_method"
 
-    local cf_token=$(cfg "cloudflare_api_token" "")
-    if [[ -n "$cf_token" ]]; then
-        CONFIG["cloudflare_api_token"]="$cf_token"
+    if [[ "$tls_method" == "provided" ]]; then
+        log_info "Installing user-provided TLS certificates..."
+
+        local rancher_cert_src=$(cfg "tls.rancher_cert" "")
+        local rancher_key_src=$(cfg "tls.rancher_key" "")
+        local keycloak_cert_src=$(cfg "tls.keycloak_cert" "")
+        local keycloak_key_src=$(cfg "tls.keycloak_key" "")
+
+        if [[ -z "$keycloak_cert_src" && -n "$rancher_cert_src" ]]; then
+            keycloak_cert_src="$rancher_cert_src"
+            keycloak_key_src="$rancher_key_src"
+        fi
+
+        install_provided_cert "$new_rancher_host" "$rancher_cert_src" "$rancher_key_src" || return 1
+        install_provided_cert "$new_keycloak_host" "$keycloak_cert_src" "$keycloak_key_src" || return 1
+    else
+        log_info "Obtaining Let's Encrypt certificates..."
+        local le_email=$(cfg "tls.letsencrypt_email" "")
+        local le_challenge=$(cfg "tls.letsencrypt_challenge" "dns")
+
+        CONFIG["tls.letsencrypt_email"]="$le_email"
+        CONFIG["tls.letsencrypt_challenge"]="$le_challenge"
+
+        local cf_token=$(cfg "tls.cloudflare_api_token" "")
+        if [[ -n "$cf_token" ]]; then
+            CONFIG["tls.cloudflare_api_token"]="$cf_token"
+        fi
+
+        phase1_step8_certificates_letsencrypt
     fi
-
-    phase1_step8_certificates_letsencrypt "$new_rancher_host" "$new_keycloak_host"
 
     # ── M1.3: Update Nginx infra server blocks ──────────────────────────
     log_info "Updating Nginx infrastructure server blocks..."
 
-    local rancher_cert="/etc/letsencrypt/live/${new_rancher_host}/fullchain.pem"
-    local rancher_key="/etc/letsencrypt/live/${new_rancher_host}/privkey.pem"
-    local keycloak_cert="/etc/letsencrypt/live/${new_keycloak_host}/fullchain.pem"
-    local keycloak_key="/etc/letsencrypt/live/${new_keycloak_host}/privkey.pem"
+    local rancher_cert rancher_key keycloak_cert keycloak_key
+    rancher_cert=$(get_cert_path "$new_rancher_host" "cert")
+    rancher_key=$(get_cert_path "$new_rancher_host" "key")
+    keycloak_cert=$(get_cert_path "$new_keycloak_host" "cert")
+    keycloak_key=$(get_cert_path "$new_keycloak_host" "key")
 
     backup_file "/etc/nginx/sites-available/openg2p-infra.conf"
 
@@ -375,8 +396,13 @@ EOF
         update_yaml_key "$infra_config_path" "domain_mode" "$new_domain_mode"
         update_yaml_key "$infra_config_path" "rancher_hostname" "$new_rancher_host"
         update_yaml_key "$infra_config_path" "keycloak_hostname" "$new_keycloak_host"
-        update_yaml_key "$infra_config_path" "letsencrypt_email" "$le_email"
-        update_yaml_key "$infra_config_path" "letsencrypt_challenge" "$le_challenge"
+        update_yaml_key "$infra_config_path" "tls.method" "$tls_method"
+        if [[ "$tls_method" == "letsencrypt" ]]; then
+            local le_email=$(cfg "tls.letsencrypt_email" "")
+            local le_challenge=$(cfg "tls.letsencrypt_challenge" "dns")
+            update_yaml_key "$infra_config_path" "tls.letsencrypt_email" "$le_email"
+            update_yaml_key "$infra_config_path" "tls.letsencrypt_challenge" "$le_challenge"
+        fi
         log_success "infra-config.yaml updated."
     else
         log_warn "infra-config.yaml not found at ${infra_config_path}. Update it manually."

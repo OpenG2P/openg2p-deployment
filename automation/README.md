@@ -30,16 +30,25 @@ Can be migrated to `custom` mode later when real domain names are available.
 
 ### Custom mode (`domain_mode: custom`)
 
-For production deployments with proper domain names. Requires DNS A records pointing to the VM and uses Let's Encrypt for trusted TLS certificates.
+For production deployments with proper domain names. Requires DNS A records pointing to the VM.
 
-Certificate challenge methods (set `letsencrypt_challenge` in config):
+TLS certificates can be obtained in two ways (`tls.method` in config):
 
 | Method | Config value | How it works |
+|---|---|---|
+| **Let's Encrypt** (default) | `letsencrypt` | Auto-obtain certs. Set `tls.letsencrypt_email` and challenge method |
+| **User-provided** | `provided` | Bring your own certs. Set `tls.rancher_cert`, `tls.rancher_key`, etc. |
+
+When using Let's Encrypt, choose a challenge method (`tls.letsencrypt_challenge`):
+
+| Challenge | Config value | How it works |
 |---|---|---|
 | **Manual DNS** (default) | `dns` | Script pauses, shows TXT record to create, waits for confirmation |
 | **Cloudflare automated** | `dns-cloudflare` | Fully automated via Cloudflare API token |
 | **Route53 automated** | `dns-route53` | Fully automated via AWS credentials |
 | **HTTP challenge** | `http` | Requires port 80 open to internet |
+
+When using user-provided certs, the script validates that the cert matches the hostname and that the cert and key are a matching pair. Wildcard certs are supported — set `tls.rancher_cert`/`tls.rancher_key` and leave keycloak paths empty to reuse the same cert for both.
 
 ## Prerequisites
 

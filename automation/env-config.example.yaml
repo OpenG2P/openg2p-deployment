@@ -38,6 +38,16 @@ base_domain: ""
 infra_config: "infra-config.yaml"
 
 # ---------------------------------------------------------------------------
+# TLS certificate for this environment (optional override)
+# ---------------------------------------------------------------------------
+# By default, the tls.method from infra-config.yaml is used.
+# Override here only if this environment uses a different cert source.
+# For tls.method "provided", set the paths to your wildcard cert:
+#   tls:
+#     cert: "/path/to/wildcard.fullchain.pem"
+#     key: "/path/to/wildcard.privkey.pem"
+
+# ---------------------------------------------------------------------------
 # Keycloak client-manager credentials
 # ---------------------------------------------------------------------------
 # These are the credentials for the client-manager user created during

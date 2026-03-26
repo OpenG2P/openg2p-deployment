@@ -532,6 +532,121 @@ install_if_missing() {
 }
 
 # ---------------------------------------------------------------------------
+# TLS certificate helpers
+# ---------------------------------------------------------------------------
+# Resolves cert/key paths for a given hostname based on the TLS method.
+# Supports three modes:
+#   - "local"     → self-signed certs from local CA (/etc/openg2p/certs/)
+#   - "letsencrypt" → Let's Encrypt certs (/etc/letsencrypt/live/)
+#   - "provided"  → user-supplied cert paths (passed directly)
+#
+# Usage: get_cert_path <hostname> "cert|key"
+# Returns the file path to stdout.
+get_cert_path() {
+    local hostname="$1"
+    local type="$2"  # "cert" or "key"
+    local domain_mode=$(cfg "domain_mode" "custom")
+    local tls_method=$(cfg "tls.method" "")
+
+    # Determine effective TLS method
+    if [[ -z "$tls_method" ]]; then
+        if [[ "$domain_mode" == "local" ]]; then
+            tls_method="local"
+        else
+            tls_method="letsencrypt"
+        fi
+    fi
+
+    case "$tls_method" in
+        local)
+            if [[ "$type" == "cert" ]]; then
+                echo "/etc/openg2p/certs/${hostname}/fullchain.pem"
+            else
+                echo "/etc/openg2p/certs/${hostname}/privkey.pem"
+            fi
+            ;;
+        letsencrypt)
+            if [[ "$type" == "cert" ]]; then
+                echo "/etc/letsencrypt/live/${hostname}/fullchain.pem"
+            else
+                echo "/etc/letsencrypt/live/${hostname}/privkey.pem"
+            fi
+            ;;
+        provided)
+            # Provided certs are installed to /etc/openg2p/certs/<hostname>/
+            # by install_provided_cert(). Return the installed path.
+            if [[ "$type" == "cert" ]]; then
+                echo "/etc/openg2p/certs/${hostname}/fullchain.pem"
+            else
+                echo "/etc/openg2p/certs/${hostname}/privkey.pem"
+            fi
+            ;;
+        *)
+            log_error "Unknown tls.method: '${tls_method}'" \
+                      "Valid values: letsencrypt, provided" \
+                      "Check tls.method in your config"
+            return 1
+            ;;
+    esac
+}
+
+# Installs user-provided certs to a standard location and validates them.
+# Usage: install_provided_cert <hostname> <cert_path> <key_path>
+install_provided_cert() {
+    local hostname="$1"
+    local cert_src="$2"
+    local key_src="$3"
+    local dest_dir="/etc/openg2p/certs/${hostname}"
+
+    if [[ ! -f "$cert_src" ]]; then
+        log_error "Certificate file not found: ${cert_src}" \
+                  "The path specified in tls config does not exist" \
+                  "Check the file path in your config"
+        return 1
+    fi
+    if [[ ! -f "$key_src" ]]; then
+        log_error "Key file not found: ${key_src}" \
+                  "The path specified in tls config does not exist" \
+                  "Check the file path in your config"
+        return 1
+    fi
+
+    # Validate cert matches hostname
+    local cert_cn
+    cert_cn=$(openssl x509 -noout -subject -in "$cert_src" 2>/dev/null | sed 's/.*CN\s*=\s*//')
+    local cert_san
+    cert_san=$(openssl x509 -noout -ext subjectAltName -in "$cert_src" 2>/dev/null || true)
+
+    if echo "$cert_san" | grep -qi "$hostname" || echo "$cert_san" | grep -qi "\*\."; then
+        log_info "Certificate SAN matches ${hostname}."
+    elif echo "$cert_cn" | grep -qi "$hostname" || echo "$cert_cn" | grep -qi "\*\."; then
+        log_info "Certificate CN matches ${hostname}."
+    else
+        log_warn "Certificate CN='${cert_cn}' may not match hostname '${hostname}'."
+        log_warn "Proceeding anyway — verify manually if you see TLS errors."
+    fi
+
+    # Validate cert and key match
+    local cert_md5 key_md5
+    cert_md5=$(openssl x509 -noout -modulus -in "$cert_src" 2>/dev/null | md5sum | awk '{print $1}')
+    key_md5=$(openssl rsa -noout -modulus -in "$key_src" 2>/dev/null | md5sum | awk '{print $1}')
+    if [[ "$cert_md5" != "$key_md5" ]]; then
+        log_error "Certificate and key do not match" \
+                  "The modulus of the cert and key are different" \
+                  "Ensure the key file corresponds to the certificate"
+        return 1
+    fi
+
+    # Copy to standard location
+    mkdir -p "$dest_dir"
+    cp "$cert_src" "${dest_dir}/fullchain.pem"
+    cp "$key_src" "${dest_dir}/privkey.pem"
+    chmod 600 "${dest_dir}/privkey.pem"
+
+    log_success "Certificate installed for ${hostname} at ${dest_dir}/."
+}
+
+# ---------------------------------------------------------------------------
 # Kubernetes helpers
 # ---------------------------------------------------------------------------
 ensure_kubeconfig() {
