@@ -7,8 +7,8 @@
 # Sourced by openg2p-infra.sh — do not run directly.
 # =============================================================================
 
-# Resolve the repo root (parent of automation/)
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# Resolve the repo root (parent of automation/single-node/)
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helper: get effective hostnames (derived in local mode, from config in custom)
