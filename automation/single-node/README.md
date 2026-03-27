@@ -66,7 +66,7 @@ SSH into the VM as root:
 
 ```bash
 git clone https://github.com/OpenG2P/openg2p-deployment.git
-cd openg2p-deployment/automation
+cd openg2p-deployment/automation/single-node
 cp infra-config.example.yaml infra-config.yaml
 # Edit infra-config.yaml — for local mode, just set node_ip and domain_mode: local
 sudo chmod +x openg2p-infra.sh
@@ -96,7 +96,7 @@ Takes ~15-25 minutes. Idempotent — re-run on failure.
 Before running the script on an EC2 instance, create and attach the required security group:
 
 ```bash
-cd automation/aws
+cd automation/single-node/aws
 ./create-security-group.sh --vpc-id vpc-xxxxxxxxx [--region ap-south-1]
 ```
 
@@ -378,30 +378,30 @@ Requires typing `DELETE EVERYTHING` to confirm. Removes: RKE2 cluster, Wireguard
 ## File Structure
 
 ```
-automation/
-├── openg2p-infra.sh               # Script 1: base infrastructure
-├── openg2p-infra-uninstall.sh     # Uninstall: tears down entire infrastructure
-├── infra-config.example.yaml      # Config for Script 1
-├── helmfile-infra.yaml.gotmpl     # Helmfile for platform components (Go template)
-├── openg2p-environment.sh         # Script 2: environment setup
+automation/single-node/
+├── openg2p-infra.sh                  # Script 1: base infrastructure
+├── openg2p-infra-uninstall.sh        # Uninstall: tears down entire infrastructure
+├── infra-config.example.yaml         # Config for Script 1
+├── helmfile-infra.yaml.gotmpl        # Helmfile for platform components (Go template)
+├── openg2p-environment.sh            # Script 2: environment setup
 ├── openg2p-environment-uninstall.sh  # Uninstall: removes a single environment
-├── env-config.example.yaml        # Config for Script 2
-├── openg2p-migrate-domain.sh      # Migrate: local → custom domain
-├── migrate-config.example.yaml    # Config for domain migration
+├── env-config.example.yaml           # Config for Script 2
+├── openg2p-migrate-domain.sh         # Migrate: local → custom domain
+├── migrate-config.example.yaml       # Config for domain migration
 ├── README.md
 ├── lib/
-│   ├── utils.sh                   # Shared: logging, state, config, wait helpers
-│   ├── phase1.sh                  # Infra Phase 1: host setup (tools, RKE2, Wireguard, NFS, DNS, TLS, Nginx)
-│   ├── phase2.sh                  # Infra Phase 2: platform components (Istio, Helmfile sync)
-│   ├── phase3.sh                  # Infra Phase 3: Rancher-Keycloak SAML, roles, client-manager
-│   ├── env-phase1.sh              # Env Phase 1: certs, Nginx, namespace, Rancher project, Istio GW
-│   └── env-phase2.sh              # Env Phase 2: openg2p-commons helm install (future: modules)
+│   ├── utils.sh          # Shared: logging, state, config, wait helpers
+│   ├── phase1.sh         # Infra Phase 1: host setup (tools, RKE2, Wireguard, NFS, DNS, TLS, Nginx)
+│   ├── phase2.sh         # Infra Phase 2: platform components (Istio, Helmfile sync)
+│   ├── phase3.sh         # Infra Phase 3: Rancher-Keycloak SAML, roles, client-manager
+│   ├── env-phase1.sh     # Env Phase 1: certs, Nginx, namespace, Rancher project, Istio GW
+│   └── env-phase2.sh     # Env Phase 2: commons helm install (future: more modules)
 ├── aws/
 │   ├── create-security-group.sh   # Creates "openg2p-single-node" SG via AWS CLI
 │   └── security-group.json        # Reference: exported SG rules
 └── charts/
-    ├── raw/                       # Minimal chart for applying K8s manifests
-    └── istio-install/             # Istio operator YAML for istioctl
+    ├── raw/               # Minimal chart for applying K8s manifests
+    └── istio-install/     # Istio operator YAML for istioctl
 ```
 
 ## Troubleshooting

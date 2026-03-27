@@ -199,7 +199,7 @@ show_summary() {
     echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${GREEN}║${NC}  ${BOLD}AWS EC2 users:${NC}                                              ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}  Create and attach a security group for your instance:      ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}    cd automation/aws                                        ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}    cd automation/single-node/aws                             ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}    ./create-security-group.sh --vpc-id <VPC_ID>             ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}  Also disable source/dest check on the instance:            ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}    aws ec2 modify-instance-attribute \\                      ${GREEN}║${NC}"
