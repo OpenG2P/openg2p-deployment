@@ -1,0 +1,93 @@
+# =============================================================================
+# OpenG2P Multi-Node Environment Configuration
+# =============================================================================
+# Copy this file to env-config.yaml and fill in your values:
+#   cp env-config.example.yaml env-config.yaml
+#
+# This config is used by BOTH scripts:
+#   1. env-nginx.sh   (on the Nginx node)  — uses: environment, base_domain,
+#                                             letsencrypt_email, letsencrypt_challenge
+#   2. env-cluster.sh (from your workstation) — uses: all fields
+#
+# Copy the SAME config file to both machines.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------------
+# Environment name — used as K8s namespace and Rancher project name.
+# Keep it short, lowercase, no hyphens (e.g., dev, qa, staging, pilot).
+environment: "qa"
+
+# Base domain for this environment.
+# Modules will be accessible at: <module>.<base_domain>
+# Example: qa.openg2p.org → minio.qa.openg2p.org, superset.qa.openg2p.org
+#
+# REQUIRED for multi-node setup.
+base_domain: "qa.openg2p.org"
+
+# ---------------------------------------------------------------------------
+# DNS (manual step)
+# ---------------------------------------------------------------------------
+# Before running the scripts, create these DNS records:
+#   A record:  qa.openg2p.org     → <nginx_node_ip>
+#   A record:  *.qa.openg2p.org   → <nginx_node_ip>
+#
+# Wait for DNS propagation before running env-nginx.sh.
+
+# ---------------------------------------------------------------------------
+# TLS — Let's Encrypt (used by env-nginx.sh)
+# ---------------------------------------------------------------------------
+# Email for Let's Encrypt certificate registration.
+letsencrypt_email: "admin@openg2p.org"
+
+# Challenge type for wildcard certificates.
+# Options:
+#   dns           — Manual: certbot prompts you to create TXT records
+#   dns-cloudflare — Automatic: uses Cloudflare API (needs /etc/letsencrypt/cloudflare.ini)
+#   dns-route53   — Automatic: uses AWS Route53 (needs AWS credentials)
+letsencrypt_challenge: "dns"
+
+# ---------------------------------------------------------------------------
+# Keycloak
+# ---------------------------------------------------------------------------
+# Hostname of the shared Keycloak instance (from the infra setup).
+# Used by env-cluster.sh to configure commons charts.
+keycloak_hostname: "keycloak.openg2p.org"
+
+# Client-manager credentials — created during infrastructure setup.
+# These are needed to create Keycloak clients for this environment's services.
+keycloak:
+  client_manager_user: "client-manager@openg2p.org"
+  client_manager_password: ""
+
+# ---------------------------------------------------------------------------
+# openg2p-commons-base (PostgreSQL, Kafka, MinIO, OpenSearch, Redis, etc.)
+# ---------------------------------------------------------------------------
+commons_base:
+  chart_name: "openg2p-commons-base"
+  chart_path: ""
+  chart_repo: "https://openg2p.github.io/openg2p-helm"
+  chart_version: "2.0.0-develop"
+  extra_helm_args: ""
+
+# ---------------------------------------------------------------------------
+# openg2p-commons-services (eSignet, KeyManager, Superset, ODK, etc.)
+# ---------------------------------------------------------------------------
+commons_services:
+  chart_name: "openg2p-commons-services"
+  chart_path: ""
+  chart_repo: "https://openg2p.github.io/openg2p-helm"
+  chart_version: "2.0.0-develop"
+  extra_helm_args: ""
+
+# ---------------------------------------------------------------------------
+# Modules — enable/disable
+# ---------------------------------------------------------------------------
+modules:
+  commons: true
+  # Future modules (not yet implemented):
+  # registry: false
+  # pbms: false
+  # spar: false
+  # g2p_bridge: false
