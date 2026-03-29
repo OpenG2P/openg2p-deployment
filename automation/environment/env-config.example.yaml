@@ -1,5 +1,5 @@
 # =============================================================================
-# OpenG2P Multi-Node Environment Configuration
+# OpenG2P Environment Configuration for Multi-Node Setup
 # =============================================================================
 # Copy this file to env-config.yaml and fill in your values:
 #   cp env-config.example.yaml env-config.yaml

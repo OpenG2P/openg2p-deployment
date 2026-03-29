@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# OpenG2P Multi-Node Environment Setup — Utility Library
+# OpenG2P Environment Setup for Multi-Node Configuration — Utility Library
 # =============================================================================
 # Shared functions for logging, config parsing, and Kubernetes helpers.
 # Sourced by env-cluster.sh — do not run directly.
@@ -59,7 +59,7 @@ log_manual_action() {
 }
 
 log_banner() {
-    local title="${1:-OpenG2P Multi-Node Environment Setup}"
+    local title="${1:-OpenG2P Environment Setup}"
     local subtitle="${2:-}"
     echo -e "${CYAN}"
     echo "  ╔══════════════════════════════════════════════════════════╗"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# OpenG2P Multi-Node Environment Setup — Cluster (Workstation)
+# OpenG2P Environment Setup for Multi-Node Configuration — Cluster
 # =============================================================================
 # Run this from your workstation (or any machine with kubectl access) to:
 #   1. Create the K8s namespace
@@ -61,7 +61,7 @@ parse_args() {
 
 show_help() {
     cat <<'EOF'
-OpenG2P Multi-Node Environment Setup — Cluster
+OpenG2P Environment Setup for Multi-Node Configuration
 ==================================================
 
 Usage:

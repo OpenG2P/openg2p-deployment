@@ -1,4 +1,4 @@
-# OpenG2P Multi-Node Environment Setup
+# OpenG2P Environment Setup for Multi-Node Configuration
 
 Creates an OpenG2P environment (namespace + services) on an **existing multi-node infrastructure** where Nginx, the Kubernetes cluster, and storage run on separate nodes.
 
