@@ -13,7 +13,7 @@
 # Prerequisites:
 #   - kubectl configured with admin access to the cluster
 #   - helm installed
-#   - Nginx node setup completed (env-nginx.sh)
+#   - Nginx node configured (DNS, TLS cert, server block — see README)
 #   - DNS records pointing *.<base_domain> to the Nginx node
 #
 # Usage:
@@ -84,7 +84,7 @@ Steps:
 Prerequisites:
   - kubectl access to the cluster (KUBECONFIG set or ~/.kube/config)
   - helm installed
-  - Nginx node configured (run env-nginx.sh first)
+  - Nginx node configured (DNS, TLS cert, server block — see README)
 EOF
 }
 

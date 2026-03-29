@@ -3,7 +3,7 @@
 # OpenG2P Multi-Node Environment Setup — Utility Library
 # =============================================================================
 # Shared functions for logging, config parsing, and Kubernetes helpers.
-# Sourced by env-nginx.sh and env-cluster.sh — do not run directly.
+# Sourced by env-cluster.sh — do not run directly.
 # =============================================================================
 
 set -euo pipefail
@@ -140,16 +140,6 @@ cfg_bool() {
 # ---------------------------------------------------------------------------
 # Prerequisite checks
 # ---------------------------------------------------------------------------
-check_root() {
-    if [[ $EUID -ne 0 ]]; then
-        log_error "This script must be run as root" \
-                  "You are running as user '$(whoami)'" \
-                  "Re-run with sudo or switch to root" \
-                  "sudo $0 $*"
-        exit 1
-    fi
-}
-
 check_command() {
     local cmd="$1"
     local install_hint="${2:-}"
