@@ -549,12 +549,11 @@ get_cert_path() {
     local tls_method=$(cfg "tls.method" "")
 
     # Determine effective TLS method
-    if [[ -z "$tls_method" ]]; then
-        if [[ "$domain_mode" == "local" ]]; then
-            tls_method="local"
-        else
-            tls_method="letsencrypt"
-        fi
+    # Local mode always uses local certs, regardless of tls.method setting
+    if [[ "$domain_mode" == "local" ]]; then
+        tls_method="local"
+    elif [[ -z "$tls_method" ]]; then
+        tls_method="letsencrypt"
     fi
 
     case "$tls_method" in
