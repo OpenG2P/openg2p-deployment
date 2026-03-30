@@ -911,7 +911,7 @@ RTEOF
                     "${keycloak_url}/admin/realms/master/clients/${rm_client_id}/roles" "$kc_token")
 
                 local roles_to_assign="[]"
-                for role_name in manage-clients query-clients view-clients create-realm; do
+                for role_name in manage-clients query-clients view-clients; do
                     local role_json
                     role_json=$(echo "$available_roles" | jq -c --arg rn "$role_name" \
                         '[.[] | select(.name == $rn)] | .[0] // empty' 2>/dev/null || true)
@@ -929,7 +929,24 @@ RTEOF
                     keycloak_api POST \
                         "${keycloak_url}/admin/realms/master/users/${cm_user_id}/role-mappings/clients/${rm_client_id}" \
                         "$kc_token" "$roles_to_assign" > /dev/null 2>&1
-                    log_success "Client roles assigned: manage-clients, query-clients, view-clients, create-realm."
+                    log_success "Client roles assigned: manage-clients, query-clients, view-clients."
+                fi
+
+                # Assign 'create-realm' realm role (this is a realm-level role, not a client role)
+                local realm_roles
+                realm_roles=$(keycloak_api GET \
+                    "${keycloak_url}/admin/realms/master/roles" "$kc_token")
+                local create_realm_role
+                create_realm_role=$(echo "$realm_roles" | jq -c \
+                    '[.[] | select(.name == "create-realm")] | .[0] // empty' 2>/dev/null || true)
+                if [[ -n "$create_realm_role" && "$create_realm_role" != "null" ]]; then
+                    log_info "Assigning 'create-realm' realm role to '${cm_username}'..."
+                    keycloak_api POST \
+                        "${keycloak_url}/admin/realms/master/users/${cm_user_id}/role-mappings/realm" \
+                        "$kc_token" "[${create_realm_role}]" > /dev/null 2>&1
+                    log_success "Realm role 'create-realm' assigned."
+                else
+                    log_warn "Realm role 'create-realm' not found in master realm."
                 fi
             else
                 log_warn "Could not find realm management client. Assign roles manually."
