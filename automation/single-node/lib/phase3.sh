@@ -911,7 +911,7 @@ RTEOF
                     "${keycloak_url}/admin/realms/master/clients/${rm_client_id}/roles" "$kc_token")
 
                 local roles_to_assign="[]"
-                for role_name in manage-clients query-clients view-clients; do
+                for role_name in manage-clients query-clients view-clients create-realm; do
                     local role_json
                     role_json=$(echo "$available_roles" | jq -c --arg rn "$role_name" \
                         '[.[] | select(.name == $rn)] | .[0] // empty' 2>/dev/null || true)
@@ -929,7 +929,7 @@ RTEOF
                     keycloak_api POST \
                         "${keycloak_url}/admin/realms/master/users/${cm_user_id}/role-mappings/clients/${rm_client_id}" \
                         "$kc_token" "$roles_to_assign" > /dev/null 2>&1
-                    log_success "Client roles assigned: manage-clients, query-clients, view-clients."
+                    log_success "Client roles assigned: manage-clients, query-clients, view-clients, create-realm."
                 fi
             else
                 log_warn "Could not find realm management client. Assign roles manually."
