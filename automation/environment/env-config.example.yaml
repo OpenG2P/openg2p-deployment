@@ -23,18 +23,6 @@ environment: "qa"
 base_domain: "qa.openg2p.org"
 
 # ---------------------------------------------------------------------------
-# Keycloak
-# ---------------------------------------------------------------------------
-# Hostname of the shared Keycloak instance (from the infra setup).
-keycloak_hostname: "keycloak.openg2p.org"
-
-# Client-manager credentials — created during infrastructure setup.
-# These are needed to create Keycloak clients for this environment's services.
-keycloak:
-  client_manager_user: "client-manager@openg2p.org"
-  client_manager_password: ""
-
-# ---------------------------------------------------------------------------
 # openg2p-commons-base (PostgreSQL, Kafka, MinIO, OpenSearch, Redis, etc.)
 # ---------------------------------------------------------------------------
 commons_base:

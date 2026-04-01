@@ -30,7 +30,6 @@ For single-node deployments, see [`../single-node/`](../single-node/).
 │    • Namespace                                               │
 │    • Rancher Project                                         │
 │    • Istio Gateway                                           │
-│    • Keycloak secret                                         │
 │    • Helm: openg2p-commons-base                              │
 │    • Helm: openg2p-commons-services                          │
 └──────────────────────────────────────────────────────────────┘
@@ -189,11 +188,6 @@ Edit `env-config.yaml`:
 ```yaml
 environment: "qa"
 base_domain: "qa.openg2p.org"
-keycloak_hostname: "keycloak.openg2p.org"
-
-keycloak:
-  client_manager_user: "client-manager@openg2p.org"
-  client_manager_password: "your-password-here"
 ```
 
 ### Step 5: Run env-cluster.sh (from your workstation)
@@ -206,9 +200,8 @@ This will:
 1. Create the K8s namespace
 2. Create a Rancher Project and associate the namespace
 3. Create the Istio Gateway for `*.qa.openg2p.org`
-4. Create the Keycloak client-manager secret
-5. Install `openg2p-commons-base` (PostgreSQL, Kafka, MinIO, Redis, etc.)
-6. Install `openg2p-commons-services` (eSignet, Superset, ODK, etc.)
+4. Install `openg2p-commons-base` (PostgreSQL, Kafka, MinIO, Redis, etc.)
+5. Install `openg2p-commons-services` (eSignet, Superset, ODK, etc.)
 
 ## File Structure
 
@@ -227,9 +220,6 @@ environment/
 |-----|-------------|
 | `environment` | Environment name — used as namespace and Rancher project (e.g., `qa`) |
 | `base_domain` | Full base domain for this environment (e.g., `qa.openg2p.org`) |
-| `keycloak_hostname` | Keycloak hostname from infra setup (e.g., `keycloak.openg2p.org`) |
-| `keycloak.client_manager_user` | Keycloak client-manager username |
-| `keycloak.client_manager_password` | Keycloak client-manager password |
 | `commons_base.chart_version` | Helm chart version for openg2p-commons-base |
 | `commons_base.chart_path` | Local chart path (leave empty to use remote repo) |
 | `commons_base.extra_helm_args` | Additional `--set` flags for the base chart |
@@ -245,7 +235,7 @@ environment/
 
 Options:
   --config <file>    Path to environment config file (required)
-  --step <N>         Run only a specific step (1-6)
+  --step <N>         Run only a specific step (1-5)
   --force            Uninstall and reinstall Helm charts
   --help             Show this help message
 
@@ -253,9 +243,8 @@ Steps:
   1  Create K8s namespace
   2  Create Rancher Project
   3  Create Istio Gateway
-  4  Create Keycloak client-manager secret
-  5  Install openg2p-commons-base
-  6  Install openg2p-commons-services
+  4  Install openg2p-commons-base
+  5  Install openg2p-commons-services
 ```
 
 ## Creating Multiple Environments

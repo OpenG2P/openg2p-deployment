@@ -6,9 +6,8 @@
 #   1. Create the K8s namespace
 #   2. Create a Rancher Project and associate the namespace
 #   3. Create the Istio Gateway for *.<base_domain>
-#   4. Create the Keycloak client-manager K8s secret
-#   5. Install openg2p-commons-base (PostgreSQL, Kafka, MinIO, etc.)
-#   6. Install openg2p-commons-services (eSignet, Superset, ODK, etc.)
+#   4. Install openg2p-commons-base (PostgreSQL, Kafka, MinIO, etc.)
+#   5. Install openg2p-commons-services (eSignet, Superset, ODK, etc.)
 #
 # Prerequisites:
 #   - kubectl configured with admin access to the cluster
@@ -69,7 +68,7 @@ Usage:
 
 Options:
   --config <file>    Path to environment config file (required)
-  --step <N>         Run only a specific step (1-6)
+  --step <N>         Run only a specific step (1-5)
   --force            Re-run all steps (helm will uninstall and reinstall)
   --help             Show this help message
 
@@ -77,9 +76,8 @@ Steps:
   1  Create K8s namespace
   2  Create Rancher Project
   3  Create Istio Gateway
-  4  Create Keycloak client-manager secret
-  5  Install openg2p-commons-base
-  6  Install openg2p-commons-services
+  4  Install openg2p-commons-base
+  5  Install openg2p-commons-services
 
 Prerequisites:
   - kubectl access to the cluster (KUBECONFIG set or ~/.kube/config)
@@ -91,11 +89,6 @@ EOF
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-get_keycloak_url() {
-    local keycloak_host=$(cfg "keycloak_hostname")
-    echo "https://${keycloak_host}"
-}
-
 get_chart_ref() {
     local path_key="$1"
     local remote_name="$2"
@@ -366,40 +359,9 @@ GWEOF
 }
 
 # ---------------------------------------------------------------------------
-# Step 4: Keycloak client-manager K8s secret
+# Step 4: Install openg2p-commons-base
 # ---------------------------------------------------------------------------
-step4_keycloak_secret() {
-    local env_name=$(cfg "environment")
-
-    log_step "4" "Ensuring Keycloak client-manager secret in namespace '${env_name}'"
-
-    local cm_pass=$(cfg "keycloak.client_manager_password" "")
-    if [[ -z "$cm_pass" ]]; then
-        log_error "keycloak.client_manager_password not set" \
-                  "This secret is required by the commons charts" \
-                  "Set keycloak.client_manager_password in your env config"
-        return 1
-    fi
-
-    if kubectl -n "$env_name" get secret keycloak-client-manager &>/dev/null; then
-        log_info "Secret 'keycloak-client-manager' already exists in namespace '${env_name}'."
-    else
-        log_info "Creating secret 'keycloak-client-manager'..."
-        kubectl -n "$env_name" create secret generic keycloak-client-manager \
-            --from-literal=keycloak-client-manager-password="$cm_pass" || {
-            log_error "Failed to create keycloak-client-manager secret" \
-                      "kubectl create secret failed" \
-                      "Check namespace exists and credentials are correct"
-            return 1
-        }
-        log_success "Secret 'keycloak-client-manager' created in namespace '${env_name}'."
-    fi
-}
-
-# ---------------------------------------------------------------------------
-# Step 5: Install openg2p-commons-base
-# ---------------------------------------------------------------------------
-step5_commons_base() {
+step4_commons_base() {
     local env_name=$(cfg "environment")
 
     if ! cfg_bool "modules.commons"; then
@@ -407,11 +369,9 @@ step5_commons_base() {
         return 0
     fi
 
-    log_step "5" "Installing openg2p-commons-base in '${env_name}'"
+    log_step "4" "Installing openg2p-commons-base in '${env_name}'"
 
     local base_domain=$(cfg "base_domain")
-    local keycloak_url=$(get_keycloak_url)
-    local cm_user=$(cfg "keycloak.client_manager_user" "")
     local chart_name=$(cfg "commons_base.chart_name" "openg2p-commons-base")
     local chart_ref=$(get_chart_ref "commons_base.chart_path" "$chart_name")
     local chart_version=$(cfg "commons_base.chart_version" "2.0.0-develop")
@@ -430,22 +390,10 @@ step5_commons_base() {
         clean_uninstall_release "$env_name" "$release_name" "full"
     fi
 
-    # Ensure keycloak-client-manager secret exists (may have been cleaned up)
-    local cm_pass=$(cfg "keycloak.client_manager_password" "")
-    if [[ -n "$cm_pass" ]]; then
-        if ! kubectl -n "$env_name" get secret keycloak-client-manager &>/dev/null; then
-            log_info "Re-creating secret 'keycloak-client-manager'..."
-            kubectl -n "$env_name" create secret generic keycloak-client-manager \
-                --from-literal=keycloak-client-manager-password="$cm_pass" || return 1
-        fi
-    fi
-
     log_info "Chart:    ${chart_ref}"
     log_info "Version:  ${chart_version}"
     log_info "Release:  ${release_name}"
     log_info "Domain:   ${base_domain}"
-    log_info "Keycloak: ${keycloak_url}"
-    log_info "User:     ${cm_user}"
     echo ""
 
     # Extra helm args from config
@@ -459,8 +407,6 @@ step5_commons_base() {
     helm_install_chart "$env_name" "$release_name" "$chart_ref" "$chart_version" \
         "openg2p-commons-base" \
         --set "global.baseDomain=${base_domain}" \
-        --set "global.keycloakBaseUrl=${keycloak_url}" \
-        --set "keycloak-init.keycloak.user=${cm_user}" \
         "${extra[@]}" \
         || return 1
 
@@ -468,9 +414,9 @@ step5_commons_base() {
 }
 
 # ---------------------------------------------------------------------------
-# Step 6: Install openg2p-commons-services
+# Step 5: Install openg2p-commons-services
 # ---------------------------------------------------------------------------
-step6_commons_services() {
+step5_commons_services() {
     local env_name=$(cfg "environment")
 
     if ! cfg_bool "modules.commons"; then
@@ -478,10 +424,9 @@ step6_commons_services() {
         return 0
     fi
 
-    log_step "6" "Installing openg2p-commons-services in '${env_name}'"
+    log_step "5" "Installing openg2p-commons-services in '${env_name}'"
 
     local base_domain=$(cfg "base_domain")
-    local keycloak_url=$(get_keycloak_url)
     local chart_name=$(cfg "commons_services.chart_name" "openg2p-commons-services")
     local chart_ref=$(get_chart_ref "commons_services.chart_path" "$chart_name")
     local chart_version=$(cfg "commons_services.chart_version" "2.0.0-develop")
@@ -499,8 +444,8 @@ step6_commons_services() {
     # Verify base chart is installed
     if ! helm status "$base_release" -n "$env_name" &>/dev/null; then
         log_error "openg2p-commons-base not installed" \
-                  "The base chart must be installed first (step 5)" \
-                  "Run the full setup or --step 5 first" \
+                  "The base chart must be installed first (step 4)" \
+                  "Run the full setup or --step 4 first" \
                   "helm status ${base_release} -n ${env_name}"
         return 1
     fi
@@ -515,7 +460,6 @@ step6_commons_services() {
     log_info "Release:      ${release_name}"
     log_info "Base release: ${base_release}"
     log_info "Domain:       ${base_domain}"
-    log_info "Keycloak:     ${keycloak_url}"
     echo ""
 
     # Extra helm args from config
@@ -529,7 +473,6 @@ step6_commons_services() {
     helm_install_chart "$env_name" "$release_name" "$chart_ref" "$chart_version" \
         "openg2p-commons-services" \
         --set "global.baseDomain=${base_domain}" \
-        --set "global.keycloakBaseUrl=${keycloak_url}" \
         --set "global.postgresqlHost=${base_release}-postgresql" \
         --set "global.redisInstallationName=${base_release}-redis" \
         --set "global.redisAuthInstallationName=${base_release}-redis-auth" \
@@ -549,7 +492,6 @@ step6_commons_services() {
 show_summary() {
     local env_name=$(cfg "environment")
     local base_domain=$(cfg "base_domain")
-    local keycloak_url=$(get_keycloak_url)
 
     echo ""
     echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
@@ -560,7 +502,6 @@ show_summary() {
     echo -e "${GREEN}║${NC}  Environment:  ${BOLD}${env_name}${NC}"
     echo -e "${GREEN}║${NC}  Namespace:    ${BOLD}${env_name}${NC}"
     echo -e "${GREEN}║${NC}  Base domain:  ${BOLD}${base_domain}${NC}"
-    echo -e "${GREEN}║${NC}  Keycloak:     ${BOLD}${keycloak_url}${NC}"
     echo -e "${GREEN}║${NC}"
     echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${GREEN}║${NC}  ${BOLD}Service URLs:${NC}"
@@ -622,7 +563,6 @@ main() {
 
     log_info "Environment:  ${BOLD}${env_name}${NC}"
     log_info "Base domain:  ${BOLD}${base_domain}${NC}"
-    log_info "Keycloak:     ${BOLD}$(get_keycloak_url)${NC}"
     log_info "Config file:  ${CONFIG_FILE}"
     echo ""
 
@@ -630,22 +570,20 @@ main() {
         1)  step1_namespace ;;
         2)  step2_rancher_project ;;
         3)  step3_istio_gateway ;;
-        4)  step4_keycloak_secret ;;
-        5)  step5_commons_base ;;
-        6)  step6_commons_services ;;
+        4)  step4_commons_base ;;
+        5)  step5_commons_services ;;
         all)
             step1_namespace
             step2_rancher_project
             step3_istio_gateway
-            step4_keycloak_secret
-            step5_commons_base
-            step6_commons_services
+            step4_commons_base
+            step5_commons_services
             show_summary
             ;;
         *)
             log_error "Invalid step: ${RUN_STEP}" \
-                      "Valid steps are: 1-6, or omit for all" \
-                      "Use --step 1 through --step 6"
+                      "Valid steps are: 1-5, or omit for all" \
+                      "Use --step 1 through --step 5"
             exit 1
             ;;
     esac
