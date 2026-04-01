@@ -48,19 +48,6 @@ infra_config: "infra-config.yaml"
 #     key: "/path/to/wildcard.privkey.pem"
 
 # ---------------------------------------------------------------------------
-# Keycloak client-manager credentials
-# ---------------------------------------------------------------------------
-# These are the credentials for the client-manager user created during
-# infrastructure setup. They were shown in the openg2p-infra.sh output.
-#
-# If left empty, the script will try to read them from the saved state
-# at /var/lib/openg2p/deploy-state/client-manager-password (works when
-# running on the same machine where infra was set up).
-keycloak:
-  client_manager_user: ""
-  client_manager_password: ""
-
-# ---------------------------------------------------------------------------
 # openg2p-commons-base (infrastructure: PostgreSQL, Kafka, MinIO, etc.)
 # ---------------------------------------------------------------------------
 # Installed first. Provides databases, message queues, and keycloak-init.

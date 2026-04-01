@@ -202,8 +202,6 @@ env_phase2_step1_commons_base() {
 
     local base_domain=$(get_env_base_domain)
     local keycloak_url=$(get_keycloak_url)
-    local cm_user=$(cfg "keycloak.client_manager_user" "")
-    local cm_pass=$(cfg "keycloak.client_manager_password" "")
     local chart_name=$(cfg "commons_base.chart_name" "openg2p-commons-base")
     local chart_ref=$(get_chart_ref "commons_base.chart_path" "$chart_name")
     local chart_version=$(cfg "commons_base.chart_version" "2.0.0-develop")
@@ -214,36 +212,11 @@ env_phase2_step1_commons_base() {
     # Clean uninstall if stale release exists (full cleanup: secrets + PVCs)
     clean_uninstall_release "$env_name" "$release_name" "full"
 
-    # Always ensure keycloak-client-manager secret exists before install.
-    # It may have been deleted by full cleanup above, by a manual uninstall,
-    # or may never have been created if phase 1 was skipped.
-    if [[ -n "$cm_pass" ]]; then
-        if kubectl -n "$env_name" get secret keycloak-client-manager &>/dev/null; then
-            log_info "Secret 'keycloak-client-manager' already exists."
-        else
-            log_info "Creating secret 'keycloak-client-manager' in namespace '${env_name}'..."
-            kubectl -n "$env_name" create secret generic keycloak-client-manager \
-                --from-literal=keycloak-client-manager-password="$cm_pass" || {
-                log_error "Failed to create keycloak-client-manager secret" \
-                          "This secret is required by the commons chart" \
-                          "Check namespace and credentials"
-                return 1
-            }
-            log_success "Secret 'keycloak-client-manager' created."
-        fi
-    else
-        log_error "Keycloak client-manager password not available" \
-                  "Cannot create the required keycloak-client-manager secret" \
-                  "Set keycloak.client_manager_password in env config or check saved state"
-        return 1
-    fi
-
     log_info "Chart:    ${chart_ref}"
     log_info "Version:  ${chart_version}"
     log_info "Release:  ${release_name}"
     log_info "Domain:   ${base_domain}"
     log_info "Keycloak: ${keycloak_url}"
-    log_info "User:     ${cm_user}"
     log_info ""
 
     # Extra helm args from config
@@ -254,15 +227,14 @@ env_phase2_step1_commons_base() {
         extra=($extra_args)
     fi
 
-    # In local mode, pods use the internal Keycloak HTTP URL to avoid
-    # TLS trust issues with the self-signed CA certificate.
+    # In local mode, the infra Keycloak uses a self-signed cert.
+    # Pass the internal URL so services can reach it over HTTP.
     local keycloak_internal_url=$(get_keycloak_internal_url)
     local -a kc_internal_args=()
     if [[ -n "$keycloak_internal_url" ]]; then
-        log_info "Local mode: pods will use internal Keycloak URL: ${keycloak_internal_url}"
+        log_info "Local mode: infra Keycloak internal URL: ${keycloak_internal_url}"
         kc_internal_args=(
             --set "global.keycloakInternalUrl=${keycloak_internal_url}"
-            --set "keycloak-init.keycloak.url=${keycloak_internal_url}"
         )
     fi
 
@@ -270,7 +242,6 @@ env_phase2_step1_commons_base() {
         "openg2p-commons-base" \
         --set "global.baseDomain=${base_domain}" \
         --set "global.keycloakBaseUrl=${keycloak_url}" \
-        --set "keycloak-init.keycloak.user=${cm_user}" \
         "${kc_internal_args[@]}" \
         "${extra[@]}" \
         || return 1

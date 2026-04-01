@@ -8,7 +8,6 @@
 #   - K8s namespace
 #   - Rancher Project (for RBAC)
 #   - Istio Gateway
-#   - Keycloak client-manager K8s secret
 #
 # Sourced by openg2p-environment.sh — do not run directly.
 # =============================================================================
@@ -83,32 +82,6 @@ env_phase1_step1_validate() {
                   "Set infra_config path or add node_ip to env config"
         return 1
     fi
-
-    # Check Keycloak client-manager credentials
-    local cm_user=$(cfg "keycloak.client_manager_user" "")
-    local cm_pass=$(cfg "keycloak.client_manager_password" "")
-    if [[ -z "$cm_user" || -z "$cm_pass" ]]; then
-        # Try to read from saved state (from infra script)
-        local cm_pw_file="${STATE_DIR}/client-manager-password"
-        if [[ -f "$cm_pw_file" ]]; then
-            log_info "Reading client-manager credentials from infra state..."
-            cm_pass=$(cat "$cm_pw_file")
-            local admin_email=$(cfg "keycloak.admin_email" "admin@openg2p.org")
-            local email_domain
-            email_domain=$(echo "$admin_email" | sed 's/.*@//')
-            cm_user="client-manager@${email_domain}"
-            # Store in CONFIG for later use
-            CONFIG["keycloak.client_manager_user"]="$cm_user"
-            CONFIG["keycloak.client_manager_password"]="$cm_pass"
-        else
-            log_error "Keycloak client-manager credentials not found" \
-                      "Set keycloak.client_manager_user and keycloak.client_manager_password in env config" \
-                      "These were shown in the infra script output" \
-                      "Or check: cat ${STATE_DIR}/client-manager-password"
-            return 1
-        fi
-    fi
-    log_success "Client-manager credentials: ${cm_user}"
 
     log_success "Environment prerequisites validated."
     mark_step_done "$step_id"
@@ -509,43 +482,6 @@ GWEOF
     mark_step_done "$step_id"
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 1.7: Keycloak client-manager K8s secret
-# ─────────────────────────────────────────────────────────────────────────────
-env_phase1_step7_keycloak_secret() {
-    local env_name=$(cfg "environment")
-    local step_id="env-${env_name}.phase1.keycloak_secret"
-
-    # Always verify the secret exists on the cluster — don't trust the state
-    # marker alone, because cleanup/uninstall may have deleted it.
-    log_step "E1.7" "Ensuring Keycloak client-manager secret in namespace '${env_name}'"
-
-    ensure_kubeconfig || return 1
-
-    local cm_pass=$(cfg "keycloak.client_manager_password" "")
-    if [[ -z "$cm_pass" ]]; then
-        log_error "Keycloak client-manager password not available" \
-                  "This should have been resolved in the validation step" \
-                  "Set keycloak.client_manager_password in env config"
-        return 1
-    fi
-
-    if kubectl -n "$env_name" get secret keycloak-client-manager &>/dev/null; then
-        log_info "Secret 'keycloak-client-manager' already exists in namespace '${env_name}'."
-    else
-        log_info "Creating secret 'keycloak-client-manager'..."
-        kubectl -n "$env_name" create secret generic keycloak-client-manager \
-            --from-literal=keycloak-client-manager-password="$cm_pass" || {
-            log_error "Failed to create keycloak-client-manager secret" \
-                      "kubectl create secret failed" \
-                      "Check namespace exists and credentials are correct"
-            return 1
-        }
-        log_success "Secret 'keycloak-client-manager' created in namespace '${env_name}'."
-    fi
-
-    mark_step_done "$step_id"
-}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 1.8: CA certificate ConfigMap (local mode only)
@@ -601,7 +537,6 @@ run_env_phase1() {
     env_phase1_step4_namespace
     env_phase1_step5_rancher_project
     env_phase1_step6_istio_gateway
-    env_phase1_step7_keycloak_secret
     env_phase1_step8_ca_configmap
 
     log_success "Phase 1 complete — environment infrastructure for '${env_name}' is ready."

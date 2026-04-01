@@ -179,18 +179,6 @@ show_summary() {
     fi
     echo -e "${GREEN}║${NC}  Keycloak admin password: see K8s secret                    ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}    keycloak-system/keycloak (key: admin-password)            ${GREEN}║${NC}"
-    # Show client-manager credentials if saved
-    local cm_pw_file="/var/lib/openg2p/deploy-state/client-manager-password"
-    if [[ -f "$cm_pw_file" ]]; then
-        local cm_pw email_domain cm_user
-        cm_pw=$(cat "$cm_pw_file")
-        email_domain=$(echo "$admin_email" | sed 's/.*@//')
-        cm_user="client-manager@${email_domain}"
-        echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
-        echo -e "${GREEN}║${NC}  ${BOLD}Client-manager (for environment setup scripts):${NC}            ${GREEN}║${NC}"
-        echo -e "${GREEN}║${NC}    user: ${BOLD}${cm_user}${NC}"
-        echo -e "${GREEN}║${NC}    password: ${BOLD}${cm_pw}${NC}"
-    fi
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
     echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${GREEN}║${NC}  ${BOLD}What's next:${NC}                                                ${GREEN}║${NC}"

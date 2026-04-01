@@ -248,17 +248,7 @@ The user can then log in to Rancher via "Login with Keycloak" using their email 
 
 > **Note:** The Rancher `admin` global role (super admin) has access to everything. The initial admin user configured during setup already has this role.
 
-### Step 7: Client-Manager Credentials
-
-The script automatically creates a **`client-manager`** user in Keycloak's master realm. This service account is required by the environment setup script (`openg2p-environment.sh`) to programmatically create Keycloak clients for each environment.
-
-- **Username:** `client-manager@<your-domain>` (derived from `keycloak.admin_email` domain, e.g., `client-manager@openg2p.org`)
-- **Password:** Auto-generated and displayed in the script's final output
-- **Roles:** `manage-clients`, `query-clients`, `view-clients` (restricted — no admin access)
-
-The password is also saved on the VM at `/var/lib/openg2p/deploy-state/client-manager-password`. Note it down from the script output — you'll need it when running `openg2p-environment.sh`.
-
-### Step 8: Create an Environment
+### Step 7: Create an Environment
 
 After the infrastructure is ready, create one or more environments using `openg2p-environment.sh`. Each environment is an isolated namespace with its own domain, services, and user access.
 
@@ -283,9 +273,6 @@ This creates namespace `dev` with domain `dev.openg2p.test` and installs openg2p
 environment: "dev"
 base_domain: "dev.openg2p.org"
 infra_config: "infra-config.yaml"
-keycloak:
-  client_manager_user: "client-manager@openg2p.org"
-  client_manager_password: "<from infra script output>"
 modules:
   commons: true
 ```
@@ -309,13 +296,12 @@ The `openg2p-environment.sh` script runs in two phases:
 
 | Step | What | Details |
 |---|---|---|
-| E1.1 | Validate prerequisites | Infra completed, kubeconfig works, client-manager credentials available |
+| E1.1 | Validate prerequisites | Infra completed, kubeconfig works, base domain available |
 | E1.2 | TLS certificate | **Local:** wildcard cert `*.dev.openg2p.test` signed by existing CA. **Custom:** Let's Encrypt wildcard cert |
 | E1.3 | Nginx server block | Adds `*.dev.openg2p.test` → Istio ingress (separate config file per environment) |
 | E1.4 | K8s namespace | Creates the namespace if it doesn't exist |
 | E1.5 | Rancher Project | Creates a Rancher Project and moves the namespace into it (for RBAC) |
 | E1.6 | Istio Gateway | Creates Istio Gateway resource for hostname routing |
-| E1.7 | Keycloak secret | Creates `keycloak-client-manager` K8s secret in the namespace |
 
 ### Phase 2: Module Installation
 
@@ -393,7 +379,7 @@ automation/single-node/
 │   ├── utils.sh          # Shared: logging, state, config, wait helpers
 │   ├── phase1.sh         # Infra Phase 1: host setup (tools, RKE2, Wireguard, NFS, DNS, TLS, Nginx)
 │   ├── phase2.sh         # Infra Phase 2: platform components (Istio, Helmfile sync)
-│   ├── phase3.sh         # Infra Phase 3: Rancher-Keycloak SAML, roles, client-manager
+│   ├── phase3.sh         # Infra Phase 3: Rancher-Keycloak SAML, roles
 │   ├── env-phase1.sh     # Env Phase 1: certs, Nginx, namespace, Rancher project, Istio GW
 │   └── env-phase2.sh     # Env Phase 2: commons helm install (future: more modules)
 ├── aws/
