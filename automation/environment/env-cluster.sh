@@ -349,6 +349,15 @@ spec:
         - "${base_domain}"
         - "*.${base_domain}"
       port:
+        name: http2-redirect-https
+        number: 8081
+        protocol: HTTP2
+      tls:
+        httpsRedirect: true
+    - hosts:
+        - "${base_domain}"
+        - "*.${base_domain}"
+      port:
         name: http2
         number: 8080
         protocol: HTTP2
