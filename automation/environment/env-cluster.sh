@@ -274,7 +274,20 @@ step2_rancher_project() {
 
     log_step "2" "Creating Rancher Project for '${env_name}'"
 
-    # Check if a project with this name already exists
+    # Check if the Rancher Project CRD exists on this cluster.
+    # It will only exist if Rancher management server runs here (same cluster).
+    # On downstream/imported clusters, this CRD is absent.
+    if ! kubectl get crd projects.management.cattle.io &>/dev/null; then
+        log_manual_action \
+            "Rancher management server is not on this cluster." \
+            "Create the project and move the namespace manually:" \
+            "  1. Open Rancher UI → select this cluster" \
+            "  2. Go to Projects/Namespaces → Create Project → name it '${env_name}'" \
+            "  3. Move namespace '${env_name}' into the project"
+        return 0
+    fi
+
+    # CRD exists — Rancher is on this cluster. Proceed with kubectl.
     local existing_project
     existing_project=$(kubectl get projects.management.cattle.io -n local \
         -o json 2>/dev/null | \

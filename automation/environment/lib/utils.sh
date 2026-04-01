@@ -46,13 +46,9 @@ log_manual_action() {
     echo -e "\n${YELLOW}╔══════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${YELLOW}║  MANUAL ACTION REQUIRED${NC}"
     echo -e "${YELLOW}╠══════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${YELLOW}║${NC}  $1"
-    if [[ -n "${2:-}" ]]; then
-        echo -e "${YELLOW}║${NC}  $2"
-    fi
-    if [[ -n "${3:-}" ]]; then
-        echo -e "${YELLOW}║${NC}  $3"
-    fi
+    for arg in "$@"; do
+        echo -e "${YELLOW}║${NC}  ${arg}"
+    done
     echo -e "${YELLOW}╠══════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${YELLOW}║${NC}  Once done, re-run this script to continue."
     echo -e "${YELLOW}╚══════════════════════════════════════════════════════════════╝${NC}\n"
