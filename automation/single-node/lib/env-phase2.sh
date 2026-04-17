@@ -17,22 +17,6 @@
 # =============================================================================
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Helper: get Keycloak internal URL for pod-to-pod communication
-# ─────────────────────────────────────────────────────────────────────────────
-# In local mode (self-signed certs), pods can't trust the external HTTPS URL.
-# Instead, they talk to Keycloak via the internal K8s service over plain HTTP.
-# In custom mode (Let's Encrypt), the external URL is publicly trusted, so
-# no internal URL is needed.
-get_keycloak_internal_url() {
-    local domain_mode=$(cfg "domain_mode" "custom")
-    if [[ "$domain_mode" == "local" ]]; then
-        echo "http://keycloak.keycloak-system.svc.cluster.local"
-    else
-        echo ""
-    fi
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Helpers: resolve chart references
 # ─────────────────────────────────────────────────────────────────────────────
 # Resolves a chart reference: local path if available, else repo_name/chart_name.
@@ -201,7 +185,6 @@ env_phase2_step1_commons_base() {
     ensure_kubeconfig || return 1
 
     local base_domain=$(get_env_base_domain)
-    local keycloak_url=$(get_keycloak_url)
     local chart_name=$(cfg "commons_base.chart_name" "openg2p-commons-base")
     local chart_ref=$(get_chart_ref "commons_base.chart_path" "$chart_name")
     local chart_version=$(cfg "commons_base.chart_version" "2.0.0-develop")
@@ -216,7 +199,6 @@ env_phase2_step1_commons_base() {
     log_info "Version:  ${chart_version}"
     log_info "Release:  ${release_name}"
     log_info "Domain:   ${base_domain}"
-    log_info "Keycloak: ${keycloak_url}"
     log_info ""
 
     # Extra helm args from config
@@ -227,22 +209,13 @@ env_phase2_step1_commons_base() {
         extra=($extra_args)
     fi
 
-    # In local mode, the infra Keycloak uses a self-signed cert.
-    # Pass the internal URL so services can reach it over HTTP.
-    local keycloak_internal_url=$(get_keycloak_internal_url)
-    local -a kc_internal_args=()
-    if [[ -n "$keycloak_internal_url" ]]; then
-        log_info "Local mode: infra Keycloak internal URL: ${keycloak_internal_url}"
-        kc_internal_args=(
-            --set "global.keycloakInternalUrl=${keycloak_internal_url}"
-        )
-    fi
-
+    # The commons-base chart deploys its own per-env Keycloak and derives
+    # both keycloakBaseUrl and keycloakInternalUrl from baseDomain and
+    # Release.Name automatically. Do NOT override those globals here —
+    # they must point to the per-env Keycloak, not the infra Keycloak.
     helm_install_chart "$env_name" "$release_name" "$chart_ref" "$chart_version" \
         "openg2p-commons-base" \
         --set "global.baseDomain=${base_domain}" \
-        --set "global.keycloakBaseUrl=${keycloak_url}" \
-        "${kc_internal_args[@]}" \
         "${extra[@]}" \
         || return 1
 
@@ -303,7 +276,6 @@ env_phase2_step2_commons_services() {
     ensure_kubeconfig || return 1
 
     local base_domain=$(get_env_base_domain)
-    local keycloak_url=$(get_keycloak_url)
     local chart_name=$(cfg "commons_services.chart_name" "openg2p-commons-services")
     local chart_ref=$(get_chart_ref "commons_services.chart_path" "$chart_name")
     local chart_version=$(cfg "commons_services.chart_version" "2.0.0-develop")
@@ -329,7 +301,6 @@ env_phase2_step2_commons_services() {
     log_info "Release:      ${release_name}"
     log_info "Base release: ${base_release}"
     log_info "Domain:       ${base_domain}"
-    log_info "Keycloak:     ${keycloak_url}"
     log_info ""
 
     # Extra helm args from config
@@ -340,19 +311,12 @@ env_phase2_step2_commons_services() {
         extra=($extra_args)
     fi
 
-    # In local mode, pass internal Keycloak URL
-    local keycloak_internal_url=$(get_keycloak_internal_url)
-    local -a kc_internal_args=()
-    if [[ -n "$keycloak_internal_url" ]]; then
-        kc_internal_args=(--set "global.keycloakInternalUrl=${keycloak_internal_url}")
-    fi
-
-    # Services chart needs references to base chart's infrastructure services
+    # Services chart inherits keycloakBaseUrl / keycloakInternalUrl defaults
+    # from its values.yaml — they point to the per-env Keycloak deployed by
+    # commons-base. Do NOT override them here.
     helm_install_chart "$env_name" "$release_name" "$chart_ref" "$chart_version" \
         "openg2p-commons-services" \
         --set "global.baseDomain=${base_domain}" \
-        --set "global.keycloakBaseUrl=${keycloak_url}" \
-        "${kc_internal_args[@]}" \
         --set "global.postgresqlHost=${base_release}-postgresql" \
         --set "global.redisInstallationName=${base_release}-redis" \
         --set "global.redisAuthInstallationName=${base_release}-redis-auth" \

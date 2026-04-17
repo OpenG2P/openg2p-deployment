@@ -32,17 +32,6 @@ get_env_base_domain() {
     fi
 }
 
-get_keycloak_url() {
-    local domain_mode=$(cfg "domain_mode" "custom")
-    local keycloak_host
-    if [[ "$domain_mode" == "local" ]]; then
-        keycloak_host="keycloak.$(cfg 'local_domain' 'openg2p.test')"
-    else
-        keycloak_host=$(cfg "keycloak_hostname")
-    fi
-    echo "https://${keycloak_host}"
-}
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 1.1: Validate prerequisites
 # ─────────────────────────────────────────────────────────────────────────────

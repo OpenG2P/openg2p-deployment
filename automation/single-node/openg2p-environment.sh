@@ -96,7 +96,8 @@ EOF
 show_env_summary() {
     local env_name=$(cfg "environment")
     local base_domain=$(get_env_base_domain)
-    local keycloak_url=$(get_keycloak_url)
+    # Per-env Keycloak deployed by the commons-base chart (not the infra Keycloak)
+    local keycloak_url="https://keycloak.${base_domain}"
 
     echo ""
     echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"

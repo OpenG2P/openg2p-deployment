@@ -268,7 +268,7 @@ modules:
 
 This creates namespace `dev` with domain `dev.openg2p.test` and installs openg2p-commons (PostgreSQL, Kafka, MinIO, OpenSearch, Superset, eSignet, ODK, etc.). Services become available at `minio.dev.openg2p.test`, `superset.dev.openg2p.test`, etc.
 
-**Custom mode** — set `base_domain` and Keycloak credentials explicitly:
+**Custom mode** — set `base_domain` explicitly:
 ```yaml
 environment: "dev"
 base_domain: "dev.openg2p.org"
@@ -276,6 +276,8 @@ infra_config: "infra-config.yaml"
 modules:
   commons: true
 ```
+
+> **Note:** Each environment gets its own Keycloak at `https://keycloak.<base_domain>` (e.g., `keycloak.dev.openg2p.org`), deployed automatically by the `openg2p-commons-base` chart. The environment config does not include any Keycloak credentials — the chart handles them.
 
 **Multiple environments** — run the script multiple times with different configs:
 ```bash

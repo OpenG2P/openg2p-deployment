@@ -589,13 +589,14 @@ EOF
     # ── E4: Helm upgrade commons-base ───────────────────────────────────
     log_info "[${env_name}] Upgrading commons-base with new domain..."
 
+    # The commons-base chart deploys its own per-env Keycloak and derives
+    # both keycloakBaseUrl and keycloakInternalUrl from baseDomain/Release.Name
+    # automatically. Do NOT override those — changing baseDomain cascades.
     if helm status commons -n "$env_name" &>/dev/null; then
         helm upgrade commons $(helm get metadata commons -n "$env_name" -o json 2>/dev/null | jq -r '.chart // "openg2p/openg2p-commons-base"') \
             -n "$env_name" \
             --reuse-values \
             --set "global.baseDomain=${new_base_domain}" \
-            --set "global.keycloakBaseUrl=${new_keycloak_url}" \
-            --set "global.keycloakInternalUrl=" \
             --timeout 10m --wait || {
             log_warn "[${env_name}] commons-base upgrade failed. May need manual intervention."
         }
@@ -612,8 +613,6 @@ EOF
             -n "$env_name" \
             --reuse-values \
             --set "global.baseDomain=${new_base_domain}" \
-            --set "global.keycloakBaseUrl=${new_keycloak_url}" \
-            --set "global.keycloakInternalUrl=" \
             --timeout 10m --wait || {
             log_warn "[${env_name}] commons-services upgrade failed. May need manual intervention."
         }
