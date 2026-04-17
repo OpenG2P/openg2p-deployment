@@ -188,6 +188,11 @@ migrate_infra() {
         phase1_step8_certificates_letsencrypt
     fi
 
+    # Ensure Nginx is running (cert generation may have stopped it)
+    if systemctl is-enabled --quiet nginx 2>/dev/null && ! systemctl is-active --quiet nginx 2>/dev/null; then
+        systemctl start nginx
+    fi
+
     # ── M1.3: Update Nginx infra server blocks ──────────────────────────
     log_info "Updating Nginx infrastructure server blocks..."
 
@@ -215,7 +220,7 @@ server {
     ssl_certificate_key ${rancher_key};
     ssl_protocols       TLSv1.2 TLSv1.3;
     location / {
-        proxy_pass                      https://istio_ingress;
+        proxy_pass                      http://istio_ingress;
         proxy_http_version              1.1;
         proxy_buffering                 on;
         proxy_buffers                   8 16k;
@@ -302,8 +307,11 @@ EOF
     # ── M1.6: Update Rancher server-url ──────────────────────────────────
     log_info "Updating Rancher server-url to https://${new_rancher_host}..."
 
-    local rancher_admin_password
-    rancher_admin_password=$(cat /var/lib/openg2p/deploy-state/rancher-admin-password 2>/dev/null || true)
+    local rancher_admin_password="${RANCHER_ADMIN_PASSWORD:-}"
+
+    if [[ -z "$rancher_admin_password" ]]; then
+        rancher_admin_password=$(cat /var/lib/openg2p/deploy-state/rancher-admin-password 2>/dev/null || true)
+    fi
 
     if [[ -z "$rancher_admin_password" ]]; then
         rancher_admin_password=$(kubectl -n cattle-system get secret rancher-secret \
@@ -420,8 +428,8 @@ migrate_environments() {
     local node_ip=$(cfg "node_ip")
     local new_keycloak_host=$(cfg "new_keycloak_hostname")
     local new_keycloak_url="https://${new_keycloak_host}"
-    local le_email=$(cfg "letsencrypt_email")
-    local le_challenge=$(cfg "letsencrypt_challenge" "dns")
+    local le_email=$(cfg "tls.letsencrypt_email" "$(cfg 'letsencrypt_email' '')")
+    local le_challenge=$(cfg "tls.letsencrypt_challenge" "$(cfg 'letsencrypt_challenge' 'dns')")
 
     # Parse environment list from config
     # The YAML parser doesn't handle arrays, so we parse the environments
@@ -588,7 +596,6 @@ EOF
             --set "global.baseDomain=${new_base_domain}" \
             --set "global.keycloakBaseUrl=${new_keycloak_url}" \
             --set "global.keycloakInternalUrl=" \
-            --set "keycloak-init.keycloak.url=${new_keycloak_url}" \
             --timeout 10m --wait || {
             log_warn "[${env_name}] commons-base upgrade failed. May need manual intervention."
         }

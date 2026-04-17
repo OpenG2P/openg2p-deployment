@@ -971,9 +971,12 @@ phase1_step8_certificates_letsencrypt() {
 
     case "$challenge" in
         dns-cloudflare)
-            install_if_missing "certbot-dns-cloudflare" \
-                "pip3 show certbot-dns-cloudflare" \
-                "apt-get install -y -qq python3-certbot-dns-cloudflare > /dev/null 2>&1 || pip3 install certbot-dns-cloudflare --break-system-packages"
+            if ! certbot plugins 2>/dev/null | grep -q dns-cloudflare; then
+                log_error "certbot-dns-cloudflare plugin not installed" \
+                          "Install it manually: apt-get install python3-certbot-dns-cloudflare" \
+                          "Or: pip3 install certbot-dns-cloudflare"
+                return 1
+            fi
             local cf_token=$(cfg "tls.cloudflare_api_token" "$(cfg 'cloudflare_api_token' '')")
             if [[ -z "$cf_token" ]]; then
                 log_error "Cloudflare API token not set" \
@@ -987,9 +990,13 @@ phase1_step8_certificates_letsencrypt() {
             chmod 600 /etc/letsencrypt/cloudflare.ini
             ;;
         dns-route53)
-            install_if_missing "certbot-dns-route53" \
-                "pip3 show certbot-dns-route53" \
-                "apt-get install -y -qq python3-certbot-dns-route53 > /dev/null 2>&1 || pip3 install certbot-dns-route53 --break-system-packages"
+            if ! certbot plugins 2>/dev/null | grep -q dns-route53; then
+                log_error "certbot-dns-route53 plugin not installed" \
+                          "Install it manually: apt-get install python3-certbot-dns-route53" \
+                          "Or: pip3 install certbot-dns-route53" \
+                          "Also ensure AWS credentials are configured (aws configure)"
+                return 1
+            fi
             ;;
     esac
 
