@@ -316,6 +316,8 @@ disable:
   - rke2-ingress-nginx
 kubelet-arg:
   - --allowed-unsafe-sysctls=net.ipv4.conf.all.src_valid_mark,net.ipv4.ip_forward
+  - --container-log-max-size=50Mi
+  - --container-log-max-files=5
 EOF
 
     log_info "Downloading and installing RKE2 ${rke2_version}..."
