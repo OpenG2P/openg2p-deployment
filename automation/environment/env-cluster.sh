@@ -115,18 +115,50 @@ ensure_helm_repo() {
     log_info "Ensuring Helm repo 'openg2p' is configured..."
 
     if helm repo list 2>/dev/null | grep -q "^openg2p"; then
-        helm repo update openg2p > /dev/null 2>&1 || true
-        log_info "Helm repo 'openg2p' updated."
+        log_info "Refreshing Helm repo 'openg2p' index..."
+        if ! helm repo update openg2p; then
+            log_error "helm repo update openg2p failed" \
+                      "Could not refresh the openg2p Helm repo index" \
+                      "Check network connectivity and repo URL" \
+                      "helm repo update openg2p"
+            return 1
+        fi
+        log_success "Helm repo 'openg2p' index refreshed."
     else
-        helm repo add openg2p "$repo_url" > /dev/null 2>&1 || {
+        if ! helm repo add openg2p "$repo_url"; then
             log_error "Failed to add Helm repo" \
                       "Could not add repo at ${repo_url}" \
                       "Check internet connectivity" \
                       "helm repo add openg2p ${repo_url}"
             return 1
-        }
-        helm repo update openg2p > /dev/null 2>&1 || true
-        log_success "Helm repo 'openg2p' added."
+        fi
+        if ! helm repo update openg2p; then
+            log_error "helm repo update openg2p failed after adding repo" \
+                      "Could not fetch the openg2p index" \
+                      "Check network connectivity to ${repo_url}" \
+                      "helm repo update openg2p"
+            return 1
+        fi
+        log_success "Helm repo 'openg2p' added and index fetched."
+    fi
+}
+
+# Builds/updates chart dependencies for local chart paths.
+# Remote charts (openg2p/*) have dependencies bundled in the .tgz, so no-op.
+ensure_chart_deps() {
+    local chart_ref="$1"
+    # Local path if it starts with / (absolute) — get_chart_ref returns either
+    # an absolute path or "openg2p/<name>".
+    if [[ "$chart_ref" == /* ]]; then
+        log_info "Updating chart dependencies for local chart: ${chart_ref}"
+        if ! helm dependency update "$chart_ref"; then
+            log_error "helm dependency update failed for ${chart_ref}" \
+                      "Could not fetch chart dependencies" \
+                      "Check Chart.yaml dependencies and repo access" \
+                      "helm dependency update ${chart_ref}"
+            return 1
+        fi
+        log_success "Chart dependencies updated."
     fi
 }
 
@@ -179,8 +211,10 @@ helm_install_chart() {
     local display_name="$5"
     shift 5
 
+    # Use `upgrade --install` so re-runs pick up a republished chart version
+    # (e.g. a rebuilt `2.0.0-develop`) without the user having to --force.
     local -a helm_args=(
-        install "$release_name" "$chart_ref"
+        upgrade --install "$release_name" "$chart_ref"
         -n "$env_name"
         --wait
         --timeout 20m
@@ -192,13 +226,13 @@ helm_install_chart() {
 
     helm_args+=("$@")
 
-    log_info "Running: helm install ${release_name} ..."
+    log_info "Running: helm upgrade --install ${release_name} ..."
     log_info "(this may take 15-20 minutes)"
     echo ""
 
     if ! helm "${helm_args[@]}"; then
-        log_error "Helm install failed for ${display_name}" \
-                  "The chart installation did not complete successfully" \
+        log_error "Helm upgrade --install failed for ${display_name}" \
+                  "The chart install/upgrade did not complete successfully" \
                   "Check pod status and logs" \
                   "kubectl get pods -n ${env_name} --field-selector=status.phase!=Running"
         echo ""
@@ -400,16 +434,18 @@ step4_commons_base() {
     local release_name="commons"
 
     ensure_helm_repo || return 1
+    ensure_chart_deps "$chart_ref" || return 1
 
-    # Check if already installed (and not --force)
-    if helm status "$release_name" -n "$env_name" &>/dev/null && [[ "$FORCE_MODE" != "true" ]]; then
-        log_info "openg2p-commons-base already installed. Use --force to reinstall."
-        return 0
-    fi
-
-    # Clean uninstall if force mode or stale release
-    if [[ "$FORCE_MODE" == "true" ]]; then
-        clean_uninstall_release "$env_name" "$release_name" "full"
+    # Decide: upgrade in place (default) vs destructive reinstall (--force).
+    if helm status "$release_name" -n "$env_name" &>/dev/null; then
+        if [[ "$FORCE_MODE" == "true" ]]; then
+            log_warn "Release '${release_name}' exists. --force will WIPE all data (secrets + PVCs) and reinstall."
+            clean_uninstall_release "$env_name" "$release_name" "full"
+        else
+            log_info "Release '${release_name}' exists. Upgrading in place to latest chart version (data preserved)."
+        fi
+    else
+        log_info "Release '${release_name}' not found. Performing fresh install."
     fi
 
     log_info "Chart:    ${chart_ref}"
@@ -456,12 +492,7 @@ step5_commons_services() {
     local base_release="commons"
 
     ensure_helm_repo || return 1
-
-    # Check if already installed (and not --force)
-    if helm status "$release_name" -n "$env_name" &>/dev/null && [[ "$FORCE_MODE" != "true" ]]; then
-        log_info "openg2p-commons-services already installed. Use --force to reinstall."
-        return 0
-    fi
+    ensure_chart_deps "$chart_ref" || return 1
 
     # Verify base chart is installed
     if ! helm status "$base_release" -n "$env_name" &>/dev/null; then
@@ -472,9 +503,17 @@ step5_commons_services() {
         return 1
     fi
 
-    # Clean uninstall if force mode or stale release
-    if [[ "$FORCE_MODE" == "true" ]]; then
-        clean_uninstall_release "$env_name" "$release_name" "light"
+    # Decide: upgrade in place (default) vs clean reinstall (--force).
+    # Services chart cleanup is "light" — preserves base chart PVCs.
+    if helm status "$release_name" -n "$env_name" &>/dev/null; then
+        if [[ "$FORCE_MODE" == "true" ]]; then
+            log_warn "Release '${release_name}' exists. --force will uninstall and reinstall (base chart PVCs preserved)."
+            clean_uninstall_release "$env_name" "$release_name" "light"
+        else
+            log_info "Release '${release_name}' exists. Upgrading in place to latest chart version."
+        fi
+    else
+        log_info "Release '${release_name}' not found. Performing fresh install."
     fi
 
     log_info "Chart:        ${chart_ref}"
