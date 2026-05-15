@@ -3,11 +3,17 @@
 # OpenG2P Environment Teardown for Multi-Node Configuration — Cluster
 # =============================================================================
 # Reverse of env-cluster.sh. Runs from your workstation (or any machine with
-# kubectl access) to tear down resources created in the environment namespace.
+# kubectl access) to tear down resources in an environment namespace.
+#
+# This script takes only a namespace — it does NOT read env-config.yaml.
+# All cleanup is namespace-scoped, so it doesn't matter which apps or chart
+# versions were installed: every Helm release, Secret, PVC, ConfigMap, etc.
+# in the namespace is removed.
 #
 # Default mode (without --full):
 #   - Uninstalls ALL Helm releases in the namespace (commons, commons-services,
-#     and any other OpenG2P modules: Registry, PBMS, SPAR, G2P Bridge, etc.)
+#     and any other module installed there: Registry, PBMS, SPAR, G2P Bridge,
+#     custom charts, etc.)
 #   - Cleans orphaned hook resources (Jobs, ServiceAccounts, Roles, etc.)
 #   - Deletes all Secrets and PVCs (including backing PVs) in the namespace
 #   - PRESERVES: namespace, Istio Gateway, Rancher Project, Nginx config,
@@ -15,9 +21,9 @@
 #
 # --full mode:
 #   - Everything in default mode, PLUS:
-#   - Deletes the Istio Gateway
+#   - Deletes the Istio Gateway(s) in the namespace
 #   - Removes the namespace from its Rancher Project (and deletes the project
-#     if the management CRD is available)
+#     if the management CRD is available on this cluster)
 #   - Deletes the namespace itself
 #   - PRESERVES: Nginx config, DNS records, TLS certificates (infra-level)
 #
@@ -28,18 +34,22 @@
 #   - Any other namespaces on the same cluster
 #
 # Usage:
-#   ./env-cluster-uninstall.sh --config env-config.yaml              # default
-#   ./env-cluster-uninstall.sh --config env-config.yaml --full       # full
-#   ./env-cluster-uninstall.sh --config env-config.yaml --dry-run    # preview
+#   ./env-cluster-uninstall.sh --namespace qa              # default
+#   ./env-cluster-uninstall.sh --namespace qa --full       # full
+#   ./env-cluster-uninstall.sh --namespace qa --dry-run    # preview only
 # =============================================================================
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE=""
+NAMESPACE=""
 FULL_MODE=false
 SKIP_CONFIRM=false
 DRY_RUN=false
+
+# Captured before step 1 runs — used by hook cleanup so it works for ANY
+# release names, not just commons/commons-services.
+RELEASES_BEFORE=""
 
 source "${SCRIPT_DIR}/lib/utils.sh"
 
@@ -49,11 +59,11 @@ source "${SCRIPT_DIR}/lib/utils.sh"
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case $1 in
-            --config)  CONFIG_FILE="$2"; shift 2 ;;
-            --full)    FULL_MODE=true; shift ;;
-            --yes)     SKIP_CONFIRM=true; shift ;;
-            --dry-run) DRY_RUN=true; shift ;;
-            --help|-h) show_help; exit 0 ;;
+            --namespace) NAMESPACE="$2"; shift 2 ;;
+            --full)      FULL_MODE=true; shift ;;
+            --yes)       SKIP_CONFIRM=true; shift ;;
+            --dry-run)   DRY_RUN=true; shift ;;
+            --help|-h)   show_help; exit 0 ;;
             *)
                 log_error "Unknown option: $1" \
                           "This flag is not recognized" \
@@ -63,15 +73,13 @@ parse_args() {
         esac
     done
 
-    if [[ -z "$CONFIG_FILE" ]]; then
-        log_error "No config file specified" \
-                  "The --config flag is required" \
-                  "Provide the path to your env-config.yaml" \
-                  "$0 --config env-config.yaml"
+    if [[ -z "$NAMESPACE" ]]; then
+        log_error "No namespace specified" \
+                  "The --namespace flag is required" \
+                  "Provide the namespace to tear down" \
+                  "$0 --namespace qa"
         exit 1
     fi
-
-    [[ "$CONFIG_FILE" = /* ]] || CONFIG_FILE="${SCRIPT_DIR}/${CONFIG_FILE}"
 }
 
 show_help() {
@@ -80,14 +88,14 @@ OpenG2P Environment Teardown for Multi-Node Configuration
 =========================================================
 
 Usage:
-  ./env-cluster-uninstall.sh --config env-config.yaml [options]
+  ./env-cluster-uninstall.sh --namespace <name> [options]
 
 Options:
-  --config <file>    Path to environment config file (required)
-  --full             Also delete Istio Gateway, Rancher Project, and namespace
-  --yes              Skip confirmation prompt (for automation)
-  --dry-run          Show what would be deleted, don't actually delete
-  --help             Show this help message
+  --namespace <name>   Target Kubernetes namespace to tear down (required)
+  --full               Also delete Istio Gateway, Rancher Project, and namespace
+  --yes                Skip confirmation prompt (for automation)
+  --dry-run            Show what would be deleted, don't actually delete
+  --help               Show this help message
 
 Default (without --full):
   Uninstalls ALL Helm releases in the namespace (commons, commons-services,
@@ -99,6 +107,12 @@ Default (without --full):
 --full:
   In addition, deletes the Istio Gateway, Rancher Project, and the
   namespace itself. Preserves infra-level resources (Nginx, certs, DNS).
+
+Notes:
+  This script operates on the namespace as a whole — it does NOT read the
+  env-config.yaml that was used during install. Every Helm release and all
+  associated resources in the namespace are removed, regardless of which
+  charts or versions were originally installed.
 EOF
 }
 
@@ -116,8 +130,6 @@ count_or_zero() {
 }
 
 show_preview() {
-    local env_name=$(cfg "environment")
-
     echo ""
     if [[ "$FULL_MODE" == "true" ]]; then
         echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════╗${NC}"
@@ -128,12 +140,12 @@ show_preview() {
         echo -e "${YELLOW}║  DEFAULT TEARDOWN — the following WILL be deleted            ║${NC}"
         echo -e "${YELLOW}╠══════════════════════════════════════════════════════════════╣${NC}"
     fi
-    echo -e "${YELLOW}║${NC}  Namespace: ${BOLD}${env_name}${NC}"
+    echo -e "${YELLOW}║${NC}  Namespace: ${BOLD}${NAMESPACE}${NC}"
     echo -e "${YELLOW}║${NC}"
 
     # Helm releases
     local helm_releases
-    helm_releases=$(helm list -n "$env_name" -q 2>/dev/null || true)
+    helm_releases=$(helm list -n "$NAMESPACE" -q 2>/dev/null || true)
     local helm_count
     helm_count=$(echo -n "$helm_releases" | count_or_zero)
     echo -e "${YELLOW}║${NC}  ${BOLD}Helm releases${NC} (${helm_count}):"
@@ -148,17 +160,17 @@ show_preview() {
 
     # Jobs
     local jobs_count
-    jobs_count=$(kubectl get jobs -n "$env_name" --no-headers 2>/dev/null | count_or_zero)
+    jobs_count=$(kubectl get jobs -n "$NAMESPACE" --no-headers 2>/dev/null | count_or_zero)
     echo -e "${YELLOW}║${NC}  ${BOLD}Jobs${NC} (hook leftovers): ${jobs_count}"
 
     # Secrets
     local secrets_count
-    secrets_count=$(kubectl get secrets -n "$env_name" --no-headers 2>/dev/null | count_or_zero)
+    secrets_count=$(kubectl get secrets -n "$NAMESPACE" --no-headers 2>/dev/null | count_or_zero)
     echo -e "${YELLOW}║${NC}  ${BOLD}Secrets${NC}: ${secrets_count}"
 
     # PVCs + PVs
     local pvc_list
-    pvc_list=$(kubectl get pvc -n "$env_name" -o jsonpath='{range .items[*]}{.metadata.name}{" -> "}{.spec.volumeName}{"\n"}{end}' 2>/dev/null || true)
+    pvc_list=$(kubectl get pvc -n "$NAMESPACE" -o jsonpath='{range .items[*]}{.metadata.name}{" -> "}{.spec.volumeName}{"\n"}{end}' 2>/dev/null || true)
     local pvc_count
     pvc_count=$(echo -n "$pvc_list" | count_or_zero)
     echo -e "${YELLOW}║${NC}  ${BOLD}PVCs + PVs${NC} (${pvc_count}):"
@@ -174,7 +186,7 @@ show_preview() {
         echo -e "${YELLOW}║${NC}"
         echo -e "${YELLOW}║${NC}  ${BOLD}Istio Gateways${NC}:"
         local gw_list
-        gw_list=$(kubectl get gateway -n "$env_name" -o name 2>/dev/null || true)
+        gw_list=$(kubectl get gateway -n "$NAMESPACE" -o name 2>/dev/null || true)
         if [[ -n "$gw_list" ]]; then
             while IFS= read -r gw; do
                 echo -e "${YELLOW}║${NC}    - ${gw}"
@@ -187,7 +199,7 @@ show_preview() {
         echo -e "${YELLOW}║${NC}"
         echo -e "${YELLOW}║${NC}  ${BOLD}Rancher Project association${NC}:"
         local project_id
-        project_id=$(kubectl get namespace "$env_name" \
+        project_id=$(kubectl get namespace "$NAMESPACE" \
             -o jsonpath='{.metadata.annotations.field\.cattle\.io/projectId}' 2>/dev/null || true)
         if [[ -n "$project_id" ]]; then
             echo -e "${YELLOW}║${NC}    - ${project_id} (will unlink; project deleted if Rancher CRD present)"
@@ -196,7 +208,7 @@ show_preview() {
         fi
 
         echo -e "${YELLOW}║${NC}"
-        echo -e "${YELLOW}║${NC}  ${BOLD}Namespace itself${NC}: ${env_name}"
+        echo -e "${YELLOW}║${NC}  ${BOLD}Namespace itself${NC}: ${NAMESPACE}"
     fi
 
     echo -e "${YELLOW}║${NC}"
@@ -208,7 +220,7 @@ show_preview() {
         echo -e "${YELLOW}║${NC}    - DNS records"
         echo -e "${YELLOW}║${NC}    - Cluster/Rancher/Istio installations"
     else
-        echo -e "${YELLOW}║${NC}    - Namespace '${env_name}'"
+        echo -e "${YELLOW}║${NC}    - Namespace '${NAMESPACE}'"
         echo -e "${YELLOW}║${NC}    - Istio Gateway"
         echo -e "${YELLOW}║${NC}    - Rancher Project"
         echo -e "${YELLOW}║${NC}    - Nginx config, certificates, DNS records"
@@ -221,8 +233,6 @@ show_preview() {
 # Confirmation
 # ---------------------------------------------------------------------------
 confirm_or_exit() {
-    local env_name=$(cfg "environment")
-
     if [[ "$DRY_RUN" == "true" ]]; then
         log_info "DRY RUN — no resources will be deleted."
         return 0
@@ -235,11 +245,11 @@ confirm_or_exit() {
 
     if [[ "$FULL_MODE" == "true" ]]; then
         echo -e "${RED}${BOLD}This will permanently delete the namespace and all data in it.${NC}"
-        echo -n "To confirm, type the environment name '${env_name}': "
+        echo -n "To confirm, type the namespace name '${NAMESPACE}': "
         read -r response
-        if [[ "$response" != "$env_name" ]]; then
+        if [[ "$response" != "$NAMESPACE" ]]; then
             log_error "Confirmation failed" \
-                      "Expected '${env_name}', got '${response}'" \
+                      "Expected '${NAMESPACE}', got '${response}'" \
                       "Aborting — no changes made"
             exit 1
         fi
@@ -275,15 +285,10 @@ run_cmd() {
 # `commons` release), so we uninstall `commons` LAST. Other releases are
 # uninstalled first in the order Helm returns them.
 step_uninstall_helm_releases() {
-    local env_name=$(cfg "environment")
+    log_step "1" "Uninstalling all Helm releases in '${NAMESPACE}'"
 
-    log_step "1" "Uninstalling all Helm releases in '${env_name}'"
-
-    local all_releases
-    all_releases=$(helm list -n "$env_name" -q 2>/dev/null || true)
-
-    if [[ -z "$all_releases" ]]; then
-        log_info "No Helm releases found in '${env_name}' — skipping."
+    if [[ -z "$RELEASES_BEFORE" ]]; then
+        log_info "No Helm releases found in '${NAMESPACE}' — skipping."
         return 0
     fi
 
@@ -297,14 +302,14 @@ step_uninstall_helm_releases() {
         else
             other_releases+="${r}"$'\n'
         fi
-    done <<< "$all_releases"
+    done <<< "$RELEASES_BEFORE"
 
     # Uninstall everything EXCEPT commons first
     if [[ -n "$other_releases" ]]; then
         while IFS= read -r release; do
             [[ -z "$release" ]] && continue
             log_info "Uninstalling Helm release '${release}'..."
-            run_cmd "helm uninstall '${release}' -n '${env_name}' --wait --timeout 5m || true"
+            run_cmd "helm uninstall '${release}' -n '${NAMESPACE}' --wait --timeout 5m || true"
             log_success "Helm release '${release}' uninstalled."
         done <<< "$other_releases"
     fi
@@ -312,7 +317,7 @@ step_uninstall_helm_releases() {
     # Uninstall commons last — other releases may depend on its infra
     if [[ "$has_commons" == "true" ]]; then
         log_info "Uninstalling Helm release 'commons' (infrastructure — last)..."
-        run_cmd "helm uninstall 'commons' -n '${env_name}' --wait --timeout 5m || true"
+        run_cmd "helm uninstall 'commons' -n '${NAMESPACE}' --wait --timeout 5m || true"
         log_success "Helm release 'commons' uninstalled."
     fi
 }
@@ -320,25 +325,28 @@ step_uninstall_helm_releases() {
 # ---------------------------------------------------------------------------
 # Step 2: Clean orphaned hook resources
 # ---------------------------------------------------------------------------
+# Helm hooks (postgres-init, keycloak-init, client-secrets-sync, etc.) may
+# leave behind Jobs, ServiceAccounts, ConfigMaps, Roles, and RoleBindings
+# depending on their delete-policy. We scrub these by iterating over the
+# release names captured BEFORE step 1 ran (RELEASES_BEFORE).
 step_clean_hook_resources() {
-    local env_name=$(cfg "environment")
+    log_step "2" "Cleaning orphaned hook resources in '${NAMESPACE}'"
 
-    log_step "2" "Cleaning orphaned hook resources in '${env_name}'"
+    # Jobs — wholesale delete is safe; hooks have already run.
+    run_cmd "kubectl delete jobs -n '${NAMESPACE}' --all --ignore-not-found"
 
-    # Jobs — Helm hooks often leave these behind
-    run_cmd "kubectl delete jobs -n '${env_name}' --all --ignore-not-found"
-
-    # Hook ServiceAccounts, ConfigMaps, Roles, RoleBindings
-    # Includes per-subchart postgres-init suffixes (iam-pg-init, audit-pg-init).
-    # Both commons and commons-services run their own keycloak-init + client-secrets-sync.
-    for release in commons commons-services; do
-        for suffix in postgres-init keycloak-init client-secrets-sync iam-pg-init audit-pg-init master-data-postgres-init; do
-            run_cmd "kubectl delete serviceaccount '${release}-${suffix}' -n '${env_name}' --ignore-not-found > /dev/null 2>&1 || true"
-            run_cmd "kubectl delete configmap '${release}-${suffix}' -n '${env_name}' --ignore-not-found > /dev/null 2>&1 || true"
-            run_cmd "kubectl delete rolebinding '${release}-${suffix}' -n '${env_name}' --ignore-not-found > /dev/null 2>&1 || true"
-            run_cmd "kubectl delete role '${release}-${suffix}' -n '${env_name}' --ignore-not-found > /dev/null 2>&1 || true"
-        done
-    done
+    # Per-release hook resources. Suffixes cover the known hook patterns.
+    if [[ -n "$RELEASES_BEFORE" ]]; then
+        while IFS= read -r release; do
+            [[ -z "$release" ]] && continue
+            for suffix in postgres-init keycloak-init client-secrets-sync iam-pg-init audit-pg-init master-data-postgres-init; do
+                run_cmd "kubectl delete serviceaccount '${release}-${suffix}' -n '${NAMESPACE}' --ignore-not-found > /dev/null 2>&1 || true"
+                run_cmd "kubectl delete configmap '${release}-${suffix}' -n '${NAMESPACE}' --ignore-not-found > /dev/null 2>&1 || true"
+                run_cmd "kubectl delete rolebinding '${release}-${suffix}' -n '${NAMESPACE}' --ignore-not-found > /dev/null 2>&1 || true"
+                run_cmd "kubectl delete role '${release}-${suffix}' -n '${NAMESPACE}' --ignore-not-found > /dev/null 2>&1 || true"
+            done
+        done <<< "$RELEASES_BEFORE"
+    fi
 
     log_success "Hook resources cleaned."
 }
@@ -347,11 +355,9 @@ step_clean_hook_resources() {
 # Step 3: Delete Secrets
 # ---------------------------------------------------------------------------
 step_delete_secrets() {
-    local env_name=$(cfg "environment")
+    log_step "3" "Deleting all Secrets in '${NAMESPACE}'"
 
-    log_step "3" "Deleting all Secrets in '${env_name}'"
-
-    run_cmd "kubectl delete secrets -n '${env_name}' --all --ignore-not-found"
+    run_cmd "kubectl delete secrets -n '${NAMESPACE}' --all --ignore-not-found"
     log_success "Secrets deleted."
 }
 
@@ -359,15 +365,13 @@ step_delete_secrets() {
 # Step 4: Delete PVCs and PVs
 # ---------------------------------------------------------------------------
 step_delete_pvcs() {
-    local env_name=$(cfg "environment")
-
-    log_step "4" "Deleting PVCs and associated PVs in '${env_name}'"
+    log_step "4" "Deleting PVCs and associated PVs in '${NAMESPACE}'"
 
     # Capture PV names before deleting PVCs (otherwise we lose the mapping)
     local pv_names
-    pv_names=$(kubectl get pvc -n "$env_name" -o jsonpath='{.items[*].spec.volumeName}' 2>/dev/null || true)
+    pv_names=$(kubectl get pvc -n "$NAMESPACE" -o jsonpath='{.items[*].spec.volumeName}' 2>/dev/null || true)
 
-    run_cmd "kubectl delete pvc -n '${env_name}' --all --ignore-not-found"
+    run_cmd "kubectl delete pvc -n '${NAMESPACE}' --all --ignore-not-found"
 
     if [[ -n "$pv_names" ]]; then
         # Give the PVCs a moment to release their PVs
@@ -383,14 +387,12 @@ step_delete_pvcs() {
 }
 
 # ---------------------------------------------------------------------------
-# Step 5 (--full): Delete Istio Gateway
+# Step 5 (--full): Delete Istio Gateway(s)
 # ---------------------------------------------------------------------------
 step_delete_istio_gateway() {
-    local env_name=$(cfg "environment")
+    log_step "5" "Deleting Istio Gateway(s) in '${NAMESPACE}'"
 
-    log_step "5" "Deleting Istio Gateway(s) in '${env_name}'"
-
-    run_cmd "kubectl delete gateway --all -n '${env_name}' --ignore-not-found"
+    run_cmd "kubectl delete gateway --all -n '${NAMESPACE}' --ignore-not-found"
     log_success "Istio Gateways deleted."
 }
 
@@ -398,13 +400,11 @@ step_delete_istio_gateway() {
 # Step 6 (--full): Remove Rancher Project association and delete project
 # ---------------------------------------------------------------------------
 step_delete_rancher_project() {
-    local env_name=$(cfg "environment")
-
-    log_step "6" "Removing Rancher Project for '${env_name}'"
+    log_step "6" "Removing Rancher Project for '${NAMESPACE}'"
 
     # Read the project ID from the namespace annotation (before namespace deletion)
     local project_full
-    project_full=$(kubectl get namespace "$env_name" \
+    project_full=$(kubectl get namespace "$NAMESPACE" \
         -o jsonpath='{.metadata.annotations.field\.cattle\.io/projectId}' 2>/dev/null || true)
 
     if [[ -z "$project_full" ]]; then
@@ -432,15 +432,13 @@ step_delete_rancher_project() {
 # Step 7 (--full): Delete the namespace
 # ---------------------------------------------------------------------------
 step_delete_namespace() {
-    local env_name=$(cfg "environment")
+    log_step "7" "Deleting namespace '${NAMESPACE}'"
 
-    log_step "7" "Deleting namespace '${env_name}'"
-
-    if kubectl get namespace "$env_name" &>/dev/null; then
-        run_cmd "kubectl delete namespace '${env_name}' --ignore-not-found"
-        log_success "Namespace '${env_name}' deleted."
+    if kubectl get namespace "$NAMESPACE" &>/dev/null; then
+        run_cmd "kubectl delete namespace '${NAMESPACE}' --ignore-not-found"
+        log_success "Namespace '${NAMESPACE}' deleted."
     else
-        log_info "Namespace '${env_name}' does not exist — skipping."
+        log_info "Namespace '${NAMESPACE}' does not exist — skipping."
     fi
 }
 
@@ -448,22 +446,21 @@ step_delete_namespace() {
 # Summary
 # ---------------------------------------------------------------------------
 show_summary() {
-    local env_name=$(cfg "environment")
     echo ""
     echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${GREEN}║                                                              ║${NC}"
     if [[ "$DRY_RUN" == "true" ]]; then
         echo -e "${GREEN}║   DRY RUN complete — no resources were actually deleted.    ║${NC}"
     elif [[ "$FULL_MODE" == "true" ]]; then
-        echo -e "${GREEN}║   Full teardown complete for '${env_name}'.${NC}"
+        echo -e "${GREEN}║   Full teardown complete for namespace '${NAMESPACE}'.${NC}"
     else
-        echo -e "${GREEN}║   Default teardown complete for '${env_name}'.${NC}"
+        echo -e "${GREEN}║   Default teardown complete for namespace '${NAMESPACE}'.${NC}"
     fi
     echo -e "${GREEN}║                                                              ║${NC}"
     echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
     if [[ "$FULL_MODE" != "true" && "$DRY_RUN" != "true" ]]; then
-        echo -e "${GREEN}║${NC}  Re-install anytime with:                                    "
-        echo -e "${GREEN}║${NC}    ${BOLD}./env-cluster.sh --config ${CONFIG_FILE##*/}${NC}"
+        echo -e "${GREEN}║${NC}  Re-install with:"
+        echo -e "${GREEN}║${NC}    ${BOLD}./env-cluster.sh --config <your-env-config.yaml>${NC}"
     fi
     echo -e "${GREEN}║                                                              ║${NC}"
     echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
@@ -478,17 +475,6 @@ main() {
 
     log_banner "OpenG2P Environment Teardown" "Cluster · Uninstall"
 
-    load_config "$CONFIG_FILE"
-
-    local env_name=$(cfg "environment")
-
-    if [[ -z "$env_name" ]]; then
-        log_error "No environment name specified" \
-                  "The 'environment' key is missing or empty in the config" \
-                  "Check your env-config.yaml"
-        exit 1
-    fi
-
     # Verify kubectl access
     ensure_kubeconfig || exit 1
     kubectl cluster-info &>/dev/null || {
@@ -502,16 +488,20 @@ main() {
     # Verify helm is available
     check_command "helm" "Install Helm: https://helm.sh/docs/intro/install/" || exit 1
 
-    log_info "Environment:  ${BOLD}${env_name}${NC}"
+    log_info "Namespace:    ${BOLD}${NAMESPACE}${NC}"
     log_info "Mode:         ${BOLD}$([[ "$FULL_MODE" == "true" ]] && echo "FULL" || echo "DEFAULT")${NC}"
     [[ "$DRY_RUN" == "true" ]] && log_info "Dry-run:      ${BOLD}yes${NC}"
-    log_info "Config file:  ${CONFIG_FILE}"
 
     # Namespace check: if namespace is missing, nothing to do
-    if ! kubectl get namespace "$env_name" &>/dev/null; then
-        log_warn "Namespace '${env_name}' does not exist — nothing to uninstall."
+    if ! kubectl get namespace "$NAMESPACE" &>/dev/null; then
+        log_warn "Namespace '${NAMESPACE}' does not exist — nothing to uninstall."
         exit 0
     fi
+
+    # Capture Helm release names BEFORE we start uninstalling, so the hook
+    # cleanup step can iterate them (even though `helm list` would be empty
+    # by then).
+    RELEASES_BEFORE=$(helm list -n "$NAMESPACE" -q 2>/dev/null || true)
 
     # Show what's about to be deleted
     show_preview
