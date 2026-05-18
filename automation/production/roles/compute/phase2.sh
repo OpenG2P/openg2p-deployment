@@ -18,14 +18,18 @@ compute_render_helmfile_values() {
     local values_file="${WORK_DIR}/helmfile-infra-values.yaml"
     local rancher_host=$(get_rancher_hostname)
     local keycloak_host=$(get_keycloak_hostname)
+    local grafana_host=$(get_grafana_hostname)
+    local prometheus_host=$(get_prometheus_hostname)
 
     cat > "$values_file" <<EOF
 # Auto-generated from prod-config — do not edit manually
 # Generated at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
 
-rancher_hostname:  "${rancher_host}"
-keycloak_hostname: "${keycloak_host}"
-node_ip:           "$(cfg 'compute_private_ip')"
+rancher_hostname:    "${rancher_host}"
+keycloak_hostname:   "${keycloak_host}"
+grafana_hostname:    "${grafana_host}"
+prometheus_hostname: "${prometheus_host}"
+node_ip:             "$(cfg 'compute_private_ip')"
 
 rancher:
   version:  "$(cfg 'rancher_version' '2.12.3')"

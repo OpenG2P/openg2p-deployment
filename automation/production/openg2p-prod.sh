@@ -6,7 +6,7 @@
 # and drives role-specific phases on each.
 #
 # Roles:
-#   reverse-proxy (rp) — Nginx, Wireguard server, dnsmasq, local CA
+#   reverse-proxy (rp) — Nginx (admin server blocks), Wireguard server, customer-supplied TLS certs
 #   compute            — RKE2 single control-plane, Istio, Rancher, Keycloak
 #   storage            — NFS server, Postgres host install
 #
@@ -156,7 +156,7 @@ Order when --role all (default):
   1. SSH probes for all 3 nodes
   2. Storage node: phase 1 (NFS server + Postgres host)
   3. Compute node: phase 1 (RKE2 + NFS client)
-  4. Reverse-proxy:  phase 1 (Wireguard, dnsmasq, local CA, Nginx)
+  4. Reverse-proxy:  phase 1 (Wireguard, customer cert ingest, Nginx admin server blocks)
   5. Compute node: phase 2 (helmfile — Istio, Rancher, Keycloak, monitoring)
   6. Compute node: phase 3 (Rancher-Keycloak SAML)
 
@@ -168,9 +168,20 @@ EOF
 
 # ---------------------------------------------------------------------------
 validate_orchestrator_config() {
+    # Backward-compat: an OLD config from before the dual-NIC rework may
+    # have only rp_private_ip set. Detect and guide the user to migrate.
+    if [[ -z "$(cfg rp_public_ip)" && -z "$(cfg rp_internal_ip)" && -n "$(cfg rp_private_ip)" ]]; then
+        log_error "Old config detected (only rp_private_ip is set)" \
+                  "The automation now requires TWO RP IPs: rp_public_ip and rp_internal_ip" \
+                  "Set rp_public_ip (Wireguard endpoint) and rp_internal_ip (admin Nginx). If your RP currently has a single NIC, attach a second one (see docs) before re-running. For a quick try, you can temporarily set both to the same IP, but channel separation will be lost." \
+                  "" \
+                  "https://docs.openg2p.org/operations/deployment/automation/three-node-automation#id-2.-two-network-interfaces-on-the-reverse-proxy-vm"
+        exit 1
+    fi
+
     local required=(
-        cluster_name internal_domain
-        rp_public_ip rp_private_ip
+        cluster_name
+        rp_public_ip rp_internal_ip
         compute_private_ip compute_node_name
         storage_private_ip storage_node_name
         private_subnet
@@ -181,7 +192,91 @@ validate_orchestrator_config() {
         nfs_export_path nfs_mount_path
     )
     validate_config "${required[@]}"
+
+    # Customer hostnames: either public_domain (to auto-derive all four) or
+    # every individual *_hostname must be set.
+    local pd=$(cfg public_domain)
+    if [[ -z "$pd" ]]; then
+        local missing=()
+        for h in rancher_hostname keycloak_hostname grafana_hostname prometheus_hostname; do
+            [[ -z "$(cfg "$h")" ]] && missing+=("$h")
+        done
+        if [[ ${#missing[@]} -gt 0 ]]; then
+            log_error "Customer hostnames not set" \
+                      "public_domain is blank AND these per-service hostnames are missing: ${missing[*]}" \
+                      "Set public_domain (e.g. openg2p.gov.eth) — it derives all four — or fill in each *_hostname" \
+                      "" \
+                      "https://docs.openg2p.org/operations/deployment/automation/three-node-automation#id-3.-customer-supplied-dns-records"
+            exit 1
+        fi
+    fi
+
+    # TLS certs: either tls_wildcard_cert+key OR all four tls_<svc>_cert+key
+    # must be set, AND the referenced files must exist on the laptop.
+    _validate_tls_cert_paths
+
     check_subnet_overlap
+}
+
+# Check that customer cert paths are set in config AND files exist on disk.
+# Fails fast on the laptop before we burn time waiting for SSH/preflight.
+_validate_tls_cert_paths() {
+    local cfg_dir
+    cfg_dir=$(cd "$(dirname "$CONFIG_FILE")" && pwd)
+
+    _resolve() {
+        local p="$1"
+        [[ -z "$p" ]] && { echo ""; return; }
+        p="${p/#\~\//${HOME}/}"
+        [[ "$p" != /* ]] && p="${cfg_dir}/${p}"
+        echo "$p"
+    }
+
+    local wc wk
+    wc=$(_resolve "$(cfg tls_wildcard_cert)")
+    wk=$(_resolve "$(cfg tls_wildcard_key)")
+
+    if [[ -n "$wc" || -n "$wk" ]]; then
+        # Wildcard mode — both must be set and exist
+        if [[ -z "$wc" || -z "$wk" ]]; then
+            log_error "Wildcard TLS cert/key both required" \
+                      "Only one of tls_wildcard_cert / tls_wildcard_key is set in prod-config.yaml" \
+                      "Set both (or clear both and use per-FQDN tls_<service>_cert/key instead)" \
+                      "" \
+                      "https://docs.openg2p.org/operations/deployment/automation/three-node-automation#id-4.-customer-supplied-tls-certificates"
+            exit 1
+        fi
+        for f in "$wc" "$wk"; do
+            [[ -f "$f" ]] || {
+                log_error "TLS cert file not found: $f" \
+                          "Path resolved from prod-config.yaml does not exist" \
+                          "Verify the path is correct and the file is readable" \
+                          "ls -la $f" \
+                          "https://docs.openg2p.org/operations/deployment/automation/three-node-automation#id-4.-customer-supplied-tls-certificates"
+                exit 1
+            }
+        done
+        log_success "TLS certs validated (wildcard mode): cert=${wc}  key=${wk}"
+    else
+        # Per-FQDN mode — every service needs cert + key
+        local svc cert key missing=()
+        for svc in rancher keycloak grafana prometheus; do
+            cert=$(_resolve "$(cfg "tls_${svc}_cert")")
+            key=$(_resolve  "$(cfg "tls_${svc}_key")")
+            if [[ -z "$cert" || -z "$key" ]]; then missing+=("$svc"); continue; fi
+            [[ -f "$cert" ]] || { log_error "TLS cert file not found for ${svc}: $cert" "" "" "" "https://docs.openg2p.org/operations/deployment/automation/three-node-automation#id-4.-customer-supplied-tls-certificates"; exit 1; }
+            [[ -f "$key"  ]] || { log_error "TLS key file not found for ${svc}: $key"   "" "" "" "https://docs.openg2p.org/operations/deployment/automation/three-node-automation#id-4.-customer-supplied-tls-certificates"; exit 1; }
+        done
+        if [[ ${#missing[@]} -gt 0 ]]; then
+            log_error "Customer TLS certs not configured" \
+                      "Neither tls_wildcard_cert nor per-service tls_<svc>_cert/key are set for: ${missing[*]}" \
+                      "Set tls_wildcard_cert + tls_wildcard_key OR all four tls_<service>_cert/key pairs in prod-config.yaml" \
+                      "" \
+                      "https://docs.openg2p.org/operations/deployment/automation/three-node-automation#id-4.-customer-supplied-tls-certificates"
+            exit 1
+        fi
+        log_success "TLS certs validated (per-FQDN mode, all four services)"
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -208,7 +303,8 @@ check_subnet_overlap() {
 
     # Verify each configured private IP falls inside private_subnet (first
     # two octets — coarse but catches IP-swap mistakes).
-    local rp_ip=$(cfg rp_private_ip)
+    local rp_ip=$(cfg rp_internal_ip)
+    if [[ -z "$rp_ip" ]]; then rp_ip=$(cfg rp_private_ip); fi   # backward-compat alias
     local compute_ip=$(cfg compute_private_ip)
     local storage_ip=$(cfg storage_private_ip)
     for ip in "$rp_ip" "$compute_ip" "$storage_ip"; do
@@ -342,7 +438,8 @@ preflight_all() {
     log_info "Inter-node connectivity probe (SSH/22 over private subnet)..."
     local storage_ip=$(cfg storage_private_ip)
     local compute_ip=$(cfg compute_private_ip)
-    local rp_ip=$(cfg rp_private_ip)
+    local rp_ip=$(cfg rp_internal_ip)
+    if [[ -z "$rp_ip" ]]; then rp_ip=$(cfg rp_private_ip); fi   # backward-compat alias
 
     inter_node_probe() {
         local from="$1" to_label="$2" to_ip="$3"
@@ -493,9 +590,11 @@ main() {
 }
 
 show_summary() {
-    local internal=$(cfg internal_domain)
-    local rancher_host="rancher.${internal}"
-    local keycloak_host="keycloak.${internal}"
+    local rancher_host=$(get_rancher_hostname 2>/dev/null)
+    local keycloak_host=$(get_keycloak_hostname 2>/dev/null)
+    local grafana_host=$(get_grafana_hostname 2>/dev/null)
+    local prometheus_host=$(get_prometheus_hostname 2>/dev/null)
+    local rp_internal=$(cfg rp_internal_ip)
     local rp_user=$(cfg rp_ssh_user ubuntu)
     local rp_host=$(cfg rp_ssh_host)
     if [[ -z "$rp_host" ]]; then rp_host=$(cfg rp_public_ip); fi
@@ -503,7 +602,7 @@ show_summary() {
     local compute_user=$(cfg compute_ssh_user ubuntu)
     local compute_host=$(cfg compute_ssh_host)
     if [[ -z "$compute_host" ]]; then compute_host=$(cfg compute_private_ip); fi
-    local kc_email=$(cfg keycloak_admin_email "admin@openg2p.internal")
+    local kc_email=$(cfg keycloak_admin_email)
     local wg_subnet=$(cfg wg_subnet "10.15.0.0/16")
     local wg_server_ip="${wg_subnet%.*.*/*}.0.1"
 
@@ -558,8 +657,13 @@ show_summary() {
 
   ADMIN URLS (reachable only via Wireguard)
 
-    Rancher:   https://${rancher_host}
-    Keycloak:  https://${keycloak_host}
+    Rancher:    https://${rancher_host}
+    Keycloak:   https://${keycloak_host}
+    Grafana:    https://${grafana_host}
+    Prometheus: https://${prometheus_host}
+
+  Each hostname should already resolve to the RP's INTERNAL IP via your
+  customer's DNS:  ${rp_internal}
 
   CREDENTIALS — KEEP THESE SAFE
 
@@ -595,24 +699,25 @@ show_summary() {
       Import peer1.conf into the Wireguard app and activate the tunnel.
       Verify: ping ${wg_server_ip}    (should respond)
 
-  STEP 2.  Install the local CA on your laptop (trust the self-signed cert)
+  STEP 2.  (Skipped — no local CA)
 
-      ssh -i ${rp_key} ${rp_user}@${rp_host} \\
-          "sudo cat /etc/openg2p/ca/ca.crt" > openg2p-ca.crt
+      You provided customer-supplied certs from your CA. Browsers already
+      trust them. If you see a cert warning when first opening Rancher,
+      your cert chain is incomplete — re-run --validate-certs to confirm.
 
-      macOS:    sudo security add-trusted-cert -d -r trustRoot \\
-                  -k /Library/Keychains/System.keychain openg2p-ca.crt
-      Linux:    sudo cp openg2p-ca.crt /usr/local/share/ca-certificates/ \\
-                && sudo update-ca-certificates
-      Windows:  certmgr.msc → Trusted Root Certification Authorities
+  STEP 3.  DNS resolution on your laptop
 
-  STEP 3.  (macOS only) DNS resolver entry
+      Your customer's DNS should already resolve the four admin hostnames
+      to ${rp_internal} (RP's internal IP).
 
-      sudo mkdir -p /etc/resolver
-      echo "nameserver ${wg_server_ip}" | sudo tee /etc/resolver/${internal}
+      If your customer's DNS isn't reachable from your laptop (no internal
+      DNS exposure via WG), add a one-time /etc/hosts entry on your laptop:
 
-      Verify: dscacheutil -q host -a name ${rancher_host}
-              (must return the RP private IP)
+        ${rp_internal}  ${rancher_host} ${keycloak_host} ${grafana_host} ${prometheus_host}
+
+      Verify (macOS): dscacheutil -q host -a name ${rancher_host}
+      Verify (Linux): getent hosts ${rancher_host}
+      Both must return ${rp_internal}.
 
   STEP 4.  Login to Rancher — FIRST TIME (use the LOCAL admin)
 

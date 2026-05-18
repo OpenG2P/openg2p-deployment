@@ -154,27 +154,46 @@ check_internet() {
 # Configured private IP is actually present on this host
 # ─────────────────────────────────────────────────────────────────────────
 check_ip_matches() {
-    local expected
+    # Collect every IP the role is expected to have bound. Storage/compute
+    # have a single private IP; RP has TWO NICs (public + internal).
+    local -a expected_ips=()
     case "$ROLE" in
-        storage) expected=$(cfg "storage_private_ip") ;;
-        compute) expected=$(cfg "compute_private_ip") ;;
-        rp)      expected=$(cfg "rp_private_ip") ;;
+        storage) expected_ips+=("$(cfg storage_private_ip)") ;;
+        compute) expected_ips+=("$(cfg compute_private_ip)") ;;
+        rp)
+            # New keys preferred; legacy rp_private_ip is the fallback alias.
+            local pub int
+            pub=$(cfg rp_public_ip)
+            int=$(cfg rp_internal_ip)
+            [[ -z "$int" ]] && int=$(cfg rp_private_ip)
+            [[ -n "$pub" ]] && expected_ips+=("$pub")
+            [[ -n "$int" ]] && expected_ips+=("$int")
+            ;;
     esac
 
-    if [[ -z "$expected" ]]; then
-        emit_warn "IP check skipped — *_private_ip blank in config for role ${ROLE}"
+    if [[ ${#expected_ips[@]} -eq 0 ]]; then
+        emit_warn "IP check skipped — no expected IPs in config for role ${ROLE}"
         return
     fi
 
-    if ip -4 addr 2>/dev/null | grep -q "inet ${expected}/"; then
-        emit_pass "IP: ${expected} bound on this host"
-    else
-        local actual
-        actual=$(ip -4 -br addr 2>/dev/null | awk '$1!="lo"{print $3}' | paste -sd, - 2>/dev/null)
-        emit_fail "IP ${expected} (configured for ${ROLE}) NOT bound on this host"
-        emit_fail "  this host has: ${actual:-<none>}"
-        emit_fail "  → looks like the wrong node is being targeted, or *_private_ip is wrong"
-    fi
+    local actual
+    actual=$(ip -4 -br addr 2>/dev/null | awk '$1!="lo"{print $3}' | paste -sd, - 2>/dev/null)
+
+    local ip
+    for ip in "${expected_ips[@]}"; do
+        if ip -4 addr 2>/dev/null | grep -q "inet ${ip}/"; then
+            emit_pass "IP: ${ip} bound on this host"
+        else
+            emit_fail "IP ${ip} (configured for ${ROLE}) NOT bound on this host"
+            emit_fail "  this host has: ${actual:-<none>}"
+            if [[ "$ROLE" == "rp" ]]; then
+                emit_fail "  → RP needs TWO NICs: rp_public_ip (Wireguard) + rp_internal_ip (admin Nginx)"
+                emit_fail "  → see https://docs.openg2p.org/operations/deployment/automation/three-node-automation#id-2.-two-network-interfaces-on-the-reverse-proxy-vm"
+            else
+                emit_fail "  → wrong node targeted, or *_private_ip is wrong"
+            fi
+        fi
+    done
 }
 
 # ─────────────────────────────────────────────────────────────────────────

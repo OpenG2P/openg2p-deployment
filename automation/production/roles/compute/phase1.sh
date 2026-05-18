@@ -117,7 +117,11 @@ compute_configure_ufw() {
     local admin_cidr=$(cfg "admin_cidr" "0.0.0.0/0")
     local private_subnet=$(cfg "private_subnet")
     local wg_subnet=$(cfg "wg_subnet" "10.15.0.0/16")
-    local rp_private_ip=$(cfg "rp_private_ip")
+    # Prefer rp_internal_ip (new key); fall back to rp_private_ip (legacy alias).
+    local rp_internal_for_ufw=$(cfg "rp_internal_ip")
+    if [[ -z "$rp_internal_for_ufw" ]]; then
+        rp_internal_for_ufw=$(cfg "rp_private_ip")
+    fi
 
     ufw --force reset
     ufw default deny incoming
@@ -143,7 +147,11 @@ compute_configure_ufw() {
     done
 
     # Istio ingress NodePort 30080 from RP only (RP forwards public HTTPS to it)
-    ufw allow from "$rp_private_ip" to any port 30080 proto tcp comment "Istio ingress from RP"
+    if [[ -n "$rp_internal_for_ufw" ]]; then
+        ufw allow from "$rp_internal_for_ufw" to any port 30080 proto tcp comment "Istio ingress from RP"
+    else
+        log_warn "Neither rp_internal_ip nor rp_private_ip set; Istio NodePort 30080 not opened to RP."
+    fi
 
     ufw --force enable
 
@@ -166,22 +174,33 @@ compute_configure_sysctl_hosts() {
     grep -q '^fs.inotify.max_user_instances' /etc/sysctl.conf || \
         echo "fs.inotify.max_user_instances=1024" >> /etc/sysctl.conf
 
-    local internal=$(cfg "internal_domain" "openg2p.internal")
-    local storage_ip=$(cfg "storage_private_ip")
-    local rp_ip=$(cfg "rp_private_ip")
-
     # Idempotent /etc/hosts edits — replace any prior managed block.
-    # rancher/keycloak resolve to the RP's private IP so that curl from this
-    # node (e.g. phase 3's API calls) reaches them via the RP's Nginx →
-    # Istio NodePort → cluster service path.
+    # The four customer admin hostnames resolve to the RP's INTERNAL IP so
+    # that curl from this node (e.g. phase 3's API calls to Rancher) reaches
+    # them via the RP's Nginx → Istio NodePort → cluster service path.
+    # Cluster-internal references to storage/postgres use the raw private IP
+    # directly (no aliases needed).
+    local rp_internal=$(cfg "rp_internal_ip" "")
+    if [[ -z "$rp_internal" ]]; then
+        rp_internal=$(cfg "rp_private_ip" "")     # backward compat alias
+    fi
+
     sed -i '/# openg2p-managed-begin/,/# openg2p-managed-end/d' /etc/hosts
-    cat >> /etc/hosts <<EOF
-# openg2p-managed-begin
-${storage_ip}  storage.${internal} postgres.${internal}
-${rp_ip}       rp.${internal} rancher.${internal} keycloak.${internal}
-# openg2p-managed-end
-EOF
-    log_info "Added /etc/hosts: storage.${internal}, postgres.${internal}, rp.${internal}, rancher.${internal}, keycloak.${internal}"
+
+    if [[ -n "$rp_internal" ]]; then
+        local rancher_h=$(get_rancher_hostname)
+        local keycloak_h=$(get_keycloak_hostname)
+        local grafana_h=$(get_grafana_hostname)
+        local prometheus_h=$(get_prometheus_hostname)
+        {
+            echo "# openg2p-managed-begin"
+            for h in "$rancher_h" "$keycloak_h" "$grafana_h" "$prometheus_h"; do
+                [[ -n "$h" ]] && echo "${rp_internal}  ${h}"
+            done
+            echo "# openg2p-managed-end"
+        } >> /etc/hosts
+        log_info "Added /etc/hosts entries for admin hostnames → ${rp_internal}"
+    fi
 
     mark_step_done "$step"
 }

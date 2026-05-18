@@ -66,7 +66,7 @@ main() {
         1) run_compute_phase1 ;;
         2) run_compute_phase2 ;;
         3)
-            # Phase 3 calls the Rancher API at https://rancher.<internal_domain>
+            # Phase 3 calls the Rancher API at https://<rancher_hostname>
             # from this node, which only resolves if rancher/keycloak hostnames
             # are in /etc/hosts pointing at the RP's private IP. Ensure they
             # are — self-heals if phase 1 was run with an older script.

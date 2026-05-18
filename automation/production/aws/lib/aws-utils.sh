@@ -569,7 +569,11 @@ aws_add_ingress() {
 # ---------------------------------------------------------------------------
 # Apply role-specific ingress rules.
 # ---------------------------------------------------------------------------
-aws_apply_sg_rules_rp() {
+# Public-facing ENI for the RP node:
+#   • Wireguard endpoint (UDP wg_port from world)
+#   • Public Nginx server blocks (env-automation will use 443 from world)
+#   • Admin SSH access from admin_cidr
+aws_apply_sg_rules_rp_public() {
     local sg_id="$1"
     local admin_cidr="$2"
     local vpc_cidr="$3"
@@ -581,9 +585,26 @@ aws_apply_sg_rules_rp() {
         --ip-permissions "IpProtocol=icmp,FromPort=-1,ToPort=-1,IpRanges=[{CidrIp=${admin_cidr},Description=admin ping}]"
     aws_add_ingress "$sg_id" "UDP/${wg_port} (Wireguard) from 0.0.0.0/0" \
         --ip-permissions "IpProtocol=udp,FromPort=${wg_port},ToPort=${wg_port},IpRanges=[{CidrIp=0.0.0.0/0,Description=Wireguard}]"
-    # All TCP/UDP from VPC CIDR — intra-VPC traffic. ufw on each node provides
-    # fine-grained restriction.
+    aws_add_ingress "$sg_id" "TCP/80  from 0.0.0.0/0 (public HTTP redirect)" \
+        --ip-permissions "IpProtocol=tcp,FromPort=80,ToPort=80,IpRanges=[{CidrIp=0.0.0.0/0,Description=public HTTP redirect}]"
+    aws_add_ingress "$sg_id" "TCP/443 from 0.0.0.0/0 (public services — env automation)" \
+        --ip-permissions "IpProtocol=tcp,FromPort=443,ToPort=443,IpRanges=[{CidrIp=0.0.0.0/0,Description=public HTTPS}]"
     aws_add_ingress "$sg_id" "ALL     from ${vpc_cidr} (intra-VPC)" \
+        --ip-permissions "IpProtocol=-1,IpRanges=[{CidrIp=${vpc_cidr},Description=intra-VPC}]"
+}
+
+# Internal-only ENI for the RP node:
+#   • Admin Nginx server blocks (rancher, keycloak, grafana, prometheus on 443)
+#   • Reachable only from inside the VPC — defence in depth on top of
+#     Nginx binding to vNIC-internal IP.
+#   • Wireguard-tunnelled traffic doesn't traverse this ENI's SG (it's
+#     decapsulated inside the instance and routed locally to the
+#     vNIC-internal IP), so no separate WG rule is needed here.
+aws_apply_sg_rules_rp_internal() {
+    local sg_id="$1"
+    local vpc_cidr="$2"
+
+    aws_add_ingress "$sg_id" "ALL     from ${vpc_cidr} (intra-VPC; covers 80/443 from compute, storage, WG-decapsulated)" \
         --ip-permissions "IpProtocol=-1,IpRanges=[{CidrIp=${vpc_cidr},Description=intra-VPC}]"
 }
 
@@ -683,6 +704,63 @@ aws_find_instance() {
             "Name=instance-state-name,Values=pending,running,stopping,stopped" \
         --query 'Reservations[].Instances[0].InstanceId | [0]' \
         --output text 2>/dev/null
+}
+
+# Launch the RP instance with TWO ENIs at start (via --network-interfaces).
+# ENI-0 (eth0) is public-facing — gets the public auto-assigned IP and is
+# the attach point for the Elastic IP. ENI-1 (eth1) is internal-only.
+# Both ENIs land in the same subnet; channel separation is at the SG +
+# IP-binding level. Cloud-init configures both interfaces on first boot —
+# no manual netplan step required.
+aws_run_rp_instance() {
+    local name="$1"
+    local project="$2"
+    local ami="$3"
+    local instance_type="$4"
+    local subnet_id="$5"
+    local sg_public_id="$6"
+    local sg_internal_id="$7"
+    local key_name="$8"
+    local disk_gb="$9"
+    local disk_iops="${10}"
+    local disk_throughput="${11}"
+
+    log_info "Launching RP (${instance_type}, ${disk_gb} GB gp3, 2 ENIs)..." >&2
+
+    local bdm
+    bdm=$(printf '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":%d,"VolumeType":"gp3","Iops":%d,"Throughput":%d,"DeleteOnTermination":true,"Encrypted":true}}]' \
+        "$disk_gb" "$disk_iops" "$disk_throughput")
+
+    # Two ENIs at launch. Note: cannot combine --network-interfaces with
+    # --subnet-id / --security-group-ids / --associate-public-ip-address;
+    # everything goes inside --network-interfaces instead.
+    local nics
+    nics=$(printf '[{"DeviceIndex":0,"SubnetId":"%s","Groups":["%s"],"AssociatePublicIpAddress":true,"DeleteOnTermination":true,"Description":"openg2p RP public (eth0)"},{"DeviceIndex":1,"SubnetId":"%s","Groups":["%s"],"AssociatePublicIpAddress":false,"DeleteOnTermination":true,"Description":"openg2p RP internal (eth1)"}]' \
+        "$subnet_id" "$sg_public_id" "$subnet_id" "$sg_internal_id")
+
+    local id
+    id=$(aws_cli ec2 run-instances \
+        --image-id "$ami" \
+        --instance-type "$instance_type" \
+        --key-name "$key_name" \
+        --network-interfaces "$nics" \
+        --block-device-mappings "$bdm" \
+        --tag-specifications \
+            "ResourceType=instance,Tags=[{Key=Name,Value=${name}},{Key=Project,Value=${project}},{Key=Role,Value=reverse-proxy},{Key=ManagedBy,Value=openg2p-aws-provision}]" \
+            "ResourceType=volume,Tags=[{Key=Project,Value=${project}},{Key=Role,Value=reverse-proxy},{Key=ManagedBy,Value=openg2p-aws-provision}]" \
+            "ResourceType=network-interface,Tags=[{Key=Project,Value=${project}},{Key=Role,Value=reverse-proxy},{Key=ManagedBy,Value=openg2p-aws-provision}]" \
+        --query 'Instances[0].InstanceId' --output text)
+    echo "$id"
+}
+
+# Echoes the private IP of a specific ENI (by DeviceIndex) on the given
+# instance. Used to capture ENI-1's IP for rp_internal_ip in provision-output.
+aws_get_eni_private_ip() {
+    local instance_id="$1"
+    local device_index="$2"
+    aws_cli ec2 describe-instances --instance-ids "$instance_id" \
+        --query "Reservations[0].Instances[0].NetworkInterfaces[?Attachment.DeviceIndex==\`${device_index}\`].PrivateIpAddress | [0]" \
+        --output text
 }
 
 aws_run_instance() {

@@ -3,7 +3,8 @@
 # OpenG2P Reverse Proxy Node — entry script (runs ON the RP node via SSH)
 # =============================================================================
 # Phases:
-#   1 — Wireguard server, dnsmasq, local CA + self-signed certs, Nginx
+#   1 — Wireguard server, customer-supplied TLS cert ingest, Nginx admin
+#       server blocks bound to vNIC-internal IP
 # =============================================================================
 
 set -euo pipefail

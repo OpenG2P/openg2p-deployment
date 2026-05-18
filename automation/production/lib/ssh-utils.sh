@@ -278,6 +278,9 @@ ssh_pull() {
 # ssh_stage_role <role> <repo_root> <config_file> [provision_output]
 # If provision_output is provided AND exists, it's appended to the staged
 # prod-config.yaml so its keys override prod-config.yaml on the remote node.
+#
+# For role=rp, also gathers customer cert files (referenced by tls_* keys
+# in prod-config.yaml) into stage/certs/, where RP phase 1 picks them up.
 ssh_stage_role() {
     local role="$1"
     local repo_root="$2"
@@ -302,9 +305,13 @@ ssh_stage_role() {
     [[ -f "${repo_root}/helmfile-infra.yaml.gotmpl" ]] && \
         cp "${repo_root}/helmfile-infra.yaml.gotmpl" "${stage}/helmfile-infra.yaml.gotmpl"
 
+    # For RP, gather customer cert files into stage/certs/. RP phase 1
+    # reads from ${WORK_DIR}/certs/{wildcard,rancher,keycloak,...}.{cert,key,chain}.
+    if [[ "$role" == "rp" ]]; then
+        _stage_customer_certs "$config_file" "${stage}/certs"
+    fi
+
     # Merge prod-config + provision-output into a single staged config.
-    # The remote role scripts only read prod-config.yaml — append-then-load
-    # gives provision-output values precedence (last writer wins).
     cat "$config_file" > "${stage}/prod-config.yaml"
     if [[ -n "$provision_output" && -f "$provision_output" ]]; then
         {
@@ -317,6 +324,139 @@ ssh_stage_role() {
     ssh_push "$role" "${stage}/" "${REMOTE_WORK_DIR}/"
 
     log_success "Staged ${role} bundle at ${REMOTE_WORK_DIR}/ on remote."
+}
+
+# Internal helper — read tls_* paths from prod-config.yaml and copy the
+# referenced cert files into stage_certs_dir under stable names.
+_stage_customer_certs() {
+    local config_file="$1"
+    local out_dir="$2"
+    mkdir -p "$out_dir"
+
+    local config_dir
+    config_dir=$(cd "$(dirname "$config_file")" && pwd)
+
+    # Read tls_* keys from the config file directly (we're on the laptop;
+    # cfg() requires load_config which the caller may not have done yet).
+    _read_tls_key() {
+        local key="$1"
+        grep -E "^${key}:[[:space:]]" "$config_file" 2>/dev/null \
+            | head -1 \
+            | sed -E 's/^[^:]+:[[:space:]]*"?([^"]*)"?[[:space:]]*(#.*)?$/\1/'
+    }
+
+    _resolve_path() {
+        local p="$1"
+        [[ -z "$p" ]] && { echo ""; return; }
+        # Tilde expand
+        p="${p/#\~\//${HOME}/}"
+        # Relative paths resolve against config file's dir
+        if [[ "$p" != /* ]]; then
+            p="${config_dir}/${p}"
+        fi
+        echo "$p"
+    }
+
+    _copy_if_present() {
+        local src="$1" dest="$2" label="$3" kind="${4:-cert}"   # kind: cert|key|chain
+        [[ -z "$src" ]] && return 0
+        if [[ ! -f "$src" ]]; then
+            log_error "${label} file not found: ${src}" \
+                      "Path resolved from prod-config.yaml does not exist" \
+                      "Check the path is correct and readable" \
+                      "ls -la ${src}" \
+                      "https://docs.openg2p.org/operations/deployment/automation/three-node-automation#id-4.-customer-supplied-tls-certificates"
+            return 1
+        fi
+
+        # Reject PFX/P12 — not supported in v1 (PEM only).
+        case "${src,,}" in
+            *.pfx|*.p12)
+                log_error "${label}: PFX/P12 not supported yet (${src})" \
+                          "Customer-supplied PFX support is deferred to a follow-up" \
+                          "Convert to PEM with: openssl pkcs12 -in ${src} -nocerts -nodes -out key.pem && openssl pkcs12 -in ${src} -clcerts -nokeys -out cert.pem && openssl pkcs12 -in ${src} -cacerts -nokeys -out chain.pem" \
+                          "" \
+                          "https://docs.openg2p.org/operations/deployment/automation/three-node-automation#id-4.-customer-supplied-tls-certificates"
+                return 1
+                ;;
+            *.zip)
+                log_error "${label}: ZIP bundle not supported yet (${src})" \
+                          "Extract the bundle, then point to the PEM files directly" \
+                          "unzip ${src} -d ./certs/" \
+                          "" \
+                          "https://docs.openg2p.org/operations/deployment/automation/three-node-automation#id-4.-customer-supplied-tls-certificates"
+                return 1
+                ;;
+        esac
+
+        # Verify PEM-looking content. Certs and chains must have BEGIN
+        # CERTIFICATE; keys must have BEGIN ... PRIVATE KEY.
+        case "$kind" in
+            cert|chain)
+                if ! grep -q -- '-----BEGIN CERTIFICATE-----' "$src" 2>/dev/null; then
+                    log_error "${label} is not a PEM certificate: ${src}" \
+                              "No '-----BEGIN CERTIFICATE-----' line found" \
+                              "Verify the file is PEM-format (not DER, not corrupted)" \
+                              "head -3 ${src}" \
+                              "https://docs.openg2p.org/operations/deployment/automation/three-node-automation#id-4.-customer-supplied-tls-certificates"
+                    return 1
+                fi
+                ;;
+            key)
+                if ! grep -q -- '-----BEGIN .*PRIVATE KEY-----' "$src" 2>/dev/null; then
+                    log_error "${label} is not a PEM private key: ${src}" \
+                              "No '-----BEGIN PRIVATE KEY-----' / 'RSA PRIVATE KEY' line found" \
+                              "Verify the file is an unencrypted PEM private key" \
+                              "head -3 ${src}" \
+                              "https://docs.openg2p.org/operations/deployment/automation/three-node-automation#id-4.-customer-supplied-tls-certificates"
+                    return 1
+                fi
+                ;;
+        esac
+
+        # Copy, normalising CRLF → LF (Windows-exported certs often have CRLF
+        # which openssl on Linux tolerates but some tools choke on).
+        tr -d '\r' < "$src" > "$dest"
+        chmod 0644 "$dest"
+        log_info "  staged: ${label} ← ${src}"
+    }
+
+    local wc wk
+    wc=$(_resolve_path "$(_read_tls_key tls_wildcard_cert)")
+    wk=$(_resolve_path "$(_read_tls_key tls_wildcard_key)")
+
+    if [[ -n "$wc" || -n "$wk" ]]; then
+        log_info "Staging customer wildcard cert..."
+        _copy_if_present "$wc" "${out_dir}/wildcard.cert" "wildcard cert" cert || return 1
+        _copy_if_present "$wk" "${out_dir}/wildcard.key"  "wildcard key"  key  || return 1
+        # Optional chain
+        local wch
+        wch=$(_resolve_path "$(_read_tls_key tls_wildcard_chain)")
+        if [[ -n "$wch" ]]; then
+            _copy_if_present "$wch" "${out_dir}/wildcard.chain" "wildcard chain" chain || return 1
+        fi
+    else
+        log_info "Staging per-FQDN customer certs..."
+        local svc cert key chain
+        for svc in rancher keycloak grafana prometheus; do
+            cert=$(_resolve_path "$(_read_tls_key "tls_${svc}_cert")")
+            key=$(_resolve_path  "$(_read_tls_key "tls_${svc}_key")")
+            chain=$(_resolve_path "$(_read_tls_key "tls_${svc}_chain")")
+            if [[ -z "$cert" || -z "$key" ]]; then
+                log_error "Missing cert/key for ${svc}" \
+                          "Neither tls_wildcard_* nor tls_${svc}_{cert,key} set" \
+                          "Fill in either the wildcard or per-service cert paths in prod-config.yaml" \
+                          "" \
+                          "https://docs.openg2p.org/operations/deployment/automation/three-node-automation#id-4.-customer-supplied-tls-certificates"
+                return 1
+            fi
+            _copy_if_present "$cert"  "${out_dir}/${svc}.cert"  "${svc} cert"  cert || return 1
+            _copy_if_present "$key"   "${out_dir}/${svc}.key"   "${svc} key"   key  || return 1
+            if [[ -n "$chain" ]]; then
+                _copy_if_present "$chain" "${out_dir}/${svc}.chain" "${svc} chain" chain || return 1
+            fi
+        done
+    fi
 }
 
 # ---------------------------------------------------------------------------
