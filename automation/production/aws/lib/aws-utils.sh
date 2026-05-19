@@ -685,8 +685,24 @@ aws_associate_eip() {
         return 0
     fi
 
-    aws_cli ec2 associate-address --allocation-id "$alloc_id" --instance-id "$instance_id" \
-        --query 'AssociationId' --output text >/dev/null
+    # For multi-ENI instances, target ENI-0 (DeviceIndex=0) explicitly —
+    # `--instance-id` alone fails with "must specify a private IP address or
+    # network interface ID" on multi-ENI instances.
+    local eni0
+    eni0=$(aws_cli ec2 describe-instances --instance-ids "$instance_id" \
+        --query 'Reservations[0].Instances[0].NetworkInterfaces[?Attachment.DeviceIndex==`0`].NetworkInterfaceId | [0]' \
+        --output text 2>/dev/null)
+
+    if [[ -n "$eni0" && "$eni0" != "None" ]]; then
+        aws_cli ec2 associate-address --allocation-id "$alloc_id" \
+            --network-interface-id "$eni0" \
+            --query 'AssociationId' --output text >/dev/null
+    else
+        # Fallback for single-ENI instances (compute, storage if ever used)
+        aws_cli ec2 associate-address --allocation-id "$alloc_id" \
+            --instance-id "$instance_id" \
+            --query 'AssociationId' --output text >/dev/null
+    fi
     log_success "Associated Elastic IP ${alloc_id} → ${instance_id}." >&2
 }
 
@@ -731,11 +747,15 @@ aws_run_rp_instance() {
     bdm=$(printf '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":%d,"VolumeType":"gp3","Iops":%d,"Throughput":%d,"DeleteOnTermination":true,"Encrypted":true}}]' \
         "$disk_gb" "$disk_iops" "$disk_throughput")
 
-    # Two ENIs at launch. Note: cannot combine --network-interfaces with
-    # --subnet-id / --security-group-ids / --associate-public-ip-address;
-    # everything goes inside --network-interfaces instead.
+    # Two ENIs at launch. Cannot combine --network-interfaces with
+    # --subnet-id / --security-group-ids / --associate-public-ip-address.
+    # Also note: AWS rejects AssociatePublicIpAddress=true on ANY ENI when
+    # multiple ENIs are specified at launch — the only way to give the RP a
+    # public IP is to allocate + attach an Elastic IP to ENI-0 after launch.
+    # EIP allocation is therefore MANDATORY in multi-NIC mode (the caller
+    # hard-fails if EIP allocation didn't succeed).
     local nics
-    nics=$(printf '[{"DeviceIndex":0,"SubnetId":"%s","Groups":["%s"],"AssociatePublicIpAddress":true,"DeleteOnTermination":true,"Description":"openg2p RP public (eth0)"},{"DeviceIndex":1,"SubnetId":"%s","Groups":["%s"],"AssociatePublicIpAddress":false,"DeleteOnTermination":true,"Description":"openg2p RP internal (eth1)"}]' \
+    nics=$(printf '[{"DeviceIndex":0,"SubnetId":"%s","Groups":["%s"],"DeleteOnTermination":true,"Description":"openg2p RP public (eth0)"},{"DeviceIndex":1,"SubnetId":"%s","Groups":["%s"],"DeleteOnTermination":true,"Description":"openg2p RP internal (eth1)"}]' \
         "$subnet_id" "$sg_public_id" "$subnet_id" "$sg_internal_id")
 
     local id

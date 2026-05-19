@@ -243,26 +243,25 @@ main() {
     aws_apply_sg_rules_storage "$storage_sg" "$admin_cidr" "$vpc_cidr"
     log_success "  Storage SG:     ${storage_sg_name} (${storage_sg})"
 
-    # ── 8. Elastic IP for RP (best-effort) ─────────────────────────────
-    # Only the RP gets a static IP. Compute and storage use auto-assigned
-    # public IPs, which is fine — they're only for SSH from the laptop.
-    # The RP EIP exists so Wireguard peer configs survive instance restarts.
-    # If allocation fails (e.g. AddressLimitExceeded), we proceed with the
-    # auto-assigned public IP and warn the user.
-    log_step "2" "Allocating Elastic IP for RP (best-effort)"
+    # ── 8. Elastic IP for RP (REQUIRED with multi-NIC) ─────────────────
+    # The RP launches with two ENIs. AWS forbids AssociatePublicIpAddress
+    # in multi-ENI launches, so the only way to give the RP a public IP
+    # (= Wireguard endpoint) is to allocate + attach an Elastic IP to ENI-0.
+    # If EIP allocation fails (quota), the install cannot continue.
+    log_step "2" "Allocating Elastic IP for RP (required for multi-NIC)"
     local rp_eip_alloc rp_eip_addr=""
     rp_eip_alloc=$(aws_ensure_eip "$project" "reverse-proxy-eip")
-    if [[ -n "$rp_eip_alloc" && "$rp_eip_alloc" != "None" ]]; then
-        rp_eip_addr=$(aws_get_eip_address "$rp_eip_alloc")
-        aws_require_nonempty "RP Elastic IP address" "$rp_eip_addr"
-        log_success "  RP EIP: ${rp_eip_addr} (alloc: ${rp_eip_alloc})"
-    else
-        log_warn "  No Elastic IP allocated — falling back to auto-assigned public IP."
-        log_warn "  Trade-off: the RP's public IP will change after a stop/start,"
-        log_warn "  invalidating Wireguard peer configs (Endpoint mismatch). Allocate"
-        log_warn "  one EIP later and re-run this script to attach it."
-        rp_eip_alloc=""
+    if [[ -z "$rp_eip_alloc" || "$rp_eip_alloc" == "None" ]]; then
+        log_error "EIP allocation failed — required for multi-NIC RP" \
+                  "AWS doesn't allow AssociatePublicIpAddress with multiple ENIs at launch, so the EIP is the only way to give the RP a public IP for Wireguard." \
+                  "Free unused EIPs and re-run, OR request a quota increase in the AWS console." \
+                  "aws ec2 describe-addresses --query 'Addresses[?AssociationId==null].[AllocationId,PublicIp]' --output table" \
+                  ""
+        exit 1
     fi
+    rp_eip_addr=$(aws_get_eip_address "$rp_eip_alloc")
+    aws_require_nonempty "RP Elastic IP address" "$rp_eip_addr"
+    log_success "  RP EIP: ${rp_eip_addr} (alloc: ${rp_eip_alloc})"
 
     # ── 9. Launch instances (parallel) ──────────────────────────────────
     log_step "3" "Launching 3 EC2 instances in parallel"
@@ -363,19 +362,11 @@ main() {
     compute_ips=$(aws_get_instance_ips "$compute_id")
     storage_ips=$(aws_get_instance_ips "$storage_id")
 
-    # rp_public_ip is the EIP we attached (or the dynamic public on ENI-0
-    # if EIP allocation was skipped/failed). rp_internal_ip is ENI-1's
-    # private IP.
-    local rp_public rp_internal
-    if [[ -n "$rp_eip_addr" ]]; then
-        rp_public="$rp_eip_addr"
-    else
-        # No EIP — read ENI-0's auto-assigned public IP from describe-instances
-        rp_public=$(aws_cli ec2 describe-instances --instance-ids "$rp_id" \
-            --query 'Reservations[0].Instances[0].NetworkInterfaces[?Attachment.DeviceIndex==`0`].Association.PublicIp | [0]' \
-            --output text 2>/dev/null)
-    fi
-    rp_internal="$rp_eni1_private"
+    # rp_public_ip is the EIP attached to ENI-0 (mandatory in multi-NIC mode).
+    # rp_internal_ip is ENI-1's private IP.
+    local rp_public="$rp_eip_addr"
+    local rp_internal="$rp_eni1_private"
+    aws_require_nonempty "RP public IP (EIP)" "$rp_public"
     local compute_public="${compute_ips%|*}"
     local compute_private="${compute_ips#*|}"
     local storage_public="${storage_ips%|*}"
