@@ -75,13 +75,19 @@ rp_install_basics() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────
-# R1.2  Verify both NICs bound — rp_public_ip and rp_internal_ip
+# R1.2  Verify rp_internal_ip is bound to a local NIC
 # ─────────────────────────────────────────────────────────────────────────
+# Note: we do NOT check rp_public_ip here. On AWS, rp_public_ip is an
+# Elastic IP that AWS NATs to ENI-0's private address — the OS never sees
+# the EIP itself, so `ip -4 addr` won't show it. The EIP's "boundness"
+# is implicit (AWS handles NAT) and reachability is verified by SSH
+# already working. We only need to ensure the OS-visible vNIC-internal
+# address is up, since Nginx binds admin server blocks to it.
 rp_verify_nics() {
     local step="rp.phase1.nics"
     if skip_if_done "$step" "NIC verification"; then return 0; fi
 
-    log_step "R1.2" "Verify both network interfaces are bound on this host"
+    log_step "R1.2" "Verify vNIC-internal is bound on this host"
 
     local pub int
     pub=$(cfg "rp_public_ip")
@@ -96,14 +102,10 @@ rp_verify_nics() {
         exit 1
     fi
 
-    if ! ip -4 addr 2>/dev/null | grep -q "inet ${pub}/"; then
-        log_error "Configured rp_public_ip ${pub} is not bound to any interface" \
-                  "This is required for Wireguard to bind correctly" \
-                  "Add the IP to a NIC, persist via netplan, then re-run" \
-                  "ip -4 addr; ip route" \
-                  "${DOCS_URL_BASE}#id-2.-two-network-interfaces-on-the-reverse-proxy-vm"
-        exit 1
-    fi
+    # Public IP — do NOT check boundness. On AWS it's NAT'd EIP; on on-prem
+    # dual-NIC it's bound to a NIC, but we only need to know SSH works
+    # (it does, since this script is running). Log it for clarity.
+    log_info "  rp_public_ip:   ${pub}   (Wireguard endpoint; NAT'd on AWS)"
 
     if ! ip -4 addr 2>/dev/null | grep -q "inet ${int}/"; then
         log_error "Configured rp_internal_ip ${int} is not bound to any interface" \
@@ -114,8 +116,7 @@ rp_verify_nics() {
         exit 1
     fi
 
-    log_success "  vNIC-public:   ${pub}"
-    log_success "  vNIC-internal: ${int}"
+    log_success "  vNIC-internal bound: ${int}"
     mark_step_done "$step"
 }
 
