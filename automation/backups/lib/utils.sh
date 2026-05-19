@@ -123,6 +123,36 @@ ensure_passphrase_file() {
 }
 
 # ---------------------------------------------------------------------------
+# Execution-locality helper
+# ---------------------------------------------------------------------------
+# True when we're running ON the backup host itself. The cron wrappers
+# (/usr/local/bin/openg2p-backup-{run,drill}) export OPENG2P_ON_BACKUP_HOST=1
+# before sourcing the libs. The orchestrator (laptop) does NOT set it.
+#
+# Why this matters: every lib function used to do `ssh_run "backup" "<cmd>"`
+# unconditionally. When the orchestrator drives from the laptop, that's
+# correct. When cron on the backup host invokes the same function via the
+# wrapper, ssh-to-self fails (no SSH trust set up for backup→backup). Use
+# run_on_backup instead.
+on_backup_host() {
+    [[ "${OPENG2P_ON_BACKUP_HOST:-}" == "1" ]]
+}
+
+# run_on_backup <cmd...> — execute <cmd> on the backup host.
+# Local exec under sudo when we're on the backup host; SSH otherwise.
+# The command can include heredocs / pipes / quotes — same semantics as
+# ssh_run "backup".
+run_on_backup() {
+    if on_backup_host; then
+        # Local exec — use sudo -E so the cron user's env (incl. our
+        # OPENG2P_ON_BACKUP_HOST marker) reaches the sub-shell.
+        sudo -E bash -lc "$*"
+    else
+        ssh_run "backup" "$@"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # SSH role resolution — extends the production ssh_resolve_role with 'backup'
 # ---------------------------------------------------------------------------
 # Production's ssh_resolve_role only knows rp/compute/storage. We override it
@@ -336,4 +366,49 @@ json_escape() {
 # UTC timestamp in ISO-8601 — used everywhere we write to the status file.
 ts_utc() {
     date -u '+%Y-%m-%dT%H:%M:%SZ'
+}
+
+# ---------------------------------------------------------------------------
+# Status file writer — shared by every group module.
+# ---------------------------------------------------------------------------
+# Lives here (not in pgbackrest.sh) so that cron-driven runs that source
+# only ONE group lib can still write status. The status file is the Phase 2
+# alerting layer's input — see operations/deployment/automation/backups/
+# alerting.md.
+#
+# Args: <component> <event=last_run|last_drill> <ts> <result=ok|fail> <details>
+_status_write_component() {
+    local component="$1" event="$2" ts="$3" result="$4" details="$5"
+    local file="/var/lib/openg2p-backup/.status.json"
+    local d_esc; d_esc="$(json_escape "$details")"
+    run_on_backup "set -euo pipefail
+        f='${file}'
+        [[ -f \$f ]] || echo '{\"components\":{}}' > \$f
+        tmp=\$(mktemp)
+        jq --arg c '${component}' \
+           --arg ev '${event}' \
+           --arg ts '${ts}' \
+           --arg r '${result}' \
+           --arg d '${d_esc}' \
+           '.components[\$c] = (.components[\$c] // {}) +
+            { (\$ev): \$ts, (\$ev + \"_result\"): \$r, (\$ev + \"_details\"): \$d }' \
+           \$f > \$tmp && mv \$tmp \$f"
+}
+
+# ---------------------------------------------------------------------------
+# Module dispatch — sources the lib file for a group.
+# ---------------------------------------------------------------------------
+# Lives in utils.sh (not openg2p-backup.sh) so that drills_run_all can call
+# it from either the laptop orchestrator OR the backup-host cron wrapper.
+# BACKUPS_LIB_DIR is set in utils.sh's preamble and resolves correctly in
+# both contexts.
+load_group_module() {
+    local g="$1"
+    local lib_file
+    case "$g" in
+        pg) lib_file="pgbackrest.sh" ;;
+        *)  lib_file="${g}.sh" ;;
+    esac
+    # shellcheck source=/dev/null
+    source "${BACKUPS_LIB_DIR}/${lib_file}"
 }

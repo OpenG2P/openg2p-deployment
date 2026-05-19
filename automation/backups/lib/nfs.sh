@@ -36,11 +36,17 @@ nfs_install() {
         fi
         mountpoint -q ${NFS_MOUNT_POINT} || mount ${NFS_MOUNT_POINT}
 
-        # Restic repo init for NFS.
+        # Restic repo init for NFS. Use cat-config probe so a REAL error
+        # (wrong passphrase, permission denied) surfaces, not just the
+        # benign 'already initialised'.
         install -d -m 0700 ${repo_root}/restic
-        RESTIC_REPOSITORY=${repo_root}/restic/nfs \
-        RESTIC_PASSWORD='$(printf '%q' "$restic_pass")' \
-            restic init || true   # already-initialised is fine"
+        if ! RESTIC_REPOSITORY=${repo_root}/restic/nfs \
+             RESTIC_PASSWORD='$(printf '%q' "$restic_pass")' \
+             restic cat config >/dev/null 2>&1; then
+            RESTIC_REPOSITORY=${repo_root}/restic/nfs \
+            RESTIC_PASSWORD='$(printf '%q' "$restic_pass")' \
+                restic init
+        fi"
 
     # Trust storage node's NFS export from backup host. Storage exports to
     # the private subnet by default — assume that's still in effect. If not,
@@ -73,7 +79,7 @@ nfs_run() {
     exclude_args=$(_nfs_render_exclude_args)
 
     local rc=0
-    ssh_run "backup" "set -euo pipefail
+    run_on_backup "set -euo pipefail
         export RESTIC_REPOSITORY=${repo_root}/restic/nfs
         export RESTIC_PASSWORD='$(printf '%q' "$restic_pass")'
         cd ${NFS_MOUNT_POINT}
@@ -157,34 +163,51 @@ _nfs_config_excludes() {
 nfs_generate_pvc_manifest() {
     local repo_root="$(cfg backup_repo_root /var/lib/openg2p-backup)"
 
-    # Pull PV info from the cluster.
+    # Pull PV info from the cluster. ssh_run "compute" works from both
+    # laptop and backup host — both have SSH trust to compute.
     local pv_json
     pv_json=$(ssh_run "compute" "kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml \
         get pv -o json")
 
+    # Stage the PV JSON on the backup host (avoids embedding 100s of KB of
+    # JSON inside the bash heredoc — gets escaping-fragile fast).
+    local stage; stage=$(mktemp -t openg2p-pv-json.XXXXXX)
+    printf '%s' "$pv_json" > "$stage"
+    if on_backup_host; then
+        sudo cp "$stage" /tmp/openg2p-pv.json
+    else
+        ssh_push "backup" "$stage" "/tmp/openg2p-pv.json"
+    fi
+    rm -f "$stage"
+
     # On the backup host, list NFS UUID directories and merge with the PV
-    # data. We do the join in jq to keep this readable.
-    ssh_run "backup" "set -euo pipefail
+    # data. jq filter:
+    #   • $dirs = NFS subdir names (the UUIDs)
+    #   • $pvs  = PV items array
+    #   • For each dir D, capture as $d, then find the PV whose
+    #     spec.nfs.path ends with "/$d". Emit the merged record.
+    run_on_backup "set -euo pipefail
         install -d -m 0750 ${repo_root}/nfs
         nfs_listing=\$(ls -1 ${NFS_MOUNT_POINT} 2>/dev/null | jq -R . | jq -s .)
-        cat > /tmp/openg2p-pv.json <<'JSON'
-${pv_json}
-JSON
-        jq -n --argjson pvs \"\$(cat /tmp/openg2p-pv.json | jq '.items')\" \
-              --argjson dirs \"\$nfs_listing\" '
-            \$dirs | map({
-                nfs_path: .,
-                pv: ((\$pvs | map(select(.spec.nfs.path | tostring | endswith(\"/\" + . // \"\"))))[0] // null)
-            }) | map(select(.pv != null) | {
+        jq -n \
+            --argjson pvs \"\$(jq '.items' /tmp/openg2p-pv.json)\" \
+            --argjson dirs \"\$nfs_listing\" '
+            \$dirs
+            | map(. as \$d | {
+                nfs_path: \$d,
+                pv: ((\$pvs | map(select(.spec.nfs.path // \"\" | tostring | endswith(\"/\" + \$d))))[0] // null)
+              })
+            | map(select(.pv != null) | {
                 nfs_path,
                 pv_name: .pv.metadata.name,
-                pvc_namespace: .pv.spec.claimRef.namespace,
-                pvc_name: .pv.spec.claimRef.name,
+                pvc_namespace: (.pv.spec.claimRef.namespace // null),
+                pvc_name: (.pv.spec.claimRef.name // null),
                 pvc_size: .pv.spec.capacity.storage,
                 storage_class: .pv.spec.storageClassName,
                 app_label: (.pv.metadata.labels // {} | to_entries | map(\"\\(.key)=\\(.value)\") | join(\",\")),
-                backed_up_at: now | todateiso8601
-            })' > ${repo_root}/nfs/.pvc-mapping.yaml || \
+                backed_up_at: (now | todateiso8601)
+              })' > ${repo_root}/nfs/.pvc-mapping.yaml.new && \
+        mv ${repo_root}/nfs/.pvc-mapping.yaml.new ${repo_root}/nfs/.pvc-mapping.yaml || \
             echo '[]' > ${repo_root}/nfs/.pvc-mapping.yaml
         rm -f /tmp/openg2p-pv.json"
 }
@@ -197,7 +220,7 @@ nfs_verify() {
     local restic_pass_file
     restic_pass_file="$(ensure_passphrase_file restic_passphrase_file restic false)"
     local restic_pass; restic_pass="$(< "$restic_pass_file")"
-    ssh_run "backup" "set -euo pipefail
+    run_on_backup "set -euo pipefail
         export RESTIC_REPOSITORY=${repo_root}/restic/nfs
         export RESTIC_PASSWORD='$(printf '%q' "$restic_pass")'
         restic check --read-data-subset=5%"
@@ -211,7 +234,7 @@ nfs_list() {
     local restic_pass_file
     restic_pass_file="$(ensure_passphrase_file restic_passphrase_file restic false)"
     local restic_pass; restic_pass="$(< "$restic_pass_file")"
-    ssh_run "backup" "set -euo pipefail
+    run_on_backup "set -euo pipefail
         export RESTIC_REPOSITORY=${repo_root}/restic/nfs
         export RESTIC_PASSWORD='$(printf '%q' "$restic_pass")'
         restic snapshots --compact"
@@ -242,7 +265,7 @@ nfs_restore() {
 
     # Look up the NFS path from the sidecar manifest.
     local nfs_path
-    nfs_path=$(ssh_run "backup" "jq -r --arg ns '${ns}' --arg pvc '${pvc}' \
+    nfs_path=$(run_on_backup "jq -r --arg ns '${ns}' --arg pvc '${pvc}' \
         '.[] | select(.pvc_namespace==\$ns and .pvc_name==\$pvc) | .nfs_path' \
         ${repo_root}/nfs/.pvc-mapping.yaml" | tail -1)
 
@@ -263,7 +286,7 @@ nfs_restore() {
     fi
 
     log_info "Restoring '${nfs_path}' to ${stage_dir} on backup host..."
-    ssh_run "backup" "set -euo pipefail
+    run_on_backup "set -euo pipefail
         export RESTIC_REPOSITORY=${repo_root}/restic/nfs
         export RESTIC_PASSWORD='$(printf '%q' "$restic_pass")'
         install -d -m 0700 ${stage_dir}
@@ -285,7 +308,7 @@ nfs_drill() {
     local restic_pass; restic_pass="$(< "$restic_pass_file")"
 
     local rc=0
-    ssh_run "backup" "set -euo pipefail
+    run_on_backup "set -euo pipefail
         export RESTIC_REPOSITORY=${repo_root}/restic/nfs
         export RESTIC_PASSWORD='$(printf '%q' "$restic_pass")'
         restic check --read-data-subset=5%

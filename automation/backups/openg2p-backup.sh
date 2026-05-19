@@ -293,22 +293,8 @@ probe_required_nodes() {
 }
 
 # ---------------------------------------------------------------------------
-# Module dispatch — sources the lib file for a group, leaves <group>_run /
-# _verify / _list / _restore in scope for the caller.
-# ---------------------------------------------------------------------------
-load_group_module() {
-    local g="$1"
-    local lib_file
-    case "$g" in
-        pg) lib_file="pgbackrest.sh" ;;
-        *)  lib_file="${g}.sh" ;;
-    esac
-    # shellcheck source=/dev/null
-    source "${SCRIPT_DIR}/lib/${lib_file}"
-}
-
-# ---------------------------------------------------------------------------
-# Subcommand dispatchers — module libs sourced on demand.
+# Subcommand dispatchers — module libs sourced on demand via load_group_module
+# (defined in lib/utils.sh so the cron wrappers can use it too).
 # ---------------------------------------------------------------------------
 do_install() {
     init_runtime
@@ -616,7 +602,13 @@ EOC
 cat > /usr/local/bin/openg2p-backup-run <<'EOC'
 #!/usr/bin/env bash
 # Invoked by cron: openg2p-backup-run <group>
+# Sets OPENG2P_ON_BACKUP_HOST=1 so lib functions short-circuit ssh-to-self.
+# /etc/openg2p-backup/config.yaml is the pre-merged backup+prod config
+# (stitched together at install time on the laptop, then pushed here),
+# so a single load_config call gives us every key we need — no separate
+# load_cluster_config step like the laptop orchestrator does.
 set -euo pipefail
+export OPENG2P_ON_BACKUP_HOST=1
 group=\"\${1:-}\"
 [[ -z \"\$group\" ]] && { echo 'usage: openg2p-backup-run <group>'; exit 1; }
 source /opt/openg2p-backup/lib/utils.sh
@@ -631,9 +623,24 @@ chmod +x /usr/local/bin/openg2p-backup-run
 
 cat > /usr/local/bin/openg2p-backup-drill <<'EOC'
 #!/usr/bin/env bash
+# Invoked by cron: weekly drill across all enabled groups.
+# Sets OPENG2P_ON_BACKUP_HOST=1 so lib functions short-circuit ssh-to-self.
+# See openg2p-backup-run for the load_config-without-load_cluster_config
+# rationale.
 set -euo pipefail
+export OPENG2P_ON_BACKUP_HOST=1
 source /opt/openg2p-backup/lib/utils.sh
 load_config /etc/openg2p-backup/config.yaml
+# drills_run_all calls load_group_module per group — but that's the
+# laptop-side path resolver. Source each group lib manually here so
+# <group>_drill is in scope.
+for g in pg etcd rancher nfs configs; do
+    case \"\$g\" in
+        pg) lib_file=pgbackrest.sh ;;
+        *)  lib_file=\"\${g}.sh\" ;;
+    esac
+    [[ -f /opt/openg2p-backup/lib/\$lib_file ]] && source /opt/openg2p-backup/lib/\$lib_file
+done
 source /opt/openg2p-backup/lib/drills.sh
 drills_run_all
 EOC
@@ -667,11 +674,12 @@ deploy_cron() {
     trap "rm -f '$stage'" RETURN
 
     # Substitute schedule placeholders + disable lines for disabled groups.
+    # NOTE: no __RANCHER_CRON__ — rancher backup cadence is owned by the
+    # in-cluster Schedule CR. See lib/rancher.sh and the cron.template header.
     sed -e "s|__MAILTO__|root|g" \
         -e "s|__PG_FULL_CRON__|$(group_enabled pg && cfg schedules.pg_full '0 2 * * 0' || echo '#0 2 * * 0')|g" \
         -e "s|__PG_DIFF_CRON__|$(group_enabled pg && cfg schedules.pg_diff '0 2 * * 1-6' || echo '#0 2 * * 1-6')|g" \
         -e "s|__ETCD_CRON__|$(group_enabled etcd && cfg schedules.etcd_pull '15 */6 * * *' || echo '#15 */6 * * *')|g" \
-        -e "s|__RANCHER_CRON__|$(group_enabled rancher && cfg schedules.rancher '0 3 * * *' || echo '#0 3 * * *')|g" \
         -e "s|__NFS_CRON__|$(group_enabled nfs && cfg schedules.nfs '30 3 * * *' || echo '#30 3 * * *')|g" \
         -e "s|__CONFIGS_CRON__|$(group_enabled configs && cfg schedules.configs '30 3 * * *' || echo '#30 3 * * *')|g" \
         -e "s|__DRILL_CRON__|$(cfg schedules.drill '0 5 * * 0')|g" \

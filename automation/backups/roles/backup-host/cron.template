@@ -1,8 +1,14 @@
 # =============================================================================
 # /etc/cron.d/openg2p-backup
 # =============================================================================
-# Variables substituted by deploy_cron() in lib/restic.sh based on
+# Variables substituted by deploy_cron() in openg2p-backup.sh based on
 # backup-config.yaml schedules:* values.
+#
+# NOTE: rancher backups are NOT scheduled here. The in-cluster Schedule CR
+# (manifests/rancher-backup-schedule.yaml) owns the nightly cadence — adding
+# a cron entry too would double-trigger. Operators can still invoke an ad-hoc
+# rancher backup from the laptop with:
+#     openg2p-backup.sh run --component rancher
 # =============================================================================
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -16,9 +22,6 @@ __PG_DIFF_CRON__ root PGBR_TYPE=diff /usr/local/bin/openg2p-backup-run pg >> /va
 
 # etcd — pull snapshots
 __ETCD_CRON__ root /usr/local/bin/openg2p-backup-run etcd >> /var/log/openg2p-backup.log 2>&1
-
-# rancher — on-demand backup CR (in addition to in-cluster nightly schedule)
-__RANCHER_CRON__ root /usr/local/bin/openg2p-backup-run rancher >> /var/log/openg2p-backup.log 2>&1
 
 # nfs
 __NFS_CRON__ root /usr/local/bin/openg2p-backup-run nfs >> /var/log/openg2p-backup.log 2>&1

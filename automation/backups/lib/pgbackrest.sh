@@ -149,7 +149,7 @@ pg_run() {
 
     log_info "PG run: type=${type} stanza=${stanza}"
     local rc=0
-    ssh_run "backup" "sudo -u ${PGBR_REPO_HOST_USER} pgbackrest --stanza=${stanza} --type=${type} backup" \
+    run_on_backup "sudo -u ${PGBR_REPO_HOST_USER} pgbackrest --stanza=${stanza} --type=${type} backup" \
         || rc=$?
 
     local result="ok"; (( rc != 0 )) && result="fail"
@@ -163,7 +163,7 @@ pg_run() {
 pg_verify() {
     local stanza="$(cfg pg.stanza_name openg2p)"
     log_info "PG verify: stanza=${stanza}"
-    ssh_run "backup" "sudo -u ${PGBR_REPO_HOST_USER} pgbackrest --stanza=${stanza} verify"
+    run_on_backup "sudo -u ${PGBR_REPO_HOST_USER} pgbackrest --stanza=${stanza} verify"
 }
 
 # ---------------------------------------------------------------------------
@@ -171,7 +171,7 @@ pg_verify() {
 # ---------------------------------------------------------------------------
 pg_list() {
     local stanza="$(cfg pg.stanza_name openg2p)"
-    ssh_run "backup" "sudo -u ${PGBR_REPO_HOST_USER} pgbackrest --stanza=${stanza} info"
+    run_on_backup "sudo -u ${PGBR_REPO_HOST_USER} pgbackrest --stanza=${stanza} info"
 }
 
 # ---------------------------------------------------------------------------
@@ -229,7 +229,7 @@ pg_drill() {
     local rc=0
 
     # Step 1: verify
-    ssh_run "backup" "sudo -u ${PGBR_REPO_HOST_USER} pgbackrest --stanza=${stanza} verify" \
+    run_on_backup "sudo -u ${PGBR_REPO_HOST_USER} pgbackrest --stanza=${stanza} verify" \
         || { pg_status_write_drill "$started" "fail" "verify failed"; return 1; }
 
     # Step 2: restore latest into a temp pg path
@@ -274,22 +274,7 @@ pg_status_write_drill() {
     _status_write_component "pg" "last_drill" "$ts" "$result" "$details"
 }
 
-# Shared helper used by every module. Updates a single component entry in
-# the status JSON on the backup host. Creates the file if missing.
-_status_write_component() {
-    local component="$1" event="$2" ts="$3" result="$4" details="$5"
-    local file="/var/lib/openg2p-backup/.status.json"
-    local d_esc; d_esc="$(json_escape "$details")"
-    ssh_run "backup" "set -euo pipefail
-        f='${file}'
-        [[ -f \$f ]] || echo '{\"components\":{}}' > \$f
-        tmp=\$(mktemp)
-        jq --arg c '${component}' \
-           --arg ev '${event}' \
-           --arg ts '${ts}' \
-           --arg r '${result}' \
-           --arg d '${d_esc}' \
-           '.components[\$c] = (.components[\$c] // {}) +
-            { (\$ev): \$ts, (\$ev + \"_result\"): \$r, (\$ev + \"_details\"): \$d }' \
-           \$f > \$tmp && mv \$tmp \$f"
-}
+# NOTE: _status_write_component lives in lib/utils.sh so every group module
+# can call it without having to source pgbackrest.sh first. The cron wrapper
+# sources exactly one group module — this function MUST be available from
+# the foundation lib.

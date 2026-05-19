@@ -85,7 +85,7 @@ etcd_run() {
     local rc=0
 
     log_info "Pulling new etcd snapshots..."
-    ssh_run "backup" "set -euo pipefail
+    run_on_backup "set -euo pipefail
         compute_ip=\$(cat /etc/openg2p-backup/etcd-source-ip)
         rsync -av --ignore-existing \
             -e 'ssh -i /root/.ssh/openg2p-etcd-pull -o StrictHostKeyChecking=accept-new' \
@@ -96,7 +96,7 @@ etcd_run() {
     # Trim by age — RKE2 itself trims on the source per etcd-snapshot-retention,
     # but the backup host may keep them longer. Default: keep N most recent.
     local keep="$(cfg retention.etcd_snapshot_count 28)"
-    ssh_run "backup" "set -euo pipefail
+    run_on_backup "set -euo pipefail
         cd ${repo_root}/etcd
         ls -1t etcd-snapshot-* 2>/dev/null | tail -n +$((keep + 1)) | xargs -r rm -f"
 
@@ -111,7 +111,7 @@ etcd_run() {
 etcd_verify() {
     local repo_root="$(cfg backup_repo_root /var/lib/openg2p-backup)"
     log_info "Verifying latest etcd snapshot..."
-    ssh_run "backup" "set -euo pipefail
+    run_on_backup "set -euo pipefail
         latest=\$(ls -1t ${repo_root}/etcd/etcd-snapshot-* 2>/dev/null | head -1)
         [[ -n \$latest ]] || { echo 'No etcd snapshots present'; exit 1; }
         # etcdutl ships in RKE2 — install standalone on backup host if needed.
@@ -128,7 +128,7 @@ etcd_verify() {
 # ---------------------------------------------------------------------------
 etcd_list() {
     local repo_root="$(cfg backup_repo_root /var/lib/openg2p-backup)"
-    ssh_run "backup" "ls -lh ${repo_root}/etcd/ | head -50"
+    run_on_backup "ls -lh ${repo_root}/etcd/ | head -50"
 }
 
 # ---------------------------------------------------------------------------
@@ -146,7 +146,7 @@ etcd_restore() {
 
     local snap
     if [[ "$target" == "latest" ]]; then
-        snap=$(ssh_run "backup" "ls -1t ${repo_root}/etcd/etcd-snapshot-* | head -1" | tail -1)
+        snap=$(run_on_backup "ls -1t ${repo_root}/etcd/etcd-snapshot-* | head -1" | tail -1)
     else
         snap="${repo_root}/etcd/${target}"
     fi
@@ -159,7 +159,7 @@ etcd_restore() {
     fi
 
     ssh_run "compute" "install -d -m 0700 /tmp/openg2p-etcd-restore"
-    ssh_run "backup" "scp -i /root/.ssh/openg2p-etcd-pull \
+    run_on_backup "scp -i /root/.ssh/openg2p-etcd-pull \
         -o StrictHostKeyChecking=accept-new \
         ${snap} root@$(cfg compute_private_ip):/tmp/openg2p-etcd-restore/"
 

@@ -43,16 +43,20 @@ configs_install() {
     local restic_pass; restic_pass="$(< "$restic_pass_file")"
 
     log_info "Initialising configs restic repo on backup host..."
+    # Note: we let "init on already-initialised repo" be a soft failure —
+    # restic returns 1 with a clear message in that case. Real errors
+    # (bad passphrase, permission denied) still surface in the log.
     ssh_run "backup" "set -euo pipefail
         DEBIAN_FRONTEND=noninteractive apt-get install -y -qq restic
         install -d -m 0700 ${repo_root}/restic
-        RESTIC_REPOSITORY=${repo_root}/restic/configs \
-        RESTIC_PASSWORD='$(printf '%q' "$restic_pass")' \
-            restic init || true"
+        if ! RESTIC_REPOSITORY=${repo_root}/restic/configs \
+             RESTIC_PASSWORD='$(printf '%q' "$restic_pass")' \
+             restic cat config >/dev/null 2>&1; then
+            RESTIC_REPOSITORY=${repo_root}/restic/configs \
+            RESTIC_PASSWORD='$(printf '%q' "$restic_pass")' \
+                restic init
+        fi"
 
-    # The orchestrator's existing SSH ControlMaster (laptop → each node) is
-    # used for streams. No additional SSH trust setup needed — we tunnel
-    # through the laptop, which keeps secrets off the backup-host's keychain.
     log_success "configs repo ready."
 }
 
@@ -78,42 +82,54 @@ configs_run() {
 
         log_info "Streaming ${source_role}:${paths} → configs repo (tag=${tag})"
 
-        # Build a tar stream of the paths on the source role, route it to
-        # the laptop (we already have ControlMaster connections), and re-
-        # send it to the backup host as restic --stdin input.
-        # Implementation: run a producer SSH and a consumer SSH connected
-        # via a local pipe.
-        local resolved_src resolved_dst
+        # Two execution shapes:
+        #   • from laptop: producer SSH | consumer SSH (laptop → source) | (laptop → backup)
+        #   • from backup host (cron): producer SSH | local restic
+        # Both run the same producer side. Only the consumer differs.
+        local resolved_src
         resolved_src="$(ssh_resolve_role "$source_role")"
-        resolved_dst="$(ssh_resolve_role "backup")"
-
         local src_user="${resolved_src%%|*}"
         local src_rest="${resolved_src#*|}"
         local src_host="${src_rest%%|*}"
         local src_key="${src_rest##*|}"
-        local dst_user="${resolved_dst%%|*}"
-        local dst_rest="${resolved_dst#*|}"
-        local dst_host="${dst_rest%%|*}"
-        local dst_key="${dst_rest##*|}"
 
-        local src_opts dst_opts
+        local src_opts
         mapfile -t src_opts < <(ssh_options_for "$source_role")
-        mapfile -t dst_opts < <(ssh_options_for "backup")
 
-        # Use sudo on the source for root-owned dirs (RKE2 paths).
-        ssh -i "$src_key" "${src_opts[@]}" "${src_user}@${src_host}" \
-            "sudo tar -czf - --warning=no-file-changed ${paths} 2>/dev/null" | \
-        ssh -i "$dst_key" "${dst_opts[@]}" "${dst_user}@${dst_host}" \
-            "sudo bash -c '
-                export RESTIC_REPOSITORY=${repo_root}/restic/configs
-                export RESTIC_PASSWORD=$(printf %q "$restic_pass")
-                restic backup --stdin --stdin-filename ${tag}.tar.gz \
-                    --tag openg2p --tag configs --tag ${tag} --tag $(date -u +%Y-%m-%d)
-            '" || { rc=1; log_warn "stream failed for ${source_role}:${tag}"; }
+        # Producer command (always SSH to the source role). sudo on source
+        # for root-owned dirs (RKE2 paths).
+        local producer=(ssh -i "$src_key" "${src_opts[@]}" "${src_user}@${src_host}" \
+            "sudo tar -czf - --warning=no-file-changed ${paths} 2>/dev/null")
+
+        # Consumer command depends on locality.
+        local consumer_cmd="export RESTIC_REPOSITORY=${repo_root}/restic/configs;
+            export RESTIC_PASSWORD='$(printf '%q' "$restic_pass")';
+            restic backup --stdin --stdin-filename ${tag}.tar.gz \
+                --tag openg2p --tag configs --tag ${tag} --tag $(date -u +%Y-%m-%d)"
+
+        if on_backup_host; then
+            # Pipe directly into local sudo bash on the backup host.
+            "${producer[@]}" | sudo bash -c "$consumer_cmd" \
+                || { rc=1; log_warn "stream failed for ${source_role}:${tag}"; }
+        else
+            # Pipe through a second SSH to the backup host.
+            local resolved_dst; resolved_dst="$(ssh_resolve_role "backup")"
+            local dst_user="${resolved_dst%%|*}"
+            local dst_rest="${resolved_dst#*|}"
+            local dst_host="${dst_rest%%|*}"
+            local dst_key="${dst_rest##*|}"
+            local dst_opts
+            mapfile -t dst_opts < <(ssh_options_for "backup")
+
+            "${producer[@]}" | \
+            ssh -i "$dst_key" "${dst_opts[@]}" "${dst_user}@${dst_host}" \
+                "sudo bash -c $(printf '%q' "$consumer_cmd")" \
+                || { rc=1; log_warn "stream failed for ${source_role}:${tag}"; }
+        fi
     done
 
     # Retention prune
-    ssh_run "backup" "set -euo pipefail
+    run_on_backup "set -euo pipefail
         export RESTIC_REPOSITORY=${repo_root}/restic/configs
         export RESTIC_PASSWORD='$(printf '%q' "$restic_pass")'
         restic forget --keep-daily $(cfg retention.keep_daily 7) \
@@ -134,7 +150,7 @@ configs_verify() {
     local restic_pass_file
     restic_pass_file="$(ensure_passphrase_file restic_passphrase_file restic false)"
     local restic_pass; restic_pass="$(< "$restic_pass_file")"
-    ssh_run "backup" "set -euo pipefail
+    run_on_backup "set -euo pipefail
         export RESTIC_REPOSITORY=${repo_root}/restic/configs
         export RESTIC_PASSWORD='$(printf '%q' "$restic_pass")'
         restic check --read-data-subset=5%"
@@ -148,7 +164,7 @@ configs_list() {
     local restic_pass_file
     restic_pass_file="$(ensure_passphrase_file restic_passphrase_file restic false)"
     local restic_pass; restic_pass="$(< "$restic_pass_file")"
-    ssh_run "backup" "set -euo pipefail
+    run_on_backup "set -euo pipefail
         export RESTIC_REPOSITORY=${repo_root}/restic/configs
         export RESTIC_PASSWORD='$(printf '%q' "$restic_pass")'
         restic snapshots --compact"
@@ -182,7 +198,7 @@ configs_restore() {
         return 0
     fi
 
-    ssh_run "backup" "set -euo pipefail
+    run_on_backup "set -euo pipefail
         export RESTIC_REPOSITORY=${repo_root}/restic/configs
         export RESTIC_PASSWORD='$(printf '%q' "$restic_pass")'
         # Pick the most recent snapshot with this tag.
@@ -223,7 +239,7 @@ configs_drill() {
     local restic_pass; restic_pass="$(< "$restic_pass_file")"
 
     local rc=0
-    ssh_run "backup" "set -euo pipefail
+    run_on_backup "set -euo pipefail
         export RESTIC_REPOSITORY=${repo_root}/restic/configs
         export RESTIC_PASSWORD='$(printf '%q' "$restic_pass")'
         restic check --read-data-subset=5%
