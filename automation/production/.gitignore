@@ -3,6 +3,7 @@ prod-config.yaml
 provision-output.yaml
 provision-output.yaml.prev
 provision-output.yaml.*.bak
+.prod-config.yaml.swp
 
 # Orchestrator runtime state (laptop-side bookkeeping)
 .state/

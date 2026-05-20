@@ -820,7 +820,28 @@ aws_run_instance() {
 
 aws_disable_source_dest_check() {
     local id="$1"
-    aws_cli ec2 modify-instance-attribute --instance-id "$id" --no-source-dest-check
+
+    # For multi-ENI instances (like the RP), `modify-instance-attribute
+    # --instance-id` fails with "There are multiple interfaces attached" —
+    # AWS requires per-ENI targeting. Source/dest check needs to be disabled
+    # on ENI-0 specifically (the public-facing NIC where Wireguard packets
+    # arrive and from which the kernel decaps + forwards them).
+    # ENI-1 doesn't need it disabled because WG-decapsulated traffic to
+    # admin services terminates locally at the Nginx socket; forwarded
+    # traffic to compute/storage goes out ENI-1 with MASQUERADE'd source IP.
+    local eni0
+    eni0=$(aws_cli ec2 describe-instances --instance-ids "$id" \
+        --query 'Reservations[0].Instances[0].NetworkInterfaces[?Attachment.DeviceIndex==`0`].NetworkInterfaceId | [0]' \
+        --output text 2>/dev/null)
+
+    if [[ -n "$eni0" && "$eni0" != "None" ]]; then
+        aws_cli ec2 modify-network-interface-attribute \
+            --network-interface-id "$eni0" \
+            --no-source-dest-check
+    else
+        # Fallback for single-ENI instances
+        aws_cli ec2 modify-instance-attribute --instance-id "$id" --no-source-dest-check
+    fi
 }
 
 aws_get_instance_ips() {
