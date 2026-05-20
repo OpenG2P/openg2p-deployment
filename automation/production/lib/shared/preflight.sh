@@ -154,46 +154,77 @@ check_internet() {
 # Configured private IP is actually present on this host
 # ─────────────────────────────────────────────────────────────────────────
 check_ip_matches() {
-    # Collect every IP the role is expected to have bound. Storage/compute
-    # have a single private IP; RP has TWO NICs (public + internal).
-    local -a expected_ips=()
-    case "$ROLE" in
-        storage) expected_ips+=("$(cfg storage_private_ip)") ;;
-        compute) expected_ips+=("$(cfg compute_private_ip)") ;;
-        rp)
-            # New keys preferred; legacy rp_private_ip is the fallback alias.
-            local pub int
-            pub=$(cfg rp_public_ip)
-            int=$(cfg rp_internal_ip)
-            [[ -z "$int" ]] && int=$(cfg rp_private_ip)
-            [[ -n "$pub" ]] && expected_ips+=("$pub")
-            [[ -n "$int" ]] && expected_ips+=("$int")
-            ;;
-    esac
-
-    if [[ ${#expected_ips[@]} -eq 0 ]]; then
-        emit_warn "IP check skipped — no expected IPs in config for role ${ROLE}"
-        return
-    fi
-
     local actual
     actual=$(ip -4 -br addr 2>/dev/null | awk '$1!="lo"{print $3}' | paste -sd, - 2>/dev/null)
 
-    local ip
-    for ip in "${expected_ips[@]}"; do
-        if ip -4 addr 2>/dev/null | grep -q "inet ${ip}/"; then
-            emit_pass "IP: ${ip} bound on this host"
-        else
-            emit_fail "IP ${ip} (configured for ${ROLE}) NOT bound on this host"
-            emit_fail "  this host has: ${actual:-<none>}"
-            if [[ "$ROLE" == "rp" ]]; then
-                emit_fail "  → RP needs TWO NICs: rp_public_ip (Wireguard) + rp_internal_ip (admin Nginx)"
-                emit_fail "  → see https://docs.openg2p.org/operations/deployment/automation/three-node-automation#id-2.-two-network-interfaces-on-the-reverse-proxy-vm"
+    # Is an IP bound to a local interface (OS-visible)?
+    _ip_bound() { ip -4 addr 2>/dev/null | grep -q "inet ${1}/"; }
+
+    case "$ROLE" in
+        storage|compute)
+            local want
+            if [[ "$ROLE" == "storage" ]]; then want=$(cfg storage_private_ip); else want=$(cfg compute_private_ip); fi
+            if [[ -z "$want" ]]; then
+                emit_warn "IP check skipped — no expected IP in config for role ${ROLE}"
+                return
+            fi
+            if _ip_bound "$want"; then
+                emit_pass "IP: ${want} bound on this host"
             else
+                emit_fail "IP ${want} (configured for ${ROLE}) NOT bound on this host"
+                emit_fail "  this host has: ${actual:-<none>}"
                 emit_fail "  → wrong node targeted, or *_private_ip is wrong"
             fi
-        fi
-    done
+            ;;
+
+        rp)
+            # The RP has TWO NICs. Only the INTERNAL one is OS-visible and must
+            # be bound (admin Nginx binds its server blocks to it).
+            #
+            # rp_public_ip is the Wireguard endpoint. On AWS it's an Elastic IP
+            # that AWS NATs to the public ENI's PRIVATE address — the OS never
+            # sees the EIP itself, so `ip addr` won't show it. We therefore do
+            # NOT require it to be bound (mirrors rp_verify_nics in phase1.sh).
+            local pub int
+            pub=$(cfg rp_public_ip)
+            int=$(cfg rp_internal_ip)
+            [[ -z "$int" ]] && int=$(cfg rp_private_ip)   # legacy alias
+
+            # Internal IP — hard requirement.
+            if [[ -z "$int" ]]; then
+                emit_fail "rp_internal_ip not set in config (RP needs a second NIC for admin Nginx)"
+                emit_fail "  → see https://docs.openg2p.org/operations/deployment/automation/three-node-automation#id-2.-two-network-interfaces-on-the-reverse-proxy-vm"
+            elif _ip_bound "$int"; then
+                emit_pass "IP: ${int} (rp_internal_ip) bound on this host"
+            else
+                emit_fail "IP ${int} (rp_internal_ip) NOT bound on this host"
+                emit_fail "  this host has: ${actual:-<none>}"
+                emit_fail "  → RP needs TWO NICs: rp_public_ip (Wireguard) + rp_internal_ip (admin Nginx)"
+                emit_fail "  → see https://docs.openg2p.org/operations/deployment/automation/three-node-automation#id-2.-two-network-interfaces-on-the-reverse-proxy-vm"
+            fi
+
+            # Public IP — informational, never a FAIL. Bound directly (on-prem
+            # dual-NIC) OR NAT'd and invisible (AWS EIP) are both valid.
+            if [[ -n "$pub" ]]; then
+                if _ip_bound "$pub"; then
+                    emit_pass "IP: ${pub} (rp_public_ip) bound on this host"
+                else
+                    emit_pass "IP: ${pub} (rp_public_ip) not OS-visible — expected on AWS (NAT'd Elastic IP)"
+                fi
+            fi
+
+            # Two-NIC sanity: the RP normally has two ENIs, so two non-loopback
+            # IPv4 addresses. Warn (don't fail) if fewer — unusual topologies
+            # (e.g. secondary IP on one NIC) can still be valid.
+            local nic_count
+            nic_count=$(ip -4 -br addr 2>/dev/null | awk '$1!="lo" && $3!=""' | wc -l | tr -d ' ')
+            if [[ "${nic_count:-0}" -ge 2 ]]; then
+                emit_pass "Two NICs present (${nic_count} non-loopback IPv4 addresses)"
+            else
+                emit_warn "Only ${nic_count:-0} non-loopback IPv4 address(es) found — RP normally has two ENIs (public + internal)"
+            fi
+            ;;
+    esac
 }
 
 # ─────────────────────────────────────────────────────────────────────────
