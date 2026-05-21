@@ -35,19 +35,21 @@ cluster_name: "openg2p"
 # ---------------------------------------------------------------------------
 # Admin hostnames                                                    [CUSTOMER]
 # ---------------------------------------------------------------------------
-# The customer's DNS must resolve four admin hostnames to the RP's INTERNAL
+# The customer's DNS must resolve the admin hostnames to the RP's INTERNAL
 # IP (see rp_internal_ip below). Access to these is gated by Wireguard.
 #
-# Single knob — set `public_domain` and the four hostnames auto-derive as
-# rancher.<public_domain>, keycloak.<public_domain>, etc.
+# Only TWO admin hostnames are exposed: rancher and keycloak. Grafana and
+# Prometheus are reached from inside the Rancher UI (Cluster Explorer →
+# Monitoring), so they do NOT need their own hostnames or certs.
+#
+# Single knob — set `public_domain` and both hostnames auto-derive as
+# rancher.<public_domain>, keycloak.<public_domain>.
 public_domain: ""                # e.g. "openg2p.gov.eth"
 #
 # Override individually only if your customer uses non-standard names
 # (e.g. "k8s-admin.dept.gov" instead of "rancher.openg2p.gov.eth"):
 rancher_hostname:    ""          # default: rancher.<public_domain>
 keycloak_hostname:   ""          # default: keycloak.<public_domain>
-grafana_hostname:    ""          # default: grafana.<public_domain>
-prometheus_hostname: ""          # default: prometheus.<public_domain>
 
 # ---------------------------------------------------------------------------
 # TLS certificates                                                   [CUSTOMER]
@@ -62,24 +64,18 @@ prometheus_hostname: ""          # default: prometheus.<public_domain>
 #
 # TWO ways to configure:
 #
-# (a) One wildcard cert covering all four admin hostnames:
+# (a) One wildcard cert covering *.<public_domain> (recommended):
 tls_wildcard_cert:     ""   # e.g. "./certs/wildcard.fullchain.pem"
 tls_wildcard_key:      ""   # e.g. "./certs/wildcard.key"
 tls_wildcard_password: ""   # only for PFX/P12 inputs
 #
-# (b) Per-FQDN certs (leave (a) blank, fill in below):
+# (b) Per-FQDN certs (leave (a) blank, fill in below) — rancher + keycloak:
 tls_rancher_cert:    ""
 tls_rancher_key:     ""
 tls_rancher_password: ""
 tls_keycloak_cert:   ""
 tls_keycloak_key:    ""
 tls_keycloak_password: ""
-tls_grafana_cert:    ""
-tls_grafana_key:     ""
-tls_grafana_password: ""
-tls_prometheus_cert: ""
-tls_prometheus_key:  ""
-tls_prometheus_password: ""
 #
 # To validate certs WITHOUT running an install:
 #   ./openg2p-prod.sh --validate-certs --config prod-config.yaml

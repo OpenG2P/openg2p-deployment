@@ -594,7 +594,7 @@ aws_apply_sg_rules_rp_public() {
 }
 
 # Internal-only ENI for the RP node:
-#   • Admin Nginx server blocks (rancher, keycloak, grafana, prometheus on 443)
+#   • Admin Nginx server blocks (rancher, keycloak on 443)
 #   • Reachable only from inside the VPC — defence in depth on top of
 #     Nginx binding to vNIC-internal IP.
 #   • Wireguard-tunnelled traffic doesn't traverse this ENI's SG (it's

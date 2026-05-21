@@ -193,25 +193,25 @@ validate_orchestrator_config() {
     )
     validate_config "${required[@]}"
 
-    # Customer hostnames: either public_domain (to auto-derive all four) or
+    # Customer hostnames: either public_domain (to auto-derive both) or
     # every individual *_hostname must be set.
     local pd=$(cfg public_domain)
     if [[ -z "$pd" ]]; then
         local missing=()
-        for h in rancher_hostname keycloak_hostname grafana_hostname prometheus_hostname; do
+        for h in rancher_hostname keycloak_hostname; do
             [[ -z "$(cfg "$h")" ]] && missing+=("$h")
         done
         if [[ ${#missing[@]} -gt 0 ]]; then
             log_error "Customer hostnames not set" \
                       "public_domain is blank AND these per-service hostnames are missing: ${missing[*]}" \
-                      "Set public_domain (e.g. openg2p.gov.eth) — it derives all four — or fill in each *_hostname" \
+                      "Set public_domain (e.g. openg2p.gov.eth) — it derives both — or fill in each *_hostname" \
                       "" \
                       "https://docs.openg2p.org/operations/deployment/automation/three-node-automation#id-3.-customer-supplied-dns-records"
             exit 1
         fi
     fi
 
-    # TLS certs: either tls_wildcard_cert+key OR all four tls_<svc>_cert+key
+    # TLS certs: either tls_wildcard_cert+key OR both tls_<svc>_cert+key
     # must be set, AND the referenced files must exist on the laptop.
     _validate_tls_cert_paths
 
@@ -260,7 +260,7 @@ _validate_tls_cert_paths() {
     else
         # Per-FQDN mode — every service needs cert + key
         local svc cert key missing=()
-        for svc in rancher keycloak grafana prometheus; do
+        for svc in rancher keycloak; do
             cert=$(_resolve "$(cfg "tls_${svc}_cert")")
             key=$(_resolve  "$(cfg "tls_${svc}_key")")
             if [[ -z "$cert" || -z "$key" ]]; then missing+=("$svc"); continue; fi
@@ -270,12 +270,12 @@ _validate_tls_cert_paths() {
         if [[ ${#missing[@]} -gt 0 ]]; then
             log_error "Customer TLS certs not configured" \
                       "Neither tls_wildcard_cert nor per-service tls_<svc>_cert/key are set for: ${missing[*]}" \
-                      "Set tls_wildcard_cert + tls_wildcard_key OR all four tls_<service>_cert/key pairs in prod-config.yaml" \
+                      "Set tls_wildcard_cert + tls_wildcard_key OR both tls_<service>_cert/key pairs (rancher, keycloak) in prod-config.yaml" \
                       "" \
                       "https://docs.openg2p.org/operations/deployment/automation/three-node-automation#id-4.-customer-supplied-tls-certificates"
             exit 1
         fi
-        log_success "TLS certs validated (per-FQDN mode, all four services)"
+        log_success "TLS certs validated (per-FQDN mode: rancher, keycloak)"
     fi
 }
 
@@ -592,8 +592,6 @@ main() {
 show_summary() {
     local rancher_host=$(get_rancher_hostname 2>/dev/null)
     local keycloak_host=$(get_keycloak_hostname 2>/dev/null)
-    local grafana_host=$(get_grafana_hostname 2>/dev/null)
-    local prometheus_host=$(get_prometheus_hostname 2>/dev/null)
     local rp_internal=$(cfg rp_internal_ip)
     local rp_user=$(cfg rp_ssh_user ubuntu)
     local rp_host=$(cfg rp_ssh_host)
@@ -659,8 +657,9 @@ show_summary() {
 
     Rancher:    https://${rancher_host}
     Keycloak:   https://${keycloak_host}
-    Grafana:    https://${grafana_host}
-    Prometheus: https://${prometheus_host}
+
+  (Grafana and Prometheus are reachable from inside the Rancher UI —
+   Cluster Explorer → Monitoring — not on their own hostnames.)
 
   Each hostname should already resolve to the RP's INTERNAL IP via your
   customer's DNS:  ${rp_internal}
@@ -707,13 +706,13 @@ show_summary() {
 
   STEP 3.  DNS resolution on your laptop
 
-      Your customer's DNS should already resolve the four admin hostnames
+      Your customer's DNS should already resolve the admin hostnames
       to ${rp_internal} (RP's internal IP).
 
       If your customer's DNS isn't reachable from your laptop (no internal
       DNS exposure via WG), add a one-time /etc/hosts entry on your laptop:
 
-        ${rp_internal}  ${rancher_host} ${keycloak_host} ${grafana_host} ${prometheus_host}
+        ${rp_internal}  ${rancher_host} ${keycloak_host}
 
       Verify (macOS): dscacheutil -q host -a name ${rancher_host}
       Verify (Linux): getent hosts ${rancher_host}

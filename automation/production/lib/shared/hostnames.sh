@@ -14,7 +14,7 @@
 # Hard fails if neither is set — the customer MUST provide hostnames.
 # =============================================================================
 
-# Resolve <service>_hostname for one of: rancher | keycloak | grafana | prometheus
+# Resolve <service>_hostname for one of: rancher | keycloak
 _resolve_admin_hostname() {
     local service="$1"
     local explicit
@@ -37,8 +37,6 @@ _resolve_admin_hostname() {
 
 get_rancher_hostname()    { _resolve_admin_hostname rancher; }
 get_keycloak_hostname()   { _resolve_admin_hostname keycloak; }
-get_grafana_hostname()    { _resolve_admin_hostname grafana; }
-get_prometheus_hostname() { _resolve_admin_hostname prometheus; }
 
 # Bridge production flat keys to the dotted keys vendored single-node code reads.
 # Call this once after load_config "$CONFIG_FILE".
@@ -52,11 +50,10 @@ hostnames_bridge_config_keys() {
     fi
 }
 
-# Ensure rancher.<domain> / keycloak.<domain> / grafana.<domain> /
-# prometheus.<domain> are in /etc/hosts pointing at the RP's INTERNAL IP —
-# required for phase 3's API calls from the compute node, since admin tools
-# are reachable only via the RP's vNIC-internal address (which compute
-# usually does not have a DNS resolver for).
+# Ensure rancher.<domain> / keycloak.<domain> are in /etc/hosts pointing at
+# the RP's INTERNAL IP — required for phase 3's API calls from the compute
+# node, since admin tools are reachable only via the RP's vNIC-internal
+# address (which compute usually does not have a DNS resolver for).
 #
 # Idempotent and additive — does not remove unrelated /etc/hosts entries.
 ensure_admin_hostnames_in_etc_hosts() {
@@ -72,7 +69,7 @@ ensure_admin_hostnames_in_etc_hosts() {
         return 0
     fi
     local host service
-    for service in rancher keycloak grafana prometheus; do
+    for service in rancher keycloak; do
         host=$(_resolve_admin_hostname "$service")
         if [[ -z "$host" ]]; then
             log_warn "Cannot resolve hostname for ${service} (set ${service}_hostname or public_domain)"

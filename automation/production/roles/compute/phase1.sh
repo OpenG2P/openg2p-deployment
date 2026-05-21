@@ -175,7 +175,7 @@ compute_configure_sysctl_hosts() {
         echo "fs.inotify.max_user_instances=1024" >> /etc/sysctl.conf
 
     # Idempotent /etc/hosts edits — replace any prior managed block.
-    # The four customer admin hostnames resolve to the RP's INTERNAL IP so
+    # The customer admin hostnames (rancher, keycloak) resolve to the RP's INTERNAL IP so
     # that curl from this node (e.g. phase 3's API calls to Rancher) reaches
     # them via the RP's Nginx → Istio NodePort → cluster service path.
     # Cluster-internal references to storage/postgres use the raw private IP
@@ -190,11 +190,9 @@ compute_configure_sysctl_hosts() {
     if [[ -n "$rp_internal" ]]; then
         local rancher_h=$(get_rancher_hostname)
         local keycloak_h=$(get_keycloak_hostname)
-        local grafana_h=$(get_grafana_hostname)
-        local prometheus_h=$(get_prometheus_hostname)
         {
             echo "# openg2p-managed-begin"
-            for h in "$rancher_h" "$keycloak_h" "$grafana_h" "$prometheus_h"; do
+            for h in "$rancher_h" "$keycloak_h"; do
                 [[ -n "$h" ]] && echo "${rp_internal}  ${h}"
             done
             echo "# openg2p-managed-end"

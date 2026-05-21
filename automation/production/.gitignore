@@ -5,6 +5,8 @@ provision-output.yaml.prev
 provision-output.yaml.*.bak
 .prod-config.yaml.swp
 
+certs/
+
 # Orchestrator runtime state (laptop-side bookkeeping)
 .state/
 
