@@ -36,7 +36,7 @@ get_keycloak_hostname() {
 # have nested subshells that break when passed through eval
 # ─────────────────────────────────────────────────────────────────────────────
 install_kubectl() {
-    local version="${1:-v1.33.6}"
+    local version="${1:-v1.36.1}"
     if kubectl version --client &>/dev/null; then
         log_success "kubectl is already installed."
         return 0
