@@ -55,6 +55,7 @@ FORCE_MODE=false
 DRY_RUN=false
 PROBE_ONLY=false
 PREFLIGHT_ONLY=false
+VALIDATE_CERTS_ONLY=false
 SKIP_PREFLIGHT=false
 LOG_FILE="${SCRIPT_DIR}/logs/openg2p-prod-$(date '+%Y%m%d-%H%M%S').log"
 
@@ -62,6 +63,10 @@ LOG_FILE="${SCRIPT_DIR}/logs/openg2p-prod-$(date '+%Y%m%d-%H%M%S').log"
 # inside the remote nodes too. The orchestrator uses only the laptop-safe bits.
 source "${SCRIPT_DIR}/lib/shared/utils.sh"
 source "${SCRIPT_DIR}/lib/ssh-utils.sh"
+# Hostname getters (get_rancher_hostname / get_keycloak_hostname). Laptop-safe:
+# the getters only read CONFIG via cfg. Used by --validate-certs and the
+# completion summary.
+source "${SCRIPT_DIR}/lib/shared/hostnames.sh"
 
 # Override STATE_DIR for the laptop side — orchestrator state is per-config.
 STATE_DIR="${SCRIPT_DIR}/.state"
@@ -78,6 +83,7 @@ parse_args() {
             --dry-run) DRY_RUN=true;     shift ;;
             --probe)           PROBE_ONLY=true;     shift ;;
             --preflight)       PREFLIGHT_ONLY=true; shift ;;
+            --validate-certs)  VALIDATE_CERTS_ONLY=true; shift ;;
             --skip-preflight)  SKIP_PREFLIGHT=true; shift ;;
             --reset-laptop)
                 log_warn "Clearing laptop-side state at ${STATE_DIR}"
@@ -140,6 +146,9 @@ Options:
   --phase <n>                Run only one phase within the role (1, 2, 3)
   --probe                    SSH-probe all 3 nodes and exit (no changes)
   --preflight                Run preflight on all 3 nodes and exit (no changes)
+  --validate-certs           Validate customer TLS certs on your laptop and exit
+                             (key↔cert match, expiry, SAN covers the hostnames).
+                             No SSH, no nodes touched — run before installing.
   --skip-preflight           Skip preflight (use with caution — for re-runs only)
   --force                    Ignore completion markers, re-run all steps
   --dry-run                  Print what would run, do nothing
@@ -277,6 +286,136 @@ _validate_tls_cert_paths() {
         fi
         log_success "TLS certs validated (per-FQDN mode: rancher, keycloak)"
     fi
+}
+
+# Deep, laptop-side TLS validation for `--validate-certs`. Mirrors the RP-side
+# checks (roles/reverse-proxy/phase1.sh R1.5) but runs entirely on the laptop
+# with NO SSH, so cert problems surface in seconds instead of mid-install.
+# For each admin hostname (rancher, keycloak) it checks:
+#   • the cert file parses as PEM X.509
+#   • the private key matches the cert (public-key compare; RSA or EC)
+#   • the cert is not expired (warns if it expires within 30 days)
+#   • the SAN (or CN) actually covers the resolved hostname (wildcards honoured)
+DOCS_TLS_URL="https://docs.openg2p.org/operations/deployment/automation/three-node-automation#id-4.-customer-supplied-tls-certificates"
+
+validate_certs_deep() {
+    local cfg_dir
+    cfg_dir=$(cd "$(dirname "$CONFIG_FILE")" && pwd)
+
+    _vc_resolve() {
+        local p="$1"; [[ -z "$p" ]] && { echo ""; return; }
+        p="${p/#\~\//${HOME}/}"; [[ "$p" != /* ]] && p="${cfg_dir}/${p}"; echo "$p"
+    }
+
+    # Does cert's SAN (or CN) cover host, honouring a leading wildcard?
+    _vc_covers() {
+        local cert="$1" host="$2" sans cn s wild
+        sans=$(openssl x509 -in "$cert" -noout -ext subjectAltName 2>/dev/null \
+               | grep -oE 'DNS:[^,]+' | sed 's/DNS://;s/ //g')
+        if [[ -z "$sans" ]]; then   # LibreSSL/macOS may lack -ext; fall back to -text
+            sans=$(openssl x509 -in "$cert" -noout -text 2>/dev/null \
+                   | awk '/Subject Alternative Name/{getline; print}' \
+                   | tr ',' '\n' | sed 's/^ *DNS://;s/ //g')
+        fi
+        while IFS= read -r s; do
+            [[ -z "$s" ]] && continue
+            [[ "$s" == "$host" ]] && return 0
+            if [[ "$s" == "*."* ]]; then wild="${s#\*.}"; [[ "$host" == *."$wild" ]] && return 0; fi
+        done <<< "$sans"
+        cn=$(openssl x509 -in "$cert" -noout -subject 2>/dev/null \
+             | sed -n 's/.*CN *= *\([^,/]*\).*/\1/p' | tr -d ' ')
+        [[ "$cn" == "$host" ]] && return 0
+        [[ "$cn" == "*."* && "$host" == *."${cn#\*.}" ]] && return 0
+        return 1
+    }
+
+    # Path + completeness checks first (reused from the install path). Exits on
+    # missing/incomplete paths with a clear message.
+    _validate_tls_cert_paths
+
+    local wc wk mode
+    wc=$(_vc_resolve "$(cfg tls_wildcard_cert)")
+    wk=$(_vc_resolve "$(cfg tls_wildcard_key)")
+    if [[ -n "$wc" ]]; then mode="wildcard"; else mode="per-FQDN"; fi
+    log_info "Deep cert validation (${mode} mode) — laptop-only, no nodes touched"
+
+    local fails=0 svc host cert key cpub kpub exp
+    for svc in rancher keycloak; do
+        case "$svc" in
+            rancher)  host=$(get_rancher_hostname) ;;
+            keycloak) host=$(get_keycloak_hostname) ;;
+        esac
+        if [[ -z "$host" ]]; then
+            log_error "Cannot resolve ${svc} hostname" \
+                      "public_domain is blank and ${svc}_hostname is not set" \
+                      "Set public_domain or ${svc}_hostname in prod-config.yaml" \
+                      "" "$DOCS_TLS_URL"
+            fails=$((fails + 1)); continue
+        fi
+
+        if [[ "$mode" == "wildcard" ]]; then
+            cert="$wc"; key="$wk"
+        else
+            cert=$(_vc_resolve "$(cfg "tls_${svc}_cert")")
+            key=$(_vc_resolve  "$(cfg "tls_${svc}_key")")
+        fi
+
+        # 1. cert parses
+        if ! openssl x509 -in "$cert" -noout -subject >/dev/null 2>&1; then
+            log_error "${host}: not a readable PEM X.509 certificate" \
+                      "openssl could not parse ${cert}" \
+                      "Ensure it is a PEM cert (or fullchain); convert PFX/DER to PEM first" \
+                      "openssl x509 -in ${cert} -noout -subject" "$DOCS_TLS_URL"
+            fails=$((fails + 1)); continue
+        fi
+
+        # 2. key <-> cert match (public-key compare works for RSA and EC)
+        cpub=$(openssl x509 -in "$cert" -noout -pubkey 2>/dev/null | openssl md5 2>/dev/null | awk '{print $NF}')
+        kpub=$(openssl pkey -in "$key" -pubout 2>/dev/null | openssl md5 2>/dev/null | awk '{print $NF}')
+        [[ -z "$kpub" ]] && kpub=$(openssl rsa -in "$key" -pubout 2>/dev/null | openssl md5 2>/dev/null | awk '{print $NF}')
+        if [[ -z "$cpub" || -z "$kpub" || "$cpub" != "$kpub" ]]; then
+            log_error "${host}: private key does NOT match the certificate" \
+                      "The supplied cert and key are not a pair" \
+                      "Re-pair or re-issue the cert+key, then re-validate" \
+                      "openssl x509 -in ${cert} -noout -pubkey | openssl md5; openssl pkey -in ${key} -pubout | openssl md5" \
+                      "$DOCS_TLS_URL"
+            fails=$((fails + 1)); continue
+        fi
+
+        # 3. expiry
+        exp=$(openssl x509 -in "$cert" -noout -enddate 2>/dev/null | cut -d= -f2)
+        if ! openssl x509 -in "$cert" -noout -checkend 0 >/dev/null 2>&1; then
+            log_error "${host}: certificate is EXPIRED (notAfter ${exp})" \
+                      "The cert is past its validity period" \
+                      "Obtain a current cert from your CA" \
+                      "openssl x509 -in ${cert} -noout -dates" "$DOCS_TLS_URL"
+            fails=$((fails + 1)); continue
+        fi
+        if ! openssl x509 -in "$cert" -noout -checkend 2592000 >/dev/null 2>&1; then
+            log_warn "${host}: certificate expires within 30 days (notAfter ${exp}) — plan a renewal"
+        fi
+
+        # 4. SAN/CN covers the hostname
+        if ! _vc_covers "$cert" "$host"; then
+            log_error "${host}: cert SAN/CN does not cover this hostname" \
+                      "The cert is valid but not issued for ${host}" \
+                      "Issue a cert covering ${host} (or *.<domain>), or fix public_domain / ${svc}_hostname to match the cert" \
+                      "openssl x509 -in ${cert} -noout -text | grep -A1 'Subject Alternative Name'" \
+                      "$DOCS_TLS_URL"
+            fails=$((fails + 1)); continue
+        fi
+
+        log_success "  ${svc}: ${host} — OK (key matches, not expired, SAN covers; expires ${exp})"
+    done
+
+    if [[ "$fails" -gt 0 ]]; then
+        log_error "Cert validation FAILED for ${fails} hostname(s)" \
+                  "One or more certs are missing, mismatched, expired, or do not cover the hostname" \
+                  "Fix the items above and re-run --validate-certs" \
+                  "" "$DOCS_TLS_URL"
+        exit 1
+    fi
+    log_success "All customer TLS certs are valid — safe to install."
 }
 
 # ---------------------------------------------------------------------------
@@ -510,6 +649,46 @@ run_role_phase() {
     mark_step_done "$marker"
 }
 
+# Loudly indicate when a previous run's completion markers exist, so that
+# "phases skipped" is never silent. Critical after a re-provision/reset:
+# stale laptop state will otherwise skip the whole install (machines stay bare).
+notify_existing_state() {
+    local dir="${STATE_DIR}/orchestrator"
+    local markers=() f
+    for f in "$dir"/*.done; do
+        [[ -e "$f" ]] || continue
+        markers+=("$f")
+    done
+
+    if [[ ${#markers[@]} -eq 0 ]]; then
+        log_info "No prior orchestrator state found — every phase will run."
+        return 0
+    fi
+
+    if [[ "$FORCE_MODE" == "true" ]]; then
+        log_warn "--force set: ignoring ${#markers[@]} completion marker(s); all phases will RE-RUN."
+        return 0
+    fi
+
+    local when
+    log_warn "════════════════════════════════════════════════════════════════"
+    log_warn " ${#markers[@]} phase(s) from a PREVIOUS run are marked complete and"
+    log_warn " will be SKIPPED (this is a resume, not a fresh install):"
+    for f in "${markers[@]}"; do
+        when=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$f" 2>/dev/null \
+               || stat -c '%y' "$f" 2>/dev/null | cut -d'.' -f1 \
+               || echo '?')
+        log_warn "     • $(basename "$f" .done)   (done ${when})"
+    done
+    log_warn ""
+    log_warn " If the machines were RE-PROVISIONED or RESET since then, this state"
+    log_warn " is STALE — nothing new will install and you'll get a bare cluster."
+    log_warn " Clear it and re-run:"
+    log_warn "     ./openg2p-prod.sh --reset-laptop --config <your-config>"
+    log_warn " (or pass --force to re-run completed phases in place)"
+    log_warn "════════════════════════════════════════════════════════════════"
+}
+
 # ---------------------------------------------------------------------------
 main() {
     parse_args "$@"
@@ -537,6 +716,14 @@ main() {
         log_info "No provision-output.yaml found — using prod-config.yaml only"
     fi
 
+    # Laptop-only cert validation — needs only cert + hostname config (NOT the
+    # node IPs/subnet), so it runs BEFORE the full orchestrator validation and
+    # can be used before the VMs are even provisioned. No SSH.
+    if [[ "$VALIDATE_CERTS_ONLY" == "true" ]]; then
+        validate_certs_deep
+        exit 0
+    fi
+
     validate_orchestrator_config
 
     ssh_init
@@ -554,6 +741,9 @@ main() {
         log_success "Preflight complete."
         exit 0
     fi
+
+    # Make any skipped-because-already-done phases visible BEFORE we start.
+    notify_existing_state
 
     case "$RUN_ROLE" in
         all)

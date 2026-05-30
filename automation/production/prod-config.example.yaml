@@ -24,6 +24,19 @@
 #   [CUSTOMER] — provided by the deploying organisation (DNS names + certs)
 #   [AWS]      — auto-populated by aws/openg2p-aws-provision.sh
 #                (or fill in manually for non-AWS / on-prem installs)
+#
+# IMPORTANT — about [AWS] fields:
+#   If you provisioned with aws/openg2p-aws-provision.sh, it wrote a sibling
+#   file `provision-output.yaml` next to this one. The orchestrator auto-detects
+#   that file and loads it as an OVERLAY whose values OVERRIDE this file. So you
+#   can LEAVE EVERY [AWS] FIELD BLANK — IPs, SSH host/user/key, private_subnet,
+#   admin_cidr, wg_endpoint are all picked up from provision-output.yaml.
+#   (If you do fill one in here, the provision-output.yaml value still wins —
+#   so a stale value here is silently ignored. Leave them blank to avoid that.)
+#   You only need to fill [AWS] fields for non-AWS / on-prem installs where no
+#   provision-output.yaml exists. The run log prints which mode applied:
+#     "Loading provision-output overlay: …"   → [AWS] fields auto-filled
+#     "No provision-output.yaml found …"       → you must fill them in here
 # =============================================================================
 
 # ---------------------------------------------------------------------------
@@ -83,6 +96,9 @@ tls_keycloak_password: ""
 # ---------------------------------------------------------------------------
 # Reverse Proxy node                                                      [AWS]
 # ---------------------------------------------------------------------------
+# ALL fields in this section are [AWS] — leave blank if provision-output.yaml
+# exists (it auto-fills them). Fill in only for non-AWS / on-prem installs.
+#
 # IMPORTANT: the RP VM must have TWO network interfaces:
 #   • vNIC-public:   public IP, used for the Wireguard endpoint
 #   • vNIC-internal: internal IP, used for admin Nginx server blocks
@@ -92,31 +108,35 @@ tls_keycloak_password: ""
 # If you genuinely cannot add a second NIC, see the fallback layout:
 #   https://docs.openg2p.org/operations/deployment/automation/three-node-automation-fallback-second-rp
 
-rp_public_ip:   ""    # vNIC-public address (Wireguard endpoint)
-rp_internal_ip: ""    # vNIC-internal address (Nginx admin server blocks bind here)
+rp_public_ip:   ""    # [AWS] vNIC-public address (Wireguard endpoint)
+rp_internal_ip: ""    # [AWS] vNIC-internal address (Nginx admin server blocks bind here)
 
 # SSH access from the orchestrator (your laptop)
-rp_ssh_host: ""       # defaults to rp_public_ip if blank
-rp_ssh_user: "ubuntu"
-rp_ssh_key:  "~/.ssh/id_rsa"
+rp_ssh_host: ""       # [AWS] defaults to rp_public_ip if blank
+rp_ssh_user: "ubuntu" # [AWS]
+rp_ssh_key:  "~/.ssh/id_rsa"   # [AWS]
 
 # ---------------------------------------------------------------------------
 # Compute node (Kubernetes)                                               [AWS]
 # ---------------------------------------------------------------------------
-compute_private_ip: ""
+# [AWS] fields below auto-fill from provision-output.yaml — leave blank when it
+# exists. (compute_node_name is [USER].) Fill in only for non-AWS / on-prem.
+compute_private_ip: ""            # [AWS]
 compute_node_name:  "compute-1"   # [USER]
-compute_ssh_host:   ""            # defaults to compute_private_ip
-compute_ssh_user:   "ubuntu"
-compute_ssh_key:    "~/.ssh/id_rsa"
+compute_ssh_host:   ""            # [AWS] defaults to compute_private_ip
+compute_ssh_user:   "ubuntu"      # [AWS]
+compute_ssh_key:    "~/.ssh/id_rsa"   # [AWS]
 
 # ---------------------------------------------------------------------------
 # Storage node (NFS + Postgres host)                                      [AWS]
 # ---------------------------------------------------------------------------
-storage_private_ip: ""
+# [AWS] fields below auto-fill from provision-output.yaml — leave blank when it
+# exists. (storage_node_name is [USER].) Fill in only for non-AWS / on-prem.
+storage_private_ip: ""            # [AWS]
 storage_node_name:  "storage-1"   # [USER]
-storage_ssh_host:   ""            # defaults to storage_private_ip
-storage_ssh_user:   "ubuntu"
-storage_ssh_key:    "~/.ssh/id_rsa"
+storage_ssh_host:   ""            # [AWS] defaults to storage_private_ip
+storage_ssh_user:   "ubuntu"      # [AWS]
+storage_ssh_key:    "~/.ssh/id_rsa"   # [AWS]
 
 # ---------------------------------------------------------------------------
 # SSH bastion (optional)                                                [USER]
@@ -128,17 +148,21 @@ ssh_jump_via_rp: false
 # ---------------------------------------------------------------------------
 # Network                                                                 [AWS]
 # ---------------------------------------------------------------------------
+# Both fields are [AWS] — leave blank/default if provision-output.yaml exists
+# (it auto-fills them). Fill in only for non-AWS / on-prem installs.
+#
 # CIDR covering all 3 nodes' private IPs. Used for ufw rules.
-private_subnet: ""       # e.g. "10.0.0.0/16"
+private_subnet: ""       # [AWS] e.g. "10.0.0.0/16"
 
 # Who is allowed to SSH into the public-facing RP node.
 # Auto-detected as your laptop's public IP /32 by AWS provisioning.
-admin_cidr: "0.0.0.0/0"
+admin_cidr: "0.0.0.0/0"  # [AWS]
 
 # ---------------------------------------------------------------------------
 # Wireguard (admin VPN — server lives on the RP node's vNIC-public)
 # ---------------------------------------------------------------------------
-wg_endpoint: ""              # [AWS] — defaults to rp_public_ip if blank
+wg_endpoint: ""              # [AWS] — auto-filled from provision-output.yaml;
+                             #         leave blank (defaults to rp_public_ip)
 wg_subnet:   "10.15.0.0/16"  # [USER] — must not overlap private_subnet
 wg_port:     "51820"         # [USER]
 wg_peers:    "8"             # [USER] — how many peer configs to pre-generate

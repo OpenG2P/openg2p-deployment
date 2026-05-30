@@ -368,10 +368,12 @@ _rp_install_cert() {
     done
 
     if [[ "$matches" != "1" ]]; then
+        local found_sans
+        found_sans=$(echo "$sans" | paste -sd' ' - 2>/dev/null)
         log_error "Cert at ${dest}/fullchain.pem does not cover: ${need[*]}" \
-                  "The supplied cert's SAN/CN does not match the configured name(s)" \
-                  "Issue a cert covering ${need[*]}, or change public_domain / *_hostname to match the cert" \
-                  "openssl x509 -in ${dest}/fullchain.pem -noout -text | grep -A1 'Subject Alternative Name'" \
+                  "The leaf cert's SAN/CN does not match the configured name(s). Detected on the cert → SAN: [${found_sans:-none}]  CN: [${cn:-none}]. The cert/key pair is valid, but it is issued for a different domain than configured." \
+                  "Either point public_domain / *_hostname at the cert's actual domain, or supply a cert that covers ${need[*]}" \
+                  "openssl x509 -in ${dest}/fullchain.pem -noout -ext subjectAltName -subject" \
                   "${DOCS_URL_BASE}#id-4.-customer-supplied-tls-certificates"
         exit 1
     fi

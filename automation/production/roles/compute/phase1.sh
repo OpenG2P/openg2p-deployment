@@ -16,6 +16,20 @@
 # Tool installers (kubectl, helm, istioctl, helmfile)
 # Adapted from single-node phase1.sh.
 # ─────────────────────────────────────────────────────────────────────────
+
+# Resilient download: follows redirects, FAILS on HTTP errors (not silently),
+# RETRIES transient failures, and RESUMES partial transfers (-C -). Needed
+# because some regions have slow/bursty links to dl.k8s.io / get.helm.sh and a
+# plain `curl -sLO` dies mid-transfer with no error, leaving a truncated file.
+robust_curl() {
+    local url="$1" out="$2"
+    curl -fSL \
+        --retry 5 --retry-delay 3 --retry-all-errors \
+        --continue-at - \
+        --connect-timeout 20 --max-time 600 \
+        -o "$out" "$url"
+}
+
 install_kubectl() {
     local version="${1:-v1.33.6}"
     if kubectl version --client &>/dev/null; then
@@ -23,9 +37,26 @@ install_kubectl() {
         return 0
     fi
     log_info "Installing kubectl ${version}..."
-    curl -sLO "https://dl.k8s.io/release/${version}/bin/linux/amd64/kubectl"
+    if ! robust_curl "https://dl.k8s.io/release/${version}/bin/linux/amd64/kubectl" kubectl; then
+        log_error "Failed to download kubectl ${version} from dl.k8s.io" \
+                  "curl exhausted its retries (slow/unstable link to the k8s CDN)" \
+                  "Re-run this phase — the download resumes from where it stopped" \
+                  "curl -fSL --retry 5 -C - -o kubectl https://dl.k8s.io/release/${version}/bin/linux/amd64/kubectl" \
+                  ""
+        exit 1
+    fi
     install -m 0755 kubectl /usr/local/bin/kubectl
     rm -f kubectl
+    # Verify the binary actually works — guards against a truncated download
+    # slipping through.
+    if ! kubectl version --client &>/dev/null; then
+        log_error "kubectl installed but failed its self-check (truncated download?)" \
+                  "/usr/local/bin/kubectl is not a working binary" \
+                  "Re-run this phase to re-download; if it persists the node's link to dl.k8s.io is too slow" \
+                  "kubectl version --client" \
+                  ""
+        exit 1
+    fi
     log_success "kubectl ${version} installed."
 }
 
@@ -36,7 +67,11 @@ install_helm() {
         return 0
     fi
     log_info "Installing helm v${version}..."
-    curl -sL "https://get.helm.sh/helm-v${version}-linux-amd64.tar.gz" -o /tmp/helm.tar.gz
+    if ! robust_curl "https://get.helm.sh/helm-v${version}-linux-amd64.tar.gz" /tmp/helm.tar.gz; then
+        log_error "Failed to download helm v${version} from get.helm.sh" "" \
+                  "Re-run this phase — the download resumes" "" ""
+        exit 1
+    fi
     tar xzf /tmp/helm.tar.gz -C /tmp linux-amd64/helm
     install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
     rm -rf /tmp/helm.tar.gz /tmp/linux-amd64
@@ -65,8 +100,11 @@ install_helmfile() {
         return 0
     fi
     log_info "Installing helmfile v${version}..."
-    curl -sL "https://github.com/helmfile/helmfile/releases/download/v${version}/helmfile_${version}_linux_amd64.tar.gz" \
-        -o /tmp/helmfile.tar.gz
+    if ! robust_curl "https://github.com/helmfile/helmfile/releases/download/v${version}/helmfile_${version}_linux_amd64.tar.gz" /tmp/helmfile.tar.gz; then
+        log_error "Failed to download helmfile v${version} from github.com" "" \
+                  "Re-run this phase — the download resumes" "" ""
+        exit 1
+    fi
     tar xzf /tmp/helmfile.tar.gz -C /tmp helmfile
     install -m 0755 /tmp/helmfile /usr/local/bin/helmfile
     rm -f /tmp/helmfile /tmp/helmfile.tar.gz
