@@ -57,7 +57,7 @@ commons_base:
   # Path to local chart directory. Leave empty for remote Helm chart.
   chart_path: ""
   chart_repo: "https://openg2p.github.io/openg2p-helm"
-  chart_version: "2.0.0-develop"
+  chart_version: "0.0.0-develop"
   # Extra Helm arguments (e.g., "--set postgresql.primary.persistence.size=20Gi")
   extra_helm_args: ""
 
@@ -71,7 +71,7 @@ commons_services:
   # Path to local chart directory. Leave empty for remote Helm chart.
   chart_path: ""
   chart_repo: "https://openg2p.github.io/openg2p-helm"
-  chart_version: "2.0.0-develop"
+  chart_version: "0.0.0-develop"
   # Extra Helm arguments
   extra_helm_args: ""
 
