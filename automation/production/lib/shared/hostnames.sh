@@ -51,21 +51,19 @@ hostnames_bridge_config_keys() {
 }
 
 # Ensure rancher.<domain> / keycloak.<domain> are in /etc/hosts pointing at
-# the RP's INTERNAL IP — required for phase 3's API calls from the compute
-# node, since admin tools are reachable only via the RP's vNIC-internal
-# address (which compute usually does not have a DNS resolver for).
+# the RP's private IP — required for phase 3's API calls from the compute
+# node, since admin tools are reachable only via the RP's private address
+# (which compute usually does not have a DNS resolver for).
 #
 # Idempotent and additive — does not remove unrelated /etc/hosts entries.
 ensure_admin_hostnames_in_etc_hosts() {
-    local rp_internal
-    rp_internal=$(cfg "rp_internal_ip" "")
-    if [[ -z "$rp_internal" ]]; then
-        # Fall back to old rp_private_ip for backward compatibility during
-        # transition; warn if neither is set.
-        rp_internal=$(cfg "rp_private_ip" "")
+    local rp_private
+    rp_private=$(cfg "rp_private_ip" "")
+    if [[ -z "$rp_private" ]]; then
+        rp_private=$(cfg "rp_internal_ip" "")   # legacy alias
     fi
-    if [[ -z "$rp_internal" ]]; then
-        log_warn "rp_internal_ip not in config; cannot ensure /etc/hosts entries"
+    if [[ -z "$rp_private" ]]; then
+        log_warn "rp_private_ip not in config; cannot ensure /etc/hosts entries"
         return 0
     fi
     local host service
@@ -76,8 +74,8 @@ ensure_admin_hostnames_in_etc_hosts() {
             continue
         fi
         if ! grep -qE "(^|[[:space:]])${host}([[:space:]]|$)" /etc/hosts 2>/dev/null; then
-            echo "${rp_internal} ${host}" >> /etc/hosts
-            log_info "Added /etc/hosts entry: ${rp_internal} ${host}"
+            echo "${rp_private} ${host}" >> /etc/hosts
+            log_info "Added /etc/hosts entry: ${rp_private} ${host}"
         fi
     done
 }

@@ -4,7 +4,7 @@
 # =============================================================================
 # Phases:
 #   1 — Wireguard server, customer-supplied TLS cert ingest, Nginx admin
-#       server blocks bound to vNIC-internal IP
+#       server blocks bound to rp_private_ip
 # =============================================================================
 
 set -euo pipefail

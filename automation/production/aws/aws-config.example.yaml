@@ -130,22 +130,22 @@ storage_name: ""
 # ---------------------------------------------------------------------------
 # Security group names
 # ---------------------------------------------------------------------------
-# The RP gets TWO security groups (one per ENI) for defence-in-depth.
-# The script does describe-or-create per name in the chosen VPC:
+# One SG per role (single-NIC layout). The script does describe-or-create
+# per name in the chosen VPC:
 #   • If a SG with the given name already exists in that VPC, REUSE it.
 #     Required ingress rules are applied idempotently — anything already
 #     present is left alone, anything missing is added.
 #   • Otherwise, CREATE a new SG with that name and apply all rules.
 #
 # Leave blank to auto-derive from `project`:
-#   rp_sg_public_name   → <project>-reverse-proxy-public
-#                         (attached to RP's public ENI — Wireguard endpoint
-#                          + public services from env automation later)
-#   rp_sg_internal_name → <project>-reverse-proxy-internal
-#                         (attached to RP's internal ENI — admin services
-#                          only, intra-VPC traffic)
-#   compute_sg_name     → <project>-k8s-node
-#   storage_sg_name     → <project>-storage
+#   rp_sg_name      → <project>-reverse-proxy
+#                     (WG endpoint, admin SSH, public 80/443 for future env
+#                      automation, intra-VPC. Admin 443 is NOT opened to
+#                      the internet — nginx binds to the RP's private IP,
+#                      so external 443 hits the public env-automation
+#                      server blocks only.)
+#   compute_sg_name → <project>-k8s-node
+#   storage_sg_name → <project>-storage
 #
 # Override patterns:
 #   • Pre-created — your infra team has already created SGs and you want to
@@ -153,10 +153,9 @@ storage_name: ""
 #     script will fill in any missing rules.
 #   • Shared — same SG name across multiple OpenG2P installations on the
 #     same VPC. Set all installs to the same name.
-rp_sg_public_name:   ""
-rp_sg_internal_name: ""
-compute_sg_name:     ""
-storage_sg_name:     ""
+rp_sg_name:      ""
+compute_sg_name: ""
+storage_sg_name: ""
 
 # ---------------------------------------------------------------------------
 # Wireguard port

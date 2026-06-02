@@ -177,20 +177,17 @@ EOF
 
 # ---------------------------------------------------------------------------
 validate_orchestrator_config() {
-    # Backward-compat: an OLD config from before the dual-NIC rework may
-    # have only rp_private_ip set. Detect and guide the user to migrate.
-    if [[ -z "$(cfg rp_public_ip)" && -z "$(cfg rp_internal_ip)" && -n "$(cfg rp_private_ip)" ]]; then
-        log_error "Old config detected (only rp_private_ip is set)" \
-                  "The automation now requires TWO RP IPs: rp_public_ip and rp_internal_ip" \
-                  "Set rp_public_ip (Wireguard endpoint) and rp_internal_ip (admin Nginx). If your RP currently has a single NIC, attach a second one (see docs) before re-running. For a quick try, you can temporarily set both to the same IP, but channel separation will be lost." \
-                  "" \
-                  "https://docs.openg2p.org/operations/deployment/automation/three-node-automation#id-2.-two-network-interfaces-on-the-reverse-proxy-vm"
-        exit 1
+    # Back-compat shim: configs from the old dual-NIC era set rp_internal_ip
+    # instead of rp_private_ip. Promote the legacy key into the canonical
+    # one so the rest of the validation and downstream scripts see it.
+    if [[ -z "$(cfg rp_private_ip)" && -n "$(cfg rp_internal_ip)" ]]; then
+        CONFIG[rp_private_ip]="$(cfg rp_internal_ip)"
+        log_info "Using legacy rp_internal_ip as rp_private_ip (rename in prod-config.yaml when convenient)"
     fi
 
     local required=(
         cluster_name
-        rp_public_ip rp_internal_ip
+        rp_public_ip rp_private_ip
         compute_private_ip compute_node_name
         storage_private_ip storage_node_name
         private_subnet
@@ -442,8 +439,8 @@ check_subnet_overlap() {
 
     # Verify each configured private IP falls inside private_subnet (first
     # two octets — coarse but catches IP-swap mistakes).
-    local rp_ip=$(cfg rp_internal_ip)
-    if [[ -z "$rp_ip" ]]; then rp_ip=$(cfg rp_private_ip); fi   # backward-compat alias
+    local rp_ip=$(cfg rp_private_ip)
+    if [[ -z "$rp_ip" ]]; then rp_ip=$(cfg rp_internal_ip); fi   # legacy alias
     local compute_ip=$(cfg compute_private_ip)
     local storage_ip=$(cfg storage_private_ip)
     for ip in "$rp_ip" "$compute_ip" "$storage_ip"; do
@@ -577,8 +574,8 @@ preflight_all() {
     log_info "Inter-node connectivity probe (SSH/22 over private subnet)..."
     local storage_ip=$(cfg storage_private_ip)
     local compute_ip=$(cfg compute_private_ip)
-    local rp_ip=$(cfg rp_internal_ip)
-    if [[ -z "$rp_ip" ]]; then rp_ip=$(cfg rp_private_ip); fi   # backward-compat alias
+    local rp_ip=$(cfg rp_private_ip)
+    if [[ -z "$rp_ip" ]]; then rp_ip=$(cfg rp_internal_ip); fi   # legacy alias
 
     inter_node_probe() {
         local from="$1" to_label="$2" to_ip="$3"
@@ -782,7 +779,8 @@ main() {
 show_summary() {
     local rancher_host=$(get_rancher_hostname 2>/dev/null)
     local keycloak_host=$(get_keycloak_hostname 2>/dev/null)
-    local rp_internal=$(cfg rp_internal_ip)
+    local rp_private=$(cfg rp_private_ip)
+    [[ -z "$rp_private" ]] && rp_private=$(cfg rp_internal_ip)   # legacy alias
     local rp_user=$(cfg rp_ssh_user ubuntu)
     local rp_host=$(cfg rp_ssh_host)
     if [[ -z "$rp_host" ]]; then rp_host=$(cfg rp_public_ip); fi
@@ -851,8 +849,8 @@ show_summary() {
   (Grafana and Prometheus are reachable from inside the Rancher UI —
    Cluster Explorer → Monitoring — not on their own hostnames.)
 
-  Each hostname should already resolve to the RP's INTERNAL IP via your
-  customer's DNS:  ${rp_internal}
+  Each hostname should already resolve to the RP's PRIVATE IP via your
+  customer's DNS:  ${rp_private}
 
   CREDENTIALS — KEEP THESE SAFE
 
@@ -897,16 +895,16 @@ show_summary() {
   STEP 3.  DNS resolution on your laptop
 
       Your customer's DNS should already resolve the admin hostnames
-      to ${rp_internal} (RP's internal IP).
+      to ${rp_private} (RP's private IP).
 
       If your customer's DNS isn't reachable from your laptop (no internal
       DNS exposure via WG), add a one-time /etc/hosts entry on your laptop:
 
-        ${rp_internal}  ${rancher_host} ${keycloak_host}
+        ${rp_private}  ${rancher_host} ${keycloak_host}
 
       Verify (macOS): dscacheutil -q host -a name ${rancher_host}
       Verify (Linux): getent hosts ${rancher_host}
-      Both must return ${rp_internal}.
+      Both must return ${rp_private}.
 
   STEP 4.  Login to Rancher — FIRST TIME (use the LOCAL admin)
 

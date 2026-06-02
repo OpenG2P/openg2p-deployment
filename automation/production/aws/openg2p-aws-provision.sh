@@ -203,57 +203,46 @@ main() {
     local wg_port=$(cfg wg_port "51820")
 
     # AWS SG descriptions must be ASCII-only — keep them simple.
-    # SG names default to <project>-<role> if not set in config. The RP gets
-    # TWO SGs — one for the public ENI (Wireguard, public services), one
-    # for the internal ENI (admin services). Defence-in-depth: even if Nginx
-    # bound to the wrong IP, the AWS layer still enforces the channel split.
-    local rp_sg_public_name=$(cfg rp_sg_public_name "${project}-reverse-proxy-public")
-    local rp_sg_internal_name=$(cfg rp_sg_internal_name "${project}-reverse-proxy-internal")
+    # SG names default to <project>-<role> if not set in config. The RP is
+    # single-NIC, so it gets one SG with the union of WG + admin SSH +
+    # public HTTP/HTTPS (env automation) + intra-VPC rules.
+    local rp_sg_name=$(cfg rp_sg_name "${project}-reverse-proxy")
     local compute_sg_name=$(cfg compute_sg_name "${project}-k8s-node")
     local storage_sg_name=$(cfg storage_sg_name "${project}-storage")
 
-    # AWS SG descriptions must be ASCII-only — keep them simple.
-    local rp_sg_public rp_sg_internal
-
-    rp_sg_public=$(aws_ensure_security_group \
-        "$rp_sg_public_name" "OpenG2P RP public ENI - Wireguard and public services" \
-        "$vpc_id" "$project" "reverse-proxy-public")
-    aws_require_nonempty "RP public security group" "$rp_sg_public"
-    aws_apply_sg_rules_rp_public "$rp_sg_public" "$admin_cidr" "$vpc_cidr" "$wg_port"
-    log_success "  RP public SG:   ${rp_sg_public_name} (${rp_sg_public})"
-
-    rp_sg_internal=$(aws_ensure_security_group \
-        "$rp_sg_internal_name" "OpenG2P RP internal ENI - admin services only" \
-        "$vpc_id" "$project" "reverse-proxy-internal")
-    aws_require_nonempty "RP internal security group" "$rp_sg_internal"
-    aws_apply_sg_rules_rp_internal "$rp_sg_internal" "$vpc_cidr"
-    log_success "  RP internal SG: ${rp_sg_internal_name} (${rp_sg_internal})"
+    rp_sg=$(aws_ensure_security_group \
+        "$rp_sg_name" "OpenG2P reverse-proxy - WG endpoint + admin + public services" \
+        "$vpc_id" "$project" "reverse-proxy")
+    aws_require_nonempty "RP security group" "$rp_sg"
+    aws_apply_sg_rules_rp "$rp_sg" "$admin_cidr" "$vpc_cidr" "$wg_port"
+    log_success "  RP SG:      ${rp_sg_name} (${rp_sg})"
 
     compute_sg=$(aws_ensure_security_group \
         "$compute_sg_name" "OpenG2P K8s compute node" \
         "$vpc_id" "$project" "k8s-node")
     aws_require_nonempty "Compute security group" "$compute_sg"
     aws_apply_sg_rules_compute "$compute_sg" "$admin_cidr" "$vpc_cidr"
-    log_success "  Compute SG:     ${compute_sg_name} (${compute_sg})"
+    log_success "  Compute SG: ${compute_sg_name} (${compute_sg})"
 
     storage_sg=$(aws_ensure_security_group \
         "$storage_sg_name" "OpenG2P storage node - NFS and Postgres" \
         "$vpc_id" "$project" "storage")
     aws_require_nonempty "Storage security group" "$storage_sg"
     aws_apply_sg_rules_storage "$storage_sg" "$admin_cidr" "$vpc_cidr"
-    log_success "  Storage SG:     ${storage_sg_name} (${storage_sg})"
+    log_success "  Storage SG: ${storage_sg_name} (${storage_sg})"
 
-    # ── 8. Elastic IP for RP (REQUIRED with multi-NIC) ─────────────────
-    # The RP launches with two ENIs. AWS forbids AssociatePublicIpAddress
-    # in multi-ENI launches, so the only way to give the RP a public IP
-    # (= Wireguard endpoint) is to allocate + attach an Elastic IP to ENI-0.
-    # If EIP allocation fails (quota), the install cannot continue.
-    log_step "2" "Allocating Elastic IP for RP (required for multi-NIC)"
+    # ── 8. Elastic IP for RP ───────────────────────────────────────────
+    # Single-NIC launch DOES support AWS auto-assigning a public IP, so the
+    # EIP is no longer architecturally mandatory. We still allocate one by
+    # default because the Wireguard endpoint must survive instance stop/start
+    # (a dynamic IP would change, breaking every peer config). If your AWS
+    # quota is exhausted, free an EIP or request a quota increase.
+    log_step "2" "Allocating Elastic IP for RP (Wireguard endpoint stability)"
     local rp_eip_alloc rp_eip_addr=""
     rp_eip_alloc=$(aws_ensure_eip "$project" "reverse-proxy-eip")
     if [[ -z "$rp_eip_alloc" || "$rp_eip_alloc" == "None" ]]; then
-        log_error "EIP allocation failed — required for multi-NIC RP" \
-                  "AWS doesn't allow AssociatePublicIpAddress with multiple ENIs at launch, so the EIP is the only way to give the RP a public IP for Wireguard." \
+        log_error "EIP allocation failed" \
+                  "Could not allocate an Elastic IP for the RP." \
                   "Free unused EIPs and re-run, OR request a quota increase in the AWS console." \
                   "aws ec2 describe-addresses --query 'Addresses[?AssociationId==null].[AllocationId,PublicIp]' --output table" \
                   ""
@@ -273,18 +262,15 @@ main() {
 
     local rp_id compute_id storage_id
 
-    # RP — two ENIs at launch (vNIC-public for Wireguard, vNIC-internal for
-    # admin Nginx). Uses aws_run_rp_instance (a specialised variant of
-    # aws_run_instance that uses --network-interfaces instead of --subnet-id).
+    # RP — single ENI, same launch helper as compute/storage.
     rp_id=$(aws_find_instance "$rp_name" "$project")
     if [[ -z "$rp_id" || "$rp_id" == "None" ]]; then
-        rp_id=$(aws_run_rp_instance \
-            "$rp_name" "$project" \
-            "$ami" "$(cfg rp_instance_type)" "$subnet_id" \
-            "$rp_sg_public" "$rp_sg_internal" "$key_name" \
+        rp_id=$(aws_run_instance \
+            "$rp_name" "$project" "reverse-proxy" \
+            "$ami" "$(cfg rp_instance_type)" "$subnet_id" "$rp_sg" "$key_name" \
             "$(cfg rp_disk_gb 64)" "$(cfg rp_disk_iops 3000)" "$(cfg rp_disk_throughput 125)")
         aws_require_nonempty "RP instance ID" "$rp_id"
-        log_success "  RP launched (${rp_name}, 2 ENIs):      ${rp_id}"
+        log_success "  RP launched (${rp_name}):      ${rp_id}"
     else
         log_info "  RP already exists (${rp_name}): ${rp_id}"
     fi
@@ -350,29 +336,23 @@ main() {
     log_success "All 3 instances passed status checks."
 
     # ── 14. Capture IPs ────────────────────────────────────────────────
-    # RP has TWO ENIs — capture both private IPs separately:
-    #   ENI-0 (DeviceIndex=0) → public-facing, EIP attached here
-    #   ENI-1 (DeviceIndex=1) → internal, hosts admin Nginx
-    local rp_eni0_private rp_eni1_private compute_ips storage_ips
-    rp_eni0_private=$(aws_get_eni_private_ip "$rp_id" 0)
-    rp_eni1_private=$(aws_get_eni_private_ip "$rp_id" 1)
-    aws_require_nonempty "RP ENI-0 private IP" "$rp_eni0_private"
-    aws_require_nonempty "RP ENI-1 private IP" "$rp_eni1_private"
-
+    # Single-NIC RP: one private IP from the single ENI; EIP is the public
+    # address. compute/storage already returned by aws_get_instance_ips.
+    local rp_ips compute_ips storage_ips
+    rp_ips=$(aws_get_instance_ips "$rp_id")
     compute_ips=$(aws_get_instance_ips "$compute_id")
     storage_ips=$(aws_get_instance_ips "$storage_id")
 
-    # rp_public_ip is the EIP attached to ENI-0 (mandatory in multi-NIC mode).
-    # rp_internal_ip is ENI-1's private IP.
     local rp_public="$rp_eip_addr"
-    local rp_internal="$rp_eni1_private"
+    local rp_private="${rp_ips#*|}"
     aws_require_nonempty "RP public IP (EIP)" "$rp_public"
+    aws_require_nonempty "RP private IP"      "$rp_private"
     local compute_public="${compute_ips%|*}"
     local compute_private="${compute_ips#*|}"
     local storage_public="${storage_ips%|*}"
     local storage_private="${storage_ips#*|}"
 
-    log_info "  RP:      public=${rp_public}  eni0(private)=${rp_eni0_private}  eni1(internal)=${rp_internal}"
+    log_info "  RP:      public=${rp_public}  private=${rp_private}"
     log_info "  Compute: public=${compute_public}  private=${compute_private}"
     log_info "  Storage: public=${storage_public}  private=${storage_private}"
 
@@ -407,11 +387,8 @@ main() {
     fi
 
     # ── 16. Write provision-output.yaml ─────────────────────────────────
-    # NB: rp_internal here is ENI-1's private IP (the admin Nginx bind
-    # address). The legacy rp_private positional slot is preserved for
-    # write_provision_output's existing signature — we pass rp_internal.
     write_provision_output \
-        "$rp_public" "$rp_internal" \
+        "$rp_public" "$rp_private" \
         "$compute_public" "$compute_private" \
         "$storage_public" "$storage_private" \
         "$vpc_cidr" "$admin_cidr" "$key_path" \
@@ -481,10 +458,8 @@ provision_backup_node() {
 # untouched and stable across re-provisioning.
 # ---------------------------------------------------------------------------
 write_provision_output() {
-    # $2 is the RP's INTERNAL IP (ENI-1's private IP). Named `rp_priv` here
-    # for backward-compat with the positional signature; emitted as both
-    # `rp_internal_ip` (new — the orchestrator's authoritative key) AND
-    # `rp_private_ip` (legacy alias for older configs still in use).
+    # $2 is the RP's single private IP (single-NIC layout). Emitted as
+    # rp_private_ip — the orchestrator's canonical key.
     local rp_pub="$1"      rp_priv="$2"
     local compute_pub="$3" compute_priv="$4"
     local storage_pub="$5" storage_priv="$6"
@@ -532,10 +507,9 @@ write_provision_output() {
 # Project:    $(cfg project)
 # =============================================================================
 
-# ─── Reverse Proxy (two ENIs: public + internal) ────────────────────────
+# ─── Reverse Proxy (single NIC) ──────────────────────────────────────────
 rp_public_ip:    "${rp_pub}"
-rp_internal_ip:  "${rp_priv}"
-rp_private_ip:   "${rp_priv}"   # legacy alias (= rp_internal_ip)
+rp_private_ip:   "${rp_priv}"
 rp_ssh_host:     "${rp_pub}"
 rp_ssh_user:     "ubuntu"
 rp_ssh_key:      "${key_for_prod}"

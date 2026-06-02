@@ -99,17 +99,17 @@ tls_keycloak_password: ""
 # ALL fields in this section are [AWS] — leave blank if provision-output.yaml
 # exists (it auto-fills them). Fill in only for non-AWS / on-prem installs.
 #
-# IMPORTANT: the RP VM must have TWO network interfaces:
-#   • vNIC-public:   public IP, used for the Wireguard endpoint
-#   • vNIC-internal: internal IP, used for admin Nginx server blocks
-# See docs for hypervisor-specific instructions:
-#   https://docs.openg2p.org/operations/deployment/automation/three-node-automation#id-2.-two-network-interfaces-on-the-reverse-proxy-vm
-#
-# If you genuinely cannot add a second NIC, see the fallback layout:
-#   https://docs.openg2p.org/operations/deployment/automation/three-node-automation-fallback-second-rp
+# Single-NIC layout. The RP needs ONE network interface; channel separation
+# (public WG endpoint vs admin Nginx) is enforced by the firewall / security
+# group, not by physical NICs. See docs for prerequisites:
+#   https://docs.openg2p.org/operations/deployment/automation/three-node-automation#prerequisites
 
-rp_public_ip:   ""    # [AWS] vNIC-public address (Wireguard endpoint)
-rp_internal_ip: ""    # [AWS] vNIC-internal address (Nginx admin server blocks bind here)
+rp_public_ip:  ""    # [AWS] WG endpoint — the internet-reachable address.
+                     #       On AWS this is the EIP; on-prem it's the public
+                     #       IP or whatever address admin laptops dial in to.
+rp_private_ip: ""    # [AWS] The RP's primary NIC IP. Admin Nginx binds here;
+                     #       WG-decapsulated traffic is delivered here; the
+                     #       customer's DNS for rancher/keycloak points here.
 
 # SSH access from the orchestrator (your laptop)
 rp_ssh_host: ""       # [AWS] defaults to rp_public_ip if blank
@@ -159,13 +159,33 @@ private_subnet: ""       # [AWS] e.g. "10.0.0.0/16"
 admin_cidr: "0.0.0.0/0"  # [AWS]
 
 # ---------------------------------------------------------------------------
-# Wireguard (admin VPN — server lives on the RP node's vNIC-public)
+# Wireguard (admin VPN — server runs on the RP node)
 # ---------------------------------------------------------------------------
 wg_endpoint: ""              # [AWS] — auto-filled from provision-output.yaml;
                              #         leave blank (defaults to rp_public_ip)
 wg_subnet:   "10.15.0.0/16"  # [USER] — must not overlap private_subnet
 wg_port:     "51820"         # [USER]
 wg_peers:    "8"             # [USER] — how many peer configs to pre-generate
+
+# [USER, optional] DNS resolver pushed to every WG peer. If set, the admin
+# laptop sends DNS queries through the tunnel while it's up — useful when the
+# admin hostnames (rancher.<domain>, keycloak.<domain>) are resolvable only
+# from inside the customer's network (split-horizon DNS, AWS Route53 private
+# hosted zone, etc.). The resolver's IP MUST be inside wg_subnet or
+# private_subnet so the query actually traverses the tunnel.
+#
+# Examples:
+#   • On-prem with an internal DNS server in the private subnet:
+#       wg_peer_dns: "10.0.0.10"
+#   • AWS, using the VPC DNS resolver to resolve Route53 private zone
+#     records (resolver IP = <vpc-cidr-base>.2 — e.g. 10.0.0.2 for a
+#     10.0.0.0/16 VPC, 172.31.0.2 for a 172.31.0.0/16 VPC):
+#       wg_peer_dns: "172.31.0.2"
+#
+# Leave blank to skip the DNS push. The admin laptop will then need its own
+# resolver (split-horizon DNS, public DNS pointing at private IPs, or a one-
+# time /etc/hosts edit). See three-node-automation docs §3 for the patterns.
+wg_peer_dns: ""              # [USER, optional]
 
 # ---------------------------------------------------------------------------
 # RKE2 / Kubernetes                                                     [USER]

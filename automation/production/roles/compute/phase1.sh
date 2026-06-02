@@ -155,10 +155,11 @@ compute_configure_ufw() {
     local admin_cidr=$(cfg "admin_cidr" "0.0.0.0/0")
     local private_subnet=$(cfg "private_subnet")
     local wg_subnet=$(cfg "wg_subnet" "10.15.0.0/16")
-    # Prefer rp_internal_ip (new key); fall back to rp_private_ip (legacy alias).
-    local rp_internal_for_ufw=$(cfg "rp_internal_ip")
-    if [[ -z "$rp_internal_for_ufw" ]]; then
-        rp_internal_for_ufw=$(cfg "rp_private_ip")
+    # rp_private_ip is canonical; rp_internal_ip kept as legacy alias for
+    # configs from the older two-NIC layout.
+    local rp_private_for_ufw=$(cfg "rp_private_ip")
+    if [[ -z "$rp_private_for_ufw" ]]; then
+        rp_private_for_ufw=$(cfg "rp_internal_ip")
     fi
 
     ufw --force reset
@@ -184,11 +185,14 @@ compute_configure_ufw() {
         # ICMP is already permitted via ufw's default before.rules.
     done
 
-    # Istio ingress NodePort 30080 from RP only (RP forwards public HTTPS to it)
-    if [[ -n "$rp_internal_for_ufw" ]]; then
-        ufw allow from "$rp_internal_for_ufw" to any port 30080 proto tcp comment "Istio ingress from RP"
+    # Istio ingress NodePort 30080 from RP only (RP forwards public HTTPS to it).
+    # Note: NodePort range 30000:32767 is already opened to private_subnet
+    # above, so this is technically redundant — kept as a documented intent
+    # marker. With single-NIC RP, source IP is unambiguous.
+    if [[ -n "$rp_private_for_ufw" ]]; then
+        ufw allow from "$rp_private_for_ufw" to any port 30080 proto tcp comment "Istio ingress from RP"
     else
-        log_warn "Neither rp_internal_ip nor rp_private_ip set; Istio NodePort 30080 not opened to RP."
+        log_warn "rp_private_ip not set; Istio NodePort 30080 not explicitly opened to RP (still covered by private_subnet rule)."
     fi
 
     ufw --force enable
@@ -213,25 +217,25 @@ compute_configure_sysctl_hosts() {
         echo "fs.inotify.max_user_instances=1024" >> /etc/sysctl.conf
 
     # Idempotent /etc/hosts edits — replace any prior managed block.
-    # The customer admin hostnames (rancher, keycloak) resolve to the RP's INTERNAL IP so
-    # that curl from this node (e.g. phase 3's API calls to Rancher) reaches
-    # them via the RP's Nginx → Istio NodePort → cluster service path.
-    # Cluster-internal references to storage/postgres use the raw private IP
-    # directly (no aliases needed).
-    local rp_internal=$(cfg "rp_internal_ip" "")
-    if [[ -z "$rp_internal" ]]; then
-        rp_internal=$(cfg "rp_private_ip" "")     # backward compat alias
+    # The customer admin hostnames (rancher, keycloak) resolve to the RP's
+    # private IP so that curl from this node (e.g. phase 3's API calls to
+    # Rancher) reaches them via the RP's Nginx → Istio NodePort → cluster
+    # service path. Cluster-internal references to storage/postgres use the
+    # raw private IP directly (no aliases needed).
+    local rp_private=$(cfg "rp_private_ip" "")
+    if [[ -z "$rp_private" ]]; then
+        rp_private=$(cfg "rp_internal_ip" "")     # legacy alias
     fi
 
     sed -i '/# openg2p-managed-begin/,/# openg2p-managed-end/d' /etc/hosts
 
-    if [[ -n "$rp_internal" ]]; then
+    if [[ -n "$rp_private" ]]; then
         local rancher_h=$(get_rancher_hostname)
         local keycloak_h=$(get_keycloak_hostname)
         {
             echo "# openg2p-managed-begin"
             for h in "$rancher_h" "$keycloak_h"; do
-                [[ -n "$h" ]] && echo "${rp_internal}  ${h}"
+                [[ -n "$h" ]] && echo "${rp_private}  ${h}"
             done
             echo "# openg2p-managed-end"
         } >> /etc/hosts

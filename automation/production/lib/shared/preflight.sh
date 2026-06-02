@@ -178,50 +178,38 @@ check_ip_matches() {
             ;;
 
         rp)
-            # The RP has TWO NICs. Only the INTERNAL one is OS-visible and must
-            # be bound (admin Nginx binds its server blocks to it).
-            #
-            # rp_public_ip is the Wireguard endpoint. On AWS it's an Elastic IP
-            # that AWS NATs to the public ENI's PRIVATE address — the OS never
-            # sees the EIP itself, so `ip addr` won't show it. We therefore do
-            # NOT require it to be bound (mirrors rp_verify_nics in phase1.sh).
-            local pub int
+            # Single-NIC layout: rp_private_ip must be bound on this host
+            # (admin Nginx binds there; WG-decapsulated traffic is delivered
+            # there). rp_public_ip is the Wireguard endpoint reachable from
+            # the internet — on AWS it's an Elastic IP NAT'd to the ENI's
+            # private address, on on-prem it may be directly bound or NAT'd
+            # by an upstream firewall — either is fine. We don't require it
+            # to be bound on the host.
+            local pub priv
             pub=$(cfg rp_public_ip)
-            int=$(cfg rp_internal_ip)
-            [[ -z "$int" ]] && int=$(cfg rp_private_ip)   # legacy alias
+            priv=$(cfg rp_private_ip)
+            [[ -z "$priv" ]] && priv=$(cfg rp_internal_ip)   # legacy alias
 
-            # Internal IP — hard requirement.
-            if [[ -z "$int" ]]; then
-                emit_fail "rp_internal_ip not set in config (RP needs a second NIC for admin Nginx)"
-                emit_fail "  → see https://docs.openg2p.org/operations/deployment/automation/three-node-automation#id-2.-two-network-interfaces-on-the-reverse-proxy-vm"
-            elif _ip_bound "$int"; then
-                emit_pass "IP: ${int} (rp_internal_ip) bound on this host"
+            if [[ -z "$priv" ]]; then
+                emit_fail "rp_private_ip not set in config"
+                emit_fail "  → set rp_private_ip to this RP's primary NIC IP in prod-config.yaml"
+            elif _ip_bound "$priv"; then
+                emit_pass "IP: ${priv} (rp_private_ip) bound on this host"
             else
-                emit_fail "IP ${int} (rp_internal_ip) NOT bound on this host"
+                emit_fail "IP ${priv} (rp_private_ip) NOT bound on this host"
                 emit_fail "  this host has: ${actual:-<none>}"
-                emit_fail "  → RP needs TWO NICs: rp_public_ip (Wireguard) + rp_internal_ip (admin Nginx)"
-                emit_fail "  → see https://docs.openg2p.org/operations/deployment/automation/three-node-automation#id-2.-two-network-interfaces-on-the-reverse-proxy-vm"
+                emit_fail "  → wrong node targeted, or rp_private_ip is wrong"
             fi
 
-            # Public IP — informational, never a FAIL. Bound directly (on-prem
-            # dual-NIC) OR NAT'd and invisible (AWS EIP) are both valid.
+            # Public IP — informational only. Bound directly (on-prem with a
+            # public IP on the NIC) OR NAT'd / EIP and invisible to the OS
+            # are both valid.
             if [[ -n "$pub" ]]; then
                 if _ip_bound "$pub"; then
                     emit_pass "IP: ${pub} (rp_public_ip) bound on this host"
                 else
-                    emit_pass "IP: ${pub} (rp_public_ip) not OS-visible — expected on AWS (NAT'd Elastic IP)"
+                    emit_pass "IP: ${pub} (rp_public_ip) not OS-visible — expected when behind NAT / on AWS EIP"
                 fi
-            fi
-
-            # Two-NIC sanity: the RP normally has two ENIs, so two non-loopback
-            # IPv4 addresses. Warn (don't fail) if fewer — unusual topologies
-            # (e.g. secondary IP on one NIC) can still be valid.
-            local nic_count
-            nic_count=$(ip -4 -br addr 2>/dev/null | awk '$1!="lo" && $3!=""' | wc -l | tr -d ' ')
-            if [[ "${nic_count:-0}" -ge 2 ]]; then
-                emit_pass "Two NICs present (${nic_count} non-loopback IPv4 addresses)"
-            else
-                emit_warn "Only ${nic_count:-0} non-loopback IPv4 address(es) found — RP normally has two ENIs (public + internal)"
             fi
             ;;
     esac
