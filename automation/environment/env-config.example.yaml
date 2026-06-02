@@ -6,8 +6,22 @@
 #
 # Used by: env-cluster.sh (run from your workstation with kubectl access)
 #
-# Before running env-cluster.sh, complete the manual Nginx setup steps
-# described in the README.
+# PREREQUISITES — must already be in place before env-cluster.sh runs:
+#   1. DNS A records (apex + wildcard) pointing to the Nginx node
+#   2. Wildcard TLS cert for *.<base_domain> on the Nginx node at
+#         /etc/openg2p/certs/<base_domain>/{fullchain.pem,privkey.pem}
+#   3. Nginx server block on the Nginx node proxying to the Istio ingress
+#
+# Customer-provided certs (from a commercial / sovereign CA) are the default
+# for production. Let's Encrypt is acceptable only for sandbox / PoC.
+#
+# Generate the full procurement checklist (DNS + certs for all planned envs)
+# in one shot with:
+#     automation/procurement/generate-procurement-checklist.sh
+#
+# See docs:
+#   https://docs.openg2p.org/operations/deployment/prerequisites-procurement
+#   https://docs.openg2p.org/operations/deployment/environment-setup-multi-node
 # =============================================================================
 
 # ---------------------------------------------------------------------------
