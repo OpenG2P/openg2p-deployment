@@ -15,11 +15,8 @@
 # Customer-provided certs (from a commercial / sovereign CA) are the default
 # for production. Let's Encrypt is acceptable only for sandbox / PoC.
 #
-# Generate the full procurement checklist (DNS + certs for all planned envs)
-# in one shot with:
-#     automation/procurement/generate-procurement-checklist.sh
-#
-# See docs:
+# DNS records, TLS certs, server access, firewall ports — all listed on a
+# single fillable checklist you can hand to your IT / network / cert team:
 #   https://docs.openg2p.org/operations/deployment/prerequisites-procurement
 #   https://docs.openg2p.org/operations/deployment/environment-setup-multi-node
 # =============================================================================

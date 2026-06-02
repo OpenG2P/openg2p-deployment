@@ -239,7 +239,7 @@ compute_configure_sysctl_hosts() {
             done
             echo "# openg2p-managed-end"
         } >> /etc/hosts
-        log_info "Added /etc/hosts entries for admin hostnames → ${rp_internal}"
+        log_info "Added /etc/hosts entries for admin hostnames → ${rp_private}"
     fi
 
     mark_step_done "$step"
