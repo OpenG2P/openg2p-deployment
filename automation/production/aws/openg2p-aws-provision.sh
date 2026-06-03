@@ -488,6 +488,14 @@ write_provision_output() {
         "${prod_dir}/"*) key_for_prod="./${key_path#${prod_dir}/}" ;;
     esac
 
+    # AWS VPC DNS resolver (AmazonProvidedDNS) sits at the VPC network base + 2
+    # (e.g. 172.29.0.0/16 -> 172.29.0.2). Pushed to WG peers as wg_peer_dns so
+    # admins resolve the Route53 private zone through the tunnel. It's inside
+    # private_subnet (= vpc_cidr), so the WG AllowedIPs already route it.
+    local vpc_dns="" _o1 _o2 _o3 _o4
+    IFS=. read -r _o1 _o2 _o3 _o4 <<< "${vpc_cidr%/*}" || true
+    if [[ -n "$_o1" && -n "$_o4" ]]; then vpc_dns="${_o1}.${_o2}.${_o3}.$((_o4 + 2))"; fi
+
     cat > "$out" <<EOF
 # =============================================================================
 # OpenG2P provision-output — AWS-derived configuration
@@ -531,6 +539,7 @@ private_subnet:  "${vpc_cidr}"
 admin_cidr:      "${admin_cidr}"
 wg_endpoint:     "${rp_pub}"
 wg_port:         "$(cfg wg_port 51820)"
+wg_peer_dns:     "${vpc_dns}"   # VPC DNS — pushed to WG peers so admins resolve the Route53 private zone over the tunnel
 
 # ─── Identity ────────────────────────────────────────────────────────────
 cluster_name:    "$(cfg project openg2p-prod)"

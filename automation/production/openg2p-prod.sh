@@ -222,6 +222,21 @@ validate_orchestrator_config() {
     _validate_tls_cert_paths
 
     check_subnet_overlap
+
+    # Wireguard DNS push — warn (don't fail) when not set. The admin hostnames
+    # (rancher/keycloak) resolve only via the customer's / VPC DNS, which is
+    # reachable only THROUGH the tunnel. Without wg_peer_dns the generated peer
+    # configs carry no `DNS =` line, so admins can't resolve the hostnames over
+    # the VPN unless they hand-edit /etc/hosts. On AWS, provisioning auto-fills
+    # this (VPC DNS), so the warning only surfaces for on-prem / manual configs.
+    if [[ -z "$(cfg wg_peer_dns)" ]]; then
+        log_warn "wg_peer_dns is not set — Wireguard peers will get NO DNS resolver."
+        log_warn "  Admin hostnames (rancher/keycloak) will not resolve over the VPN by default."
+        log_warn "  Set wg_peer_dns in prod-config.yaml to a resolver INSIDE private_subnet/wg_subnet:"
+        log_warn "    • on-prem: your internal DNS server's IP"
+        log_warn "    • AWS:     the VPC DNS (<vpc-cidr-base>.2) — normally auto-filled by provisioning"
+        log_warn "  Otherwise each admin must add a one-time /etc/hosts entry (printed in the summary)."
+    fi
 }
 
 # Check that customer cert paths are set in config AND files exist on disk.
@@ -897,8 +912,12 @@ show_summary() {
       Your customer's DNS should already resolve the admin hostnames
       to ${rp_private} (RP's private IP).
 
-      If your customer's DNS isn't reachable from your laptop (no internal
-      DNS exposure via WG), add a one-time /etc/hosts entry on your laptop:
+      If wg_peer_dns was set, your Wireguard peer config already carries a
+      "DNS = ..." line and resolution works automatically once the tunnel
+      is up — nothing to do here.
+
+      Otherwise (wg_peer_dns blank), add a one-time /etc/hosts entry on your
+      laptop:
 
         ${rp_private}  ${rancher_host} ${keycloak_host}
 

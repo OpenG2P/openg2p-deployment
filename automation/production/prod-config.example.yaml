@@ -182,10 +182,13 @@ wg_peers:    "8"             # [USER] — how many peer configs to pre-generate
 #     10.0.0.0/16 VPC, 172.31.0.2 for a 172.31.0.0/16 VPC):
 #       wg_peer_dns: "172.31.0.2"
 #
-# Leave blank to skip the DNS push. The admin laptop will then need its own
-# resolver (split-horizon DNS, public DNS pointing at private IPs, or a one-
-# time /etc/hosts edit). See three-node-automation docs §3 for the patterns.
-wg_peer_dns: ""              # [USER, optional]
+# On AWS: leave this BLANK — provisioning auto-fills it with the VPC DNS
+# (<vpc-cidr-base>.2) in provision-output.yaml, which overrides this value.
+# On-prem: SET it here. If left blank on-prem, the orchestrator prints a
+# warning at startup and admins must add a one-time /etc/hosts entry instead
+# (the completion summary prints the exact line). See three-node-automation
+# docs §3 for the DNS-resolution patterns.
+wg_peer_dns: ""              # [USER on-prem; AWS auto-fills]
 
 # ---------------------------------------------------------------------------
 # RKE2 / Kubernetes                                                     [USER]
