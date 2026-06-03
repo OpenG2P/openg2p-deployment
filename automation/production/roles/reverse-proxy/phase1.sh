@@ -488,21 +488,24 @@ rp_install_certs() {
 # header, so Istio routes by hostname to the right backend service.
 # ─────────────────────────────────────────────────────────────────────────
 
-# _rp_emit_nginx_block <conf> <listen_ip> <server_names> <cert_dir>
+# _rp_emit_nginx_block <conf> <listen_ip> <server_names> <cert_dir> [allow_block]
+# allow_block: optional nginx allow/deny directives injected into each server
+# block (source-IP allowlist for the admin channel). Empty = no restriction.
 _rp_emit_nginx_block() {
-    local conf="$1" ip="$2" names="$3" cdir="$4"
+    local conf="$1" ip="$2" names="$3" cdir="$4" allow="${5:-}"
     cat >> "$conf" <<EOF
 # HTTP → HTTPS redirect for: ${names}
 server {
     listen ${ip}:80;
     server_name ${names};
+${allow}
     return 301 https://\$host\$request_uri;
 }
 
 server {
     listen ${ip}:443 ssl;
     server_name ${names};
-
+${allow}
     ssl_certificate     ${cdir}/fullchain.pem;
     ssl_certificate_key ${cdir}/privkey.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
@@ -539,19 +542,37 @@ rp_setup_nginx() {
     rp_private=$(cfg "rp_private_ip")
     [[ -z "$rp_private" ]] && rp_private=$(cfg "rp_internal_ip")   # legacy alias
     local compute_private=$(cfg "compute_private_ip")
+    local wg_subnet=$(cfg "wg_subnet" "10.15.0.0/16")
+    local private_subnet=$(cfg "private_subnet")
 
     rm -f /etc/nginx/sites-enabled/default
 
-    # Bound to rp_private_ip only — channel separation is enforced by the SG
-    # / network firewall (only SSH + WG/UDP are open to the internet), so
-    # admin services are reachable only via Wireguard or from within the
-    # private/management subnet. Public env-automation server blocks (added
-    # later) will bind to the same IP but on different listen ports.
+    # Build the admin source-allowlist. Admin server blocks accept clients ONLY
+    # from the Wireguard subnet (admins over the VPN) and the private subnet
+    # (the compute node's phase-3 SAML calls, plus any in-network admin). This
+    # is the DURABLE channel-separation layer: it holds even after env
+    # automation opens public 80/443 for citizen services, because the cloud
+    # NAT/EIP preserves the client's real source IP, so a citizen hitting the
+    # public IP with a forged Host header for rancher.<domain> is rejected here.
+    # (Firewall layers — cloud SG + host ufw — are the other two layers.)
+    local admin_allow="    allow ${wg_subnet};"
+    if [[ -n "$private_subnet" ]]; then
+        admin_allow="${admin_allow}"$'\n'"    allow ${private_subnet};"
+    fi
+    admin_allow="${admin_allow}"$'\n'"    deny all;"
+
+    # Bound to rp_private_ip. Channel separation is enforced by THREE layers:
+    # (1) cloud SG / perimeter firewall — only SSH + WG/UDP open to the internet
+    #     during infra setup; (2) host ufw — admin 80/443 only from private +
+    #     WG subnets; (3) the nginx allow/deny above. Public env-automation
+    #     server blocks (added later) bind the same IP but serve citizen
+    #     hostnames only — admin blocks keep their allowlist.
     local conf=/etc/nginx/sites-available/openg2p-admin.conf
     cat > "$conf" <<EOF
 # OpenG2P admin reverse proxy — managed by openg2p-prod orchestrator.
-# Bound to ${rp_private}:443; reachable only via Wireguard or from within
-# the internal/management network (SG / firewall blocks public 443).
+# Bound to ${rp_private}:443; reachable only via Wireguard or from within the
+# private network. Admin server blocks additionally allow only the WG +
+# private subnets at the nginx layer (see allow/deny in each block).
 
 upstream istio_ingress {
     server ${compute_private}:30080;
@@ -563,13 +584,13 @@ EOF
         # ── Wildcard mode: single server block for <domain> + *.<domain> ───
         local domain
         domain=$(cfg "public_domain")
-        _rp_emit_nginx_block "$conf" "$rp_private" "${domain} *.${domain}" "${CERTS_DIR}/${domain}"
+        _rp_emit_nginx_block "$conf" "$rp_private" "${domain} *.${domain}" "${CERTS_DIR}/${domain}" "$admin_allow"
     else
         # ── Per-FQDN mode: one block per admin hostname ────────────────────
         local service hostname
         for service in rancher keycloak; do
             hostname=$(rp_hostname "$service")
-            _rp_emit_nginx_block "$conf" "$rp_private" "$hostname" "${CERTS_DIR}/${hostname}"
+            _rp_emit_nginx_block "$conf" "$rp_private" "$hostname" "${CERTS_DIR}/${hostname}" "$admin_allow"
         done
     fi
 

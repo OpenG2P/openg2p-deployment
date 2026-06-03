@@ -573,15 +573,20 @@ aws_add_ingress() {
 #   • Wireguard endpoint (UDP wg_port from world)
 #   • Public Nginx server blocks (env-automation will use 443 from world)
 #   • Admin SSH access from admin_cidr
-# Single SG for the RP node (single-NIC layout):
+# Single SG for the RP node (single-NIC layout). INFRA phase only opens:
 #   • SSH + ping from admin_cidr
 #   • Wireguard endpoint (UDP wg_port from world)
-#   • Public HTTP/HTTPS for future env-automation citizen-facing services
-#   • All intra-VPC traffic (covers admin 443 from compute/storage, NFS,
-#     intra-cluster, WG-decapsulated reaching out, etc.)
-# Admin 443 is NOT opened to the internet — admin services are reachable
-# only via Wireguard or from inside the VPC. Public 443 is reserved for
-# env-automation public server blocks (added later).
+#   • All intra-VPC traffic (admin 80/443 from compute/storage, NFS,
+#     intra-cluster, WG-decapsulated egress, etc.)
+#
+# Public 80/443 are deliberately NOT opened here. During infra setup the only
+# services are admin tools (Rancher, Keycloak), which must stay private —
+# reachable only via Wireguard or from inside the VPC. Admin protection is
+# enforced at three layers: this SG (no public 80/443), host ufw (admin 80/443
+# only from private + WG subnets), and an nginx source-allowlist on the admin
+# server blocks. The ENVIRONMENT automation opens public 80/443 later, when
+# citizen-facing services actually exist; admin keeps its nginx allowlist so it
+# stays unreachable from the internet even then.
 aws_apply_sg_rules_rp() {
     local sg_id="$1"
     local admin_cidr="$2"
@@ -594,11 +599,7 @@ aws_apply_sg_rules_rp() {
         --ip-permissions "IpProtocol=icmp,FromPort=-1,ToPort=-1,IpRanges=[{CidrIp=${admin_cidr},Description=admin ping}]"
     aws_add_ingress "$sg_id" "UDP/${wg_port} (Wireguard) from 0.0.0.0/0" \
         --ip-permissions "IpProtocol=udp,FromPort=${wg_port},ToPort=${wg_port},IpRanges=[{CidrIp=0.0.0.0/0,Description=Wireguard}]"
-    aws_add_ingress "$sg_id" "TCP/80  from 0.0.0.0/0 (public HTTP redirect for env automation)" \
-        --ip-permissions "IpProtocol=tcp,FromPort=80,ToPort=80,IpRanges=[{CidrIp=0.0.0.0/0,Description=public HTTP redirect}]"
-    aws_add_ingress "$sg_id" "TCP/443 from 0.0.0.0/0 (public services — env automation; admin 443 stays VPC-only via nginx bind)" \
-        --ip-permissions "IpProtocol=tcp,FromPort=443,ToPort=443,IpRanges=[{CidrIp=0.0.0.0/0,Description=public HTTPS}]"
-    aws_add_ingress "$sg_id" "ALL     from ${vpc_cidr} (intra-VPC; covers admin 443 from compute/storage and WG-decapsulated egress)" \
+    aws_add_ingress "$sg_id" "ALL     from ${vpc_cidr} (intra-VPC; covers admin 80/443 from compute/storage and WG-decapsulated egress)" \
         --ip-permissions "IpProtocol=-1,IpRanges=[{CidrIp=${vpc_cidr},Description=intra-VPC}]"
 }
 
