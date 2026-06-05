@@ -209,6 +209,38 @@ keycloak_replicas: "1"
 keycloak_admin_email: ""    # [USER] e.g. "admin@yourcorp.gov.eth"
 
 # ---------------------------------------------------------------------------
+# Observability — OpenTelemetry + Grafana Loki (replaces Fluentd/OpenSearch)
+# ---------------------------------------------------------------------------
+# Cluster logs are collected by an OpenTelemetry agent (DaemonSet), shipped to
+# a Grafana Loki store, and viewed in the existing Grafana. PII is redacted in
+# the OTel pipeline before logs are stored. Loki uses its own dedicated MinIO
+# (internal-only, ClusterIP) so cluster logging is independent of the app stack.
+loki_retention_hours:     "168"   # log retention; 168h = 7 days
+loki_minio_root_user:     "loki"  # internal-only object store for Loki
+loki_minio_root_password: ""      # [USER] set a strong value before install
+loki_minio_size:          "50Gi"  # PVC size for Loki's MinIO
+
+# Alerting — critical log/infra alerts route through the existing Alertmanager.
+# Leave a channel blank to keep it inactive; fill in to enable it later.
+# (WhatsApp is intentionally not supported.)
+alert_slack_webhook_url:  ""        # [USER] Slack incoming-webhook URL
+alert_slack_channel:      "#alerts" # Slack channel for alerts
+alert_smtp_smarthost:     ""        # [USER] e.g. "smtp.example.org:587"
+alert_smtp_from:          ""        # [USER] e.g. "alerts@openg2p.org"
+alert_smtp_username:      ""        # [USER] SMTP auth user (blank = no auth)
+alert_smtp_password:      ""        # [USER] SMTP auth password
+alert_smtp_to:            ""        # [USER] recipient, e.g. "ops@openg2p.org"
+alert_telegram_bot_token: ""        # [USER] Telegram bot token
+alert_telegram_chat_id:   ""        # [USER] Telegram chat/group id (numeric)
+
+# AI layer (optional, OFF by default). When enabled, AI features read logs/
+# alerts and use a cloud model via OpenRouter. Disabling it leaves the whole
+# observability + alerting stack fully working. PII is redacted before storage.
+ai_enabled:           "false"       # set "true" to enable the AI layer
+ai_openrouter_api_key: ""           # [USER] OpenRouter API key (required if enabled)
+ai_model:             "openrouter/qwen/qwen-2.5-72b-instruct"  # LiteLLM-style model id
+
+# ---------------------------------------------------------------------------
 # Storage node — host PostgreSQL (installed; idle until env automation)
 # ---------------------------------------------------------------------------
 postgres_version: "16"

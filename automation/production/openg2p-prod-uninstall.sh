@@ -8,7 +8,8 @@
 #
 # What it removes (per node):
 #   • Compute  — RKE2 + all in-cluster workloads (Istio, Rancher, Keycloak,
-#                monitoring, logging) via rke2-uninstall.sh; kubectl/helm/
+#                monitoring, logging: OpenTelemetry + Loki) via
+#                rke2-uninstall.sh; kubectl/helm/
 #                istioctl/helmfile binaries; NFS client mount; /etc/hosts
 #                managed block; sysctl tweaks; ufw rules; state markers.
 #   • RP       — Wireguard server + peer configs; Nginx admin server blocks;

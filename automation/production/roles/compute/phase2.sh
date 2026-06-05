@@ -19,6 +19,26 @@ compute_render_helmfile_values() {
     local rancher_host=$(get_rancher_hostname)
     local keycloak_host=$(get_keycloak_hostname)
 
+    # Loki's dedicated MinIO root password: prefer the config value, else reuse
+    # a previously persisted one, else generate + persist (stable across re-runs
+    # so Loki and its MinIO keep agreeing on subsequent syncs).
+    local secrets_dir="/etc/openg2p/secrets"
+    local loki_minio_pw_file="${secrets_dir}/loki-minio.env"
+    local loki_minio_pw
+    loki_minio_pw=$(cfg 'loki_minio_root_password')
+    if [[ -z "$loki_minio_pw" ]]; then
+        if [[ -f "$loki_minio_pw_file" ]]; then
+            loki_minio_pw=$(grep '^LOKI_MINIO_ROOT_PASSWORD=' "$loki_minio_pw_file" | cut -d= -f2-)
+            log_info "Using existing Loki MinIO password from ${loki_minio_pw_file}"
+        else
+            loki_minio_pw=$(openssl rand -base64 32 | tr -d '/+=' | cut -c1-32)
+            mkdir -p "$secrets_dir" && chmod 0700 "$secrets_dir"
+            echo "LOKI_MINIO_ROOT_PASSWORD=${loki_minio_pw}" > "$loki_minio_pw_file"
+            chmod 0600 "$loki_minio_pw_file"
+            log_info "Generated Loki MinIO password (saved at ${loki_minio_pw_file})"
+        fi
+    fi
+
     cat > "$values_file" <<EOF
 # Auto-generated from prod-config — do not edit manually
 # Generated at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
@@ -33,6 +53,37 @@ rancher:
 
 keycloak:
   replicas: $(cfg 'keycloak_replicas' '1')
+
+# Observability — Grafana Loki log store + its dedicated MinIO object store.
+loki:
+  retentionHours: $(cfg 'loki_retention_hours' '168')
+  minio:
+    rootUser:     "$(cfg 'loki_minio_root_user' 'loki')"
+    rootPassword: "${loki_minio_pw}"
+    size:         "$(cfg 'loki_minio_size' '50Gi')"
+
+# Alerting notification channels. Empty value => that channel stays inactive
+# (the Alertmanager receiver renders without it). WhatsApp is not supported.
+alerting:
+  slack:
+    webhookUrl: "$(cfg 'alert_slack_webhook_url' '')"
+    channel:    "$(cfg 'alert_slack_channel' '#alerts')"
+  smtp:
+    smarthost:  "$(cfg 'alert_smtp_smarthost' '')"
+    from:       "$(cfg 'alert_smtp_from' '')"
+    username:   "$(cfg 'alert_smtp_username' '')"
+    password:   "$(cfg 'alert_smtp_password' '')"
+    to:         "$(cfg 'alert_smtp_to' '')"
+  telegram:
+    botToken:   "$(cfg 'alert_telegram_bot_token' '')"
+    chatId:     "$(cfg 'alert_telegram_chat_id' '')"
+
+# Optional AI layer. Disabled by default — when false, no AI components install
+# and the observability stack is unaffected. Model access via OpenRouter (cloud).
+ai:
+  enabled: $(cfg 'ai_enabled' 'false')
+  openrouterApiKey: "$(cfg 'ai_openrouter_api_key' '')"
+  model: "$(cfg 'ai_model' 'openrouter/qwen/qwen-2.5-72b-instruct')"
 EOF
 
     log_success "Helmfile values rendered at ${values_file}"

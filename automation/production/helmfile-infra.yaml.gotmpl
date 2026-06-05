@@ -1,7 +1,8 @@
 # =============================================================================
 # OpenG2P Infra Helmfile — Platform-level Helm releases
 # =============================================================================
-# Installs: Istio, Rancher, Keycloak, Monitoring, Logging
+# Installs: Istio, Rancher, Keycloak, Monitoring (Prometheus/Grafana),
+#           Logging (OpenTelemetry + Grafana Loki).
 # Called by openg2p-infra.sh after host-level setup completes.
 # =============================================================================
 
@@ -17,6 +18,11 @@ repositories:
     url: https://releases.rancher.com/server-charts/stable
   - name: rancher-charts
     url: https://charts.rancher.io
+  # Observability stack (replaces Fluentd/OpenSearch): Grafana Loki + OpenTelemetry
+  - name: grafana
+    url: https://grafana.github.io/helm-charts
+  - name: open-telemetry
+    url: https://open-telemetry.github.io/opentelemetry-helm-charts
 
 environments:
   default:
@@ -211,31 +217,482 @@ releases:
           cattle:
             psp:
               enabled: false
+        # Register Loki as a Grafana datasource so the existing Grafana becomes
+        # the single pane of glass for both metrics (Prometheus) and logs (Loki).
+        # The URL resolves at query time, so Loki may be installed afterwards.
+        grafana:
+          additionalDataSources:
+            - name: Loki
+              type: loki
+              access: proxy
+              url: http://loki-gateway.observability.svc
+              isDefault: false
+              jsonData:
+                maxLines: 1000
+        # Alertmanager routing + notification channels. Both Loki (log) alerts
+        # and Prometheus (infra) alerts funnel through this one Alertmanager.
+        # Channels are gated on config: each block renders ONLY when its
+        # credential is set in prod-config, so by default the plumbing exists
+        # but stays inert ("wire now, fill credentials later"). WhatsApp is
+        # intentionally not included.
+        alertmanager:
+          config:
+            global:
+              resolve_timeout: 5m
+              {{- if .Values.alerting.smtp.smarthost }}
+              smtp_smarthost: {{ .Values.alerting.smtp.smarthost | quote }}
+              smtp_from: {{ .Values.alerting.smtp.from | quote }}
+              smtp_require_tls: true
+                {{- if .Values.alerting.smtp.username }}
+              smtp_auth_username: {{ .Values.alerting.smtp.username | quote }}
+              smtp_auth_password: {{ .Values.alerting.smtp.password | quote }}
+                {{- end }}
+              {{- end }}
+            route:
+              group_by: ['alertname', 'namespace']
+              group_wait: 30s
+              group_interval: 5m
+              repeat_interval: 4h
+              receiver: 'default'
+              routes:
+                - matchers:
+                    - severity = critical
+                  receiver: 'critical'
+            receivers:
+              - name: 'default'
+              - name: 'critical'
+                {{- if .Values.alerting.slack.webhookUrl }}
+                slack_configs:
+                  - api_url: {{ .Values.alerting.slack.webhookUrl | quote }}
+                    channel: {{ .Values.alerting.slack.channel | default "#alerts" | quote }}
+                    send_resolved: true
+                {{- end }}
+                {{- if .Values.alerting.smtp.to }}
+                email_configs:
+                  - to: {{ .Values.alerting.smtp.to | quote }}
+                    send_resolved: true
+                {{- end }}
+                {{- if .Values.alerting.telegram.botToken }}
+                telegram_configs:
+                  - bot_token: {{ .Values.alerting.telegram.botToken | quote }}
+                    chat_id: {{ .Values.alerting.telegram.chatId }}
+                    parse_mode: HTML
+                    send_resolved: true
+                {{- end }}
 
   # Grafana and Prometheus are reachable through the Rancher UI (Cluster
   # Explorer → Monitoring), so they are NOT exposed on their own hostnames.
 
+  # ═════════════════════════════════════════════════════════════════════════
+  # Observability — logging via OpenTelemetry + Grafana Loki
+  # ═════════════════════════════════════════════════════════════════════════
+  # Replaces the old Fluentd (rancher-logging) + OpenSearch stack. Pipeline:
+  #
+  #   all pods → OTel agent (DaemonSet, tails /var/log/pods, redacts PII)
+  #            → OTel gateway (Deployment, batch/buffer)
+  #            → Loki (Simple Scalable, backed by its own dedicated MinIO)
+  #            → Grafana (existing, via the datasource added above)
+  #
+  # Loki's ruler evaluates LogQL alert rules and forwards to the Alertmanager
+  # that ships with rancher-monitoring. Everything lives in the `observability`
+  # namespace and is self-contained at the infra layer (no dependency on the
+  # app-layer commons MinIO).
+  #
+  # NOTE: chart/app versions below are pinned for reproducibility — verify
+  # against the upstream repos before a fresh rollout and bump deliberately.
   # ─────────────────────────────────────────────────────────────────────────
-  # Logging (FluentD)
-  # ─────────────────────────────────────────────────────────────────────────
-  - name: rancher-logging-crd
-    namespace: cattle-logging-system
-    chart: rancher-charts/rancher-logging-crd
-    version: "102.0.0+up3.17.10"
-    needs:
-      - cattle-system/rancher
-    wait: true
 
-  - name: rancher-logging
-    namespace: cattle-logging-system
-    chart: rancher-charts/rancher-logging
-    version: "102.0.0+up3.17.10"
+  # --- Grafana Loki (Simple Scalable) + dedicated MinIO object store ---------
+  # --- LogQL alert rules for the Loki ruler (mounted into the backend) -------
+  # Starter set: high error rate, fatals/panics/OOM, auth-failure bursts
+  # (security), and a dead-man's-switch that fires if the log pipeline goes
+  # silent. Tune thresholds per environment. Severity labels drive Alertmanager
+  # routing (see the rancher-monitoring receivers).
+  - name: loki-rules
+    namespace: observability
+    chart: ./charts/raw
     needs:
-      - cattle-logging-system/rancher-logging-crd
+      - cattle-monitoring-system/rancher-monitoring
     values:
-      - global:
-          cattle:
-            psp:
-              enabled: false
-        psp:
+      - resources:
+          - apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: loki-alerting-rules
+              namespace: observability
+            data:
+              openg2p-cluster-alerts.yaml: |
+                groups:
+                  - name: openg2p-cluster
+                    rules:
+                      - alert: HighApplicationErrorRate
+                        expr: |
+                          sum by (k8s_namespace_name, service_name) (rate({k8s_namespace_name=~".+"} |~ `(?i)\b(error|exception|fatal)\b` [5m])) > 5
+                        for: 10m
+                        labels:
+                          severity: warning
+                        annotations:
+                          summary: "High error log rate in {{`{{ $labels.k8s_namespace_name }}`}}/{{`{{ $labels.service_name }}`}}"
+                          description: "More than 5 error lines/s for 10m."
+                      - alert: ApplicationFatalOrCrash
+                        expr: |
+                          sum by (k8s_namespace_name, k8s_pod_name) (count_over_time({k8s_namespace_name=~".+"} |~ `(?i)(panic:|fatal error|OutOfMemoryError|stack trace)` [5m])) > 0
+                        for: 2m
+                        labels:
+                          severity: critical
+                        annotations:
+                          summary: "Fatal/panic/OOM in {{`{{ $labels.k8s_namespace_name }}`}}/{{`{{ $labels.k8s_pod_name }}`}}"
+                          description: "A fatal error, panic, or OutOfMemory was logged."
+                      - alert: AuthFailureBurst
+                        expr: |
+                          sum by (k8s_namespace_name) (count_over_time({k8s_namespace_name=~".+"} |~ `(?i)(authentication failed|invalid credentials|unauthorized| 401 | 403 )` [5m])) > 20
+                        for: 5m
+                        labels:
+                          severity: critical
+                          category: security
+                        annotations:
+                          summary: "Auth-failure burst in {{`{{ $labels.k8s_namespace_name }}`}}"
+                          description: "More than 20 auth-failure lines in 5m — possible brute force/credential stuffing."
+                  - name: openg2p-pipeline
+                    rules:
+                      - alert: LoggingPipelineSilent
+                        expr: |
+                          sum(count_over_time({k8s_namespace_name=~".+"}[10m])) == 0
+                        for: 15m
+                        labels:
+                          severity: critical
+                        annotations:
+                          summary: "Log pipeline is silent (dead-man's-switch)"
+                          description: "Loki received zero log lines cluster-wide for 15m — OTel/Loki pipeline may be broken."
+
+  - name: loki
+    namespace: observability
+    chart: grafana/loki
+    version: "6.24.0"
+    needs:
+      - observability/loki-rules
+    # wait:false so the sync doesn't block on Loki readiness — Loki needs its
+    # MinIO buckets, which the loki-minio-buckets release (next) creates right
+    # after; Loki crashloops briefly then recovers once the buckets exist.
+    wait: false
+    values:
+      # SingleBinary (monolithic) mode: the OpenG2P 3-node architecture runs a
+      # single compute node, so the SSD read/write/backend split just leaves
+      # replicas Pending (anti-affinity). One Loki pod fits the node; switch to
+      # SimpleScalable only if you add compute nodes.
+      - deploymentMode: SingleBinary
+        # RKE2 ships CoreDNS as service `rke2-coredns-rke2-coredns` (not
+        # `kube-dns`), which the Loki gateway's nginx resolver needs.
+        global:
+          dnsService: rke2-coredns-rke2-coredns
+          dnsNamespace: kube-system
+          clusterDomain: cluster.local
+        loki:
+          auth_enabled: false
+          # Single replica → replication factor must be 1.
+          commonConfig:
+            replication_factor: 1
+          schemaConfig:
+            configs:
+              - from: "2024-04-01"
+                store: tsdb
+                object_store: s3
+                schema: v13
+                index:
+                  prefix: loki_index_
+                  period: 24h
+          ingester:
+            chunk_encoding: snappy
+          # Native log-pattern detection — substrate for the future AI phase.
+          pattern_ingester:
+            enabled: true
+          limits_config:
+            retention_period: {{ .Values.loki.retentionHours | default 168 }}h
+            ingestion_rate_mb: 10
+            ingestion_burst_size_mb: 20
+            max_query_series: 5000
+            allow_structured_metadata: true
+          compactor:
+            retention_enabled: true
+            delete_request_store: s3
+          storage:
+            type: s3
+            # Bucket names are fixed by the chart to chunks/ruler/admin when the
+            # bundled MinIO is used; MinIO + the bucket Job must match these.
+            s3:
+              endpoint: http://loki-minio.observability.svc:9000
+              region: us-east-1
+              accessKeyId: {{ .Values.loki.minio.rootUser | quote }}
+              secretAccessKey: {{ .Values.loki.minio.rootPassword | quote }}
+              s3ForcePathStyle: true
+              insecure: true
+          # Ruler evaluates the LogQL alert rules (mounted from the
+          # `loki-alerting-rules` ConfigMap below, tenant dir "fake" because
+          # auth_enabled=false) and forwards firing alerts to rancher-monitoring's
+          # Alertmanager.
+          rulerConfig:
+            alertmanager_url: http://rancher-monitoring-alertmanager.cattle-monitoring-system.svc:9093
+            enable_alertmanager_v2: true
+            external_url: http://loki-gateway.observability.svc
+            storage:
+              type: local
+              local:
+                directory: /rules
+            rule_path: /tmp/loki-ruler-wal
+        # The single Loki pod runs all targets incl. the ruler — mount the rules
+        # ConfigMap here. Persistence uses the cluster default StorageClass (NFS
+        # CSI), so storageClass is left unset.
+        singleBinary:
+          replicas: 1
+          persistence:
+            enabled: true
+            size: 10Gi
+          extraVolumes:
+            - name: loki-alerting-rules
+              configMap:
+                name: loki-alerting-rules
+          extraVolumeMounts:
+            - name: loki-alerting-rules
+              mountPath: /rules/fake
+        # SingleBinary mode — the SSD targets must be scaled to zero.
+        backend:
+          replicas: 0
+        read:
+          replicas: 0
+        write:
+          replicas: 0
+        gateway:
+          enabled: true
+          replicas: 1
+        # Dedicated, single-instance object store for Loki at the infra layer.
+        # Single-node MinIO is fine to start; swap for an HA object store later.
+        minio:
+          enabled: true
+          mode: standalone
+          replicas: 1
+          rootUser: {{ .Values.loki.minio.rootUser | quote }}
+          rootPassword: {{ .Values.loki.minio.rootPassword | quote }}
+          persistence:
+            enabled: true
+            size: {{ .Values.loki.minio.size | default "50Gi" | quote }}
+          buckets:
+            - name: chunks
+              policy: none
+              purge: false
+            - name: ruler
+              policy: none
+              purge: false
+            - name: admin
+              policy: none
+              purge: false
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+        # Trim the footprint — these are optional extras for large clusters.
+        chunksCache:
           enabled: false
+        resultsCache:
+          enabled: false
+        lokiCanary:
+          enabled: false
+        test:
+          enabled: false
+        monitoring:
+          selfMonitoring:
+            enabled: false
+            grafanaAgent:
+              installOperator: false
+
+  # --- Create Loki's MinIO buckets ------------------------------------------
+  # The Loki chart's bundled MinIO does NOT auto-create buckets, so Loki's
+  # compactor fails with NoSuchBucket. This Job (a Helm hook so it re-runs
+  # idempotently on every sync) creates them via the MinIO API. Loki is
+  # wait:false so it crashloops briefly until this runs, then recovers.
+  - name: loki-minio-buckets
+    namespace: observability
+    chart: ./charts/raw
+    needs:
+      - observability/loki
+    values:
+      - resources:
+          - apiVersion: batch/v1
+            kind: Job
+            metadata:
+              name: loki-minio-mkbuckets
+              namespace: observability
+              annotations:
+                "helm.sh/hook": post-install,post-upgrade
+                "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+            spec:
+              backoffLimit: 10
+              template:
+                spec:
+                  restartPolicy: OnFailure
+                  containers:
+                    - name: mc
+                      image: minio/mc
+                      command: ["sh", "-c"]
+                      args:
+                        - >
+                          until mc alias set m http://loki-minio.observability.svc:9000
+                          {{ .Values.loki.minio.rootUser | quote }}
+                          {{ .Values.loki.minio.rootPassword | quote }}; do
+                          echo "waiting for minio..."; sleep 5; done &&
+                          mc mb -p m/chunks m/ruler m/admin &&
+                          mc ls m
+
+  # --- OpenTelemetry Collector — gateway (Deployment) ------------------------
+  # Receives OTLP from the agents, batches, and pushes to Loki's OTLP endpoint.
+  - name: otel-gateway
+    namespace: observability
+    chart: open-telemetry/opentelemetry-collector
+    version: "0.111.0"
+    needs:
+      - observability/loki
+    values:
+      - mode: deployment
+        replicaCount: 2
+        image:
+          repository: otel/opentelemetry-collector-contrib
+        # Disable the chart's default metrics/traces pipelines — logs only.
+        config:
+          receivers:
+            otlp:
+              protocols:
+                grpc:
+                  endpoint: 0.0.0.0:4317
+                http:
+                  endpoint: 0.0.0.0:4318
+          processors:
+            memory_limiter:
+              check_interval: 5s
+              limit_percentage: 80
+              spike_limit_percentage: 25
+            batch:
+              send_batch_size: 1024
+              timeout: 5s
+          exporters:
+            otlphttp/loki:
+              endpoint: http://loki-gateway.observability.svc/otlp
+              tls:
+                insecure: true
+          service:
+            pipelines:
+              logs:
+                receivers: [otlp]
+                processors: [memory_limiter, batch]
+                exporters: [otlphttp/loki]
+              metrics: null
+              traces: null
+        ports:
+          jaeger-compact:
+            enabled: false
+          jaeger-thrift:
+            enabled: false
+          jaeger-grpc:
+            enabled: false
+          zipkin:
+            enabled: false
+
+  # --- OpenTelemetry Collector — agent (DaemonSet) ---------------------------
+  # Tails container logs on every node, enriches with k8s metadata, REDACTS PII
+  # before anything leaves the node, then ships OTLP to the gateway.
+  - name: otel-agent
+    namespace: observability
+    chart: open-telemetry/opentelemetry-collector
+    version: "0.111.0"
+    needs:
+      - observability/otel-gateway
+    values:
+      - mode: daemonset
+        image:
+          repository: otel/opentelemetry-collector-contrib
+        # Presets wire the filelog receiver + k8sattributes processor for us.
+        presets:
+          logsCollection:
+            enabled: true
+            includeCollectorLogs: false
+          kubernetesAttributes:
+            enabled: true
+        config:
+          processors:
+            # PII redaction — always-on, runs before logs leave the node, so
+            # neither Loki nor any (optional) AI layer ever sees raw PII.
+            transform/redact_pii:
+              error_mode: ignore
+              log_statements:
+                - context: log
+                  statements:
+                    # Email addresses
+                    - replace_pattern(body, "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}", "[REDACTED_EMAIL]")
+                    # 12-digit national IDs (e.g. Aadhaar-style)
+                    - replace_pattern(body, "\\b\\d{12}\\b", "[REDACTED_ID]")
+                    # Bearer tokens / passwords / secrets in key=value or key: value form
+                    - replace_pattern(body, "(?i)(password|passwd|token|secret|authorization|bearer|api[_-]?key)\\s*[=:]\\s*\\S+", "[REDACTED_SECRET]")
+            batch:
+              send_batch_size: 1024
+              timeout: 5s
+          exporters:
+            otlp:
+              endpoint: otel-gateway-opentelemetry-collector.observability.svc:4317
+              tls:
+                insecure: true
+          service:
+            pipelines:
+              logs:
+                receivers: [filelog]
+                processors: [k8sattributes, transform/redact_pii, batch]
+                exporters: [otlp]
+              # Logs-only — disable the chart's default metrics/traces pipelines
+              # (otherwise the agent scrapes its own metrics to a debug exporter
+              # and listens for jaeger/zipkin traces).
+              metrics: null
+              traces: null
+        # Don't expose jaeger/zipkin receiver ports we don't use.
+        ports:
+          jaeger-compact:
+            enabled: false
+          jaeger-thrift:
+            enabled: false
+          jaeger-grpc:
+            enabled: false
+          zipkin:
+            enabled: false
+
+  # ═════════════════════════════════════════════════════════════════════════
+  # Optional AI layer — DISABLED by default (ai.enabled, default false)
+  # ═════════════════════════════════════════════════════════════════════════
+  # The AI layer is fully decoupled: when ai.enabled is false NOTHING here is
+  # installed and the entire logging + alerting stack above is unaffected. When
+  # enabled, AI components only SUBSCRIBE to outputs (read Loki, receive a copy
+  # of alerts) — they are never on the critical path.
+  #
+  # Model access is via OpenRouter (cloud), default a Qwen model, behind one
+  # OpenAI-compatible endpoint so the backend is a config swap (and PII is
+  # already redacted upstream in the OTel agent before logs are ever stored).
+  #
+  # THIS RELEASE = the hook only: a Secret holding the OpenRouter API key +
+  # model, ready for the AI workload to consume. The actual alert-enrichment
+  # workload (Robusta / HolmesGPT) is intentionally DEFERRED — to add it later,
+  # introduce a `robusta` release here (also `installed: {{`{{ .Values.ai.enabled }}`}}`)
+  # that reads the `ai-openrouter` secret below, plus an additive Alertmanager
+  # webhook receiver gated on ai.enabled. See memory: observability-ai-future.
+  # ─────────────────────────────────────────────────────────────────────────
+  - name: ai-openrouter-secret
+    namespace: observability
+    chart: ./charts/raw
+    installed: {{ .Values.ai.enabled }}
+    needs:
+      - observability/loki
+    values:
+      - resources:
+          - apiVersion: v1
+            kind: Secret
+            metadata:
+              name: ai-openrouter
+              namespace: observability
+            type: Opaque
+            stringData:
+              api-key: {{ .Values.ai.openrouterApiKey | quote }}
+              model: {{ .Values.ai.model | quote }}
