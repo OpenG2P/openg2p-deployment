@@ -229,6 +229,15 @@ releases:
               isDefault: false
               jsonData:
                 maxLines: 1000
+          # Grafana is reached through the Rancher proxy as an anonymous user.
+          # Default anonymous role is Viewer, which CANNOT use Explore / pick a
+          # datasource — so logs are invisible. Rancher already gates access, so
+          # promote the anonymous role to Editor to enable Explore + Loki.
+          grafana.ini:
+            auth.anonymous:
+              org_role: Editor
+            users:
+              auto_assign_org_role: Editor
         # Alertmanager routing + notification channels. Both Loki (log) alerts
         # and Prometheus (infra) alerts funnel through this one Alertmanager.
         # Channels are gated on config: each block renders ONLY when its
