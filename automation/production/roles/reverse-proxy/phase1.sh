@@ -175,7 +175,7 @@ rp_setup_wireguard() {
     if [[ -z "$endpoint" ]]; then endpoint="$rp_pub"; fi
     local wg_subnet=$(cfg "wg_subnet" "10.15.0.0/16")
     local wg_port=$(cfg "wg_port" "51820")
-    local wg_peers=$(cfg "wg_peers" "8")
+    local wg_peers=$(cfg "wg_peers" "100")
     local private_subnet=$(cfg "private_subnet")
 
     # Enable IP forwarding (peers need to route into the internal subnet)

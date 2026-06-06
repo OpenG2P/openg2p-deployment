@@ -165,7 +165,12 @@ wg_endpoint: ""              # [AWS] — auto-filled from provision-output.yaml;
                              #         leave blank (defaults to rp_public_ip)
 wg_subnet:   "10.15.0.0/16"  # [USER] — must not overlap private_subnet
 wg_port:     "51820"         # [USER]
-wg_peers:    "8"             # [USER] — how many peer configs to pre-generate
+wg_peers:    "100"           # [USER] — how many peer configs to pre-generate
+                             # Each peer file is ~300 bytes; generation is
+                             # negligible. Default leaves room for the full
+                             # admin team + env-automation operators + rotation
+                             # without needing to rerun the WG step. Lower it
+                             # only if you specifically want a smaller pool.
 
 # [USER, optional] DNS resolver pushed to every WG peer. If set, the admin
 # laptop sends DNS queries through the tunnel while it's up — useful when the
