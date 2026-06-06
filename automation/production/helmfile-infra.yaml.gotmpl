@@ -234,6 +234,11 @@ releases:
           # datasource — so logs are invisible. Rancher already gates access, so
           # promote the anonymous role to Editor to enable Explore + Loki.
           grafana.ini:
+            auth:
+              # Hide the "Sign in" button — access is via the Rancher proxy
+              # (anonymous Editor above), and the login form can't complete its
+              # redirect through that proxy anyway.
+              disable_login_form: true
             auth.anonymous:
               org_role: Editor
             users:
@@ -291,6 +296,16 @@ releases:
 
   # Grafana and Prometheus are reachable through the Rancher UI (Cluster
   # Explorer → Monitoring), so they are NOT exposed on their own hostnames.
+
+  # --- Grafana dashboards (OpenG2P — Logs & Health, etc.) --------------------
+  # Provisions dashboards as ConfigMaps in cattle-dashboards (where the
+  # rancher-monitoring Grafana sidecar watches), so they auto-load with no
+  # Grafana restart. Add more dashboards under charts/grafana-dashboards/dashboards/.
+  - name: grafana-dashboards
+    namespace: cattle-dashboards
+    chart: ./charts/grafana-dashboards
+    needs:
+      - cattle-monitoring-system/rancher-monitoring
 
   # ═════════════════════════════════════════════════════════════════════════
   # Observability — logging via OpenTelemetry + Grafana Loki

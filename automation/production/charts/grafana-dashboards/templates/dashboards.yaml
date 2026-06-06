@@ -1,0 +1,21 @@
+{{- /*
+  One ConfigMap per dashboards/*.json file. The grafana_dashboard=1 label makes
+  the rancher-monitoring Grafana sidecar import it automatically (no restart).
+  The sidecar watches the `cattle-dashboards` namespace, so install this release
+  into that namespace.
+*/ -}}
+{{- range $path, $_ := .Files.Glob "dashboards/*.json" }}
+{{- $base := base $path }}
+{{- $name := $base | trimSuffix ".json" }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ printf "%s-dashboard" $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    grafana_dashboard: "1"
+data:
+  {{ $base }}: |-
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}
