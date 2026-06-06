@@ -540,10 +540,9 @@ admin_cidr:      "${admin_cidr}"
 wg_endpoint:     "${rp_pub}"
 wg_port:         "$(cfg wg_port 51820)"
 wg_peer_dns:     "${vpc_dns}"   # VPC DNS — pushed to WG peers so admins resolve the Route53 private zone over the tunnel
-
-# ─── Identity ────────────────────────────────────────────────────────────
-cluster_name:    "$(cfg project openg2p-prod)"
 EOF
+    # NOTE: cluster_name intentionally NOT written here — it's user identity,
+    # honoured as-typed in prod-config.yaml. See the comment block above.
 
     # ── Optional backup node section ─────────────────────────────────────
     if [[ -n "$backup_priv" ]]; then

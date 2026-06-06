@@ -42,7 +42,10 @@
 # ---------------------------------------------------------------------------
 # Cluster identity                                                       [USER]
 # ---------------------------------------------------------------------------
-# Display name for the Rancher cluster (also used for NFS export path prefix).
+# Display name for the Rancher cluster (also used for NFS export path prefix
+# and state-marker tags). Honoured exactly as typed — provision-output.yaml
+# does not override this. If you change it after install, also rerun the
+# orchestrator with --reset-laptop so existing state markers don't shadow it.
 cluster_name: "openg2p"
 
 # ---------------------------------------------------------------------------
