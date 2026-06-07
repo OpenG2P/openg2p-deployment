@@ -262,3 +262,86 @@ postgres_superuser_password: ""   # auto-generated if blank, saved at
 # ---------------------------------------------------------------------------
 nfs_export_path: "/srv/nfs"
 nfs_mount_path:  "/mnt/nfs"
+
+# =============================================================================
+# ENVIRONMENT — namespace, Rancher project, Istio gateway, commons install
+# =============================================================================
+# After infrastructure is up, the orchestrator can install an OpenG2P
+# environment on the cluster. Two phases:
+#
+#   phase 1 (scaffolding): namespace + Rancher Project + Istio Gateway +
+#                          OpenG2P Helm repo registered in Rancher (CatalogV2)
+#                          + external-PG superuser secret pulled from the
+#                          storage node and created in the namespace.
+#
+#   phase 2 (commons):     helm install openg2p-commons-base + commons-services
+#                          wired to the storage node's host PostgreSQL.
+#
+# The env stage runs ON YOUR LAPTOP (not via SSH to a node). It auto-fetches
+# the RKE2 kubeconfig from the compute node — your laptop must be on the
+# Wireguard VPN at that point so the compute private IP is reachable.
+#
+# Re-run idempotently: ./openg2p-prod.sh --role environment --config <this-file>
+# Run only phase 1:    ./openg2p-prod.sh --role environment --phase 1 --config <this-file>
+# Force re-run:        add --force
+# Skip entirely:       set install_environment: false below.
+# ---------------------------------------------------------------------------
+install_environment: true           # [USER] master switch. Set to false to
+                                    # stop after infra; run --role environment
+                                    # later (manually) when you're ready.
+
+environment:
+  name:             "prod"          # [USER] K8s namespace + Rancher Project
+                                    # name. Default 'prod'. Common alternatives:
+                                    # 'qa', 'staging', 'pilot'. Keep it short,
+                                    # lowercase, no hyphens.
+
+  base_domain:      ""              # [USER, optional] Base domain for all
+                                    # services in this environment. Leave
+                                    # blank to inherit the top-level
+                                    # 'public_domain' set above — services land
+                                    # at <svc>.<public_domain> and the existing
+                                    # wildcard cert covers them. Override only
+                                    # if you want a different parent
+                                    # (e.g. "qa.openg2p.gov.ph").
+
+  install_commons:  true            # [USER] If false, only the namespace,
+                                    # Rancher Project, Istio Gateway, and
+                                    # external-PG secret are created. The
+                                    # Helm repo is still registered in Rancher
+                                    # so you can install commons via Rancher UI.
+
+  commons_version: "0.0.0-develop"  # [USER] Chart version installed for both
+                                    # openg2p-commons-base and -services.
+                                    # Pin to a stable release for production
+                                    # rollouts; '0.0.0-develop' is the floating
+                                    # development tag.
+
+  admin_email:      ""              # [USER, optional] Override the commons
+                                    # chart's default staff-realm admin user
+                                    # email (Keycloak). Blank → chart default.
+
+  # ---------------------------------------------------------------------------
+  # Per-service hostnames                                                 [USER]
+  # ---------------------------------------------------------------------------
+  # Each service URL defaults to <service>.<base_domain>. The services below
+  # have per-service override keys in the commons charts' questions.yaml and
+  # can be moved off the parent domain individually — for example to host the
+  # Kafka UI at "kafka-staging.dswd.gov.ph" while everything else stays at
+  # <service>.<base_domain>. Leave any blank to use the default.
+
+  # commons-base service UIs:
+  kafka_hostname:            ""     # → kafka.<base_domain>     (Kafka UI)
+  minio_hostname:            ""     # → minio.<base_domain>     (MinIO console)
+
+  # commons-services:
+  superset_hostname:         ""     # → superset.<base_domain>
+  odk_hostname:              ""     # → odk.<base_domain>       (ODK Central)
+  iam_hostname:              ""     # → iam.<base_domain>       (IAM service)
+  staff_portal_hostname:     ""     # → staff-portal.<base_domain>
+  staff_portal_api_hostname: ""     # → staff-iam.<base_domain> (staff portal API)
+
+  # NOTE: eSignet derives its hostname from base_domain only (esignet.<base_domain>)
+  # — no per-service override key in the chart today. To re-home it, change
+  # base_domain or extend the chart. OpenSearch is no longer part of commons
+  # (cluster-wide logging moved to OpenTelemetry + Grafana Loki at the infra layer).

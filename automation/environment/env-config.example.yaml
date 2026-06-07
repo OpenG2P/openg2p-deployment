@@ -40,7 +40,7 @@ base_domain: "qa.openg2p.org"
 admin_email: "admin@openg2p.org"
 
 # ---------------------------------------------------------------------------
-# openg2p-commons-base (PostgreSQL, Kafka, MinIO, OpenSearch, Redis, etc.)
+# openg2p-commons-base (PostgreSQL, Kafka, MinIO, Redis, SoftHSM, Keycloak, etc.)
 # ---------------------------------------------------------------------------
 commons_base:
   chart_name: "openg2p-commons-base"

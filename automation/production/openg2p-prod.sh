@@ -57,6 +57,7 @@ PROBE_ONLY=false
 PREFLIGHT_ONLY=false
 VALIDATE_CERTS_ONLY=false
 SKIP_PREFLIGHT=false
+ENV_DEFERRED=false   # set true by run_local_phase when the env stage defers (WG down)
 LOG_FILE="${SCRIPT_DIR}/logs/openg2p-prod-$(date '+%Y%m%d-%H%M%S').log"
 
 # Source shared utilities (logging, config loader, state) — same library used
@@ -112,19 +113,22 @@ parse_args() {
     [[ "$CONFIG_FILE" = /* ]] || CONFIG_FILE="${SCRIPT_DIR}/${CONFIG_FILE}"
 
     case "$RUN_ROLE" in
-        all|rp|reverse-proxy|compute|storage) ;;
+        all|rp|reverse-proxy|compute|storage|environment|env) ;;
         *)
             log_error "Invalid --role: '${RUN_ROLE}'" \
-                      "Expected one of: all, rp, compute, storage"
+                      "Expected one of: all, rp, compute, storage, environment"
             exit 1
             ;;
     esac
 
-    # Normalize alias.
+    # Normalize aliases.
     # Avoid the `[[ test ]] && var=...` form: when the test is false (the
     # common case here), the whole compound returns 1 and `set -e` exits.
     if [[ "$RUN_ROLE" == "reverse-proxy" ]]; then
         RUN_ROLE="rp"
+    fi
+    if [[ "$RUN_ROLE" == "env" ]]; then
+        RUN_ROLE="environment"
     fi
 }
 
@@ -142,7 +146,11 @@ Options:
   --config <file>            Path to user prod-config.yaml (required)
   --provision-output <file>  Path to provision-output.yaml (auto-detected if blank)
                              AWS-derived values that override --config keys
-  --role  <name>             Run only one role: rp | compute | storage  (default: all)
+  --role  <name>             Run only one role: rp | compute | storage | environment
+                             (default: all). 'environment' is laptop-side (no
+                             SSH) — installs the namespace, Rancher project,
+                             Istio gateway, external-PG secret, and (optionally)
+                             commons-base + commons-services Helm charts.
   --phase <n>                Run only one phase within the role (1, 2, 3)
   --probe                    SSH-probe all 3 nodes and exit (no changes)
   --preflight                Run preflight on all 3 nodes and exit (no changes)
@@ -661,6 +669,54 @@ run_role_phase() {
     mark_step_done "$marker"
 }
 
+# ---------------------------------------------------------------------------
+# run_local_phase — like run_role_phase but for laptop-side roles (no SSH).
+#
+# Used by the 'environment' role: it doesn't run ON a node, it runs FROM the
+# laptop and targets the cluster via kubectl + helm. Source files don't get
+# rsynced anywhere; we just invoke roles/<role>/run.sh directly with the
+# laptop's prod-config.yaml + provision-output.yaml passed through.
+# ---------------------------------------------------------------------------
+run_local_phase() {
+    local role="$1"
+    local phase="$2"
+
+    local marker="orchestrator/${role}-phase${phase}"
+    if [[ "$FORCE_MODE" != "true" ]] && skip_if_done "$marker" "${role} phase ${phase}"; then
+        return 0
+    fi
+
+    log_step "${role^^} phase ${phase}" "Executing locally on this machine"
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_info "[dry-run] would run: roles/${role}/run.sh --phase ${phase}"
+        return 0
+    fi
+
+    local -a args=(--config "$CONFIG_FILE" --phase "$phase")
+    if [[ -n "$PROVISION_OUTPUT" && -f "$PROVISION_OUTPUT" ]]; then
+        args+=(--provision-output "$PROVISION_OUTPUT")
+    fi
+    [[ "$FORCE_MODE" == "true" ]] && args+=(--force)
+
+    # Capture rc — exit 75 (EX_TEMPFAIL) means the role deferred itself (e.g.
+    # the environment stage when the Wireguard VPN isn't connected yet during
+    # an unattended `all` run). Deferred = non-fatal and NOT marked done, so a
+    # later `--role environment` run (with WG up) picks it up cleanly.
+    local rc=0
+    bash "${SCRIPT_DIR}/roles/${role}/run.sh" "${args[@]}" || rc=$?
+
+    if [[ $rc -eq 75 ]]; then
+        ENV_DEFERRED=true
+        log_warn "${role^^} phase ${phase} deferred (cluster not reachable — connect Wireguard, then re-run --role ${role})."
+        return 0
+    elif [[ $rc -ne 0 ]]; then
+        return "$rc"
+    fi
+
+    mark_step_done "$marker"
+}
+
 # Loudly indicate when a previous run's completion markers exist, so that
 # "phases skipped" is never silent. Critical after a re-provision/reset:
 # stale laptop state will otherwise skip the whole install (machines stay bare).
@@ -766,6 +822,25 @@ main() {
             run_role_phase rp      1
             run_role_phase compute 2
             run_role_phase compute 3
+            # Environment stage — laptop-side, no SSH. Skipped entirely when
+            # install_environment is false in prod-config. Cluster access needs
+            # the Wireguard VPN, which the operator connects post-install, so on
+            # a first unattended run phase 1 typically DEFERS (sets ENV_DEFERRED)
+            # with a "connect WG then --role environment" message.
+            if cfg_bool "install_environment" "true"; then
+                ENV_DEFERRED=false
+                run_local_phase environment 1
+                if [[ "$ENV_DEFERRED" != "true" ]]; then
+                    # Phase 2 (commons install) self-skips when install_commons=false.
+                    run_local_phase environment 2
+                else
+                    log_warn "Environment stage deferred — finish infra, connect Wireguard, then run:"
+                    log_warn "  ./openg2p-prod.sh --role environment --config ${CONFIG_FILE##*/}"
+                fi
+            else
+                log_info "install_environment=false — environment stage skipped."
+                log_info "Run it later with: ./openg2p-prod.sh --role environment --config <config>"
+            fi
             show_summary
             ;;
         storage)
@@ -785,6 +860,17 @@ main() {
         rp)
             ssh_probe rp
             run_role_phase rp "${RUN_PHASE:-1}"
+            ;;
+        environment)
+            # Laptop-side role — no SSH probe needed. The env role's phase1
+            # auto-fetches the kubeconfig from compute, so as long as you're
+            # on the WG VPN this just works.
+            if [[ -n "$RUN_PHASE" ]]; then
+                run_local_phase environment "$RUN_PHASE"
+            else
+                run_local_phase environment 1
+                run_local_phase environment 2
+            fi
             ;;
     esac
 
