@@ -11,9 +11,10 @@
 #   storage            — NFS server, Postgres host install
 #
 # Usage:
-#   ./openg2p-prod.sh --config prod-config.yaml
-#   ./openg2p-prod.sh --config prod-config.yaml --role storage
+#   ./openg2p-prod.sh --config prod-config.yaml                       # full install (all)
+#   ./openg2p-prod.sh --config prod-config.yaml --role storage        # one NODE only (SSH)
 #   ./openg2p-prod.sh --config prod-config.yaml --role compute --phase 2
+#   ./openg2p-prod.sh --config prod-config.yaml --stage environment   # the env stage (laptop)
 #   ./openg2p-prod.sh --config prod-config.yaml --probe
 #
 # Idempotent — state markers live on each node at /var/lib/openg2p/deploy-state/.
@@ -79,6 +80,7 @@ parse_args() {
             --config)            CONFIG_FILE="$2";       shift 2 ;;
             --provision-output)  PROVISION_OUTPUT="$2";  shift 2 ;;
             --role)              RUN_ROLE="$2";          shift 2 ;;
+            --stage)             RUN_ROLE="$2";          shift 2 ;;  # clearer synonym for the non-node 'environment' stage
             --phase)             RUN_PHASE="$2";         shift 2 ;;
             --force)   FORCE_MODE=true;  shift ;;
             --dry-run) DRY_RUN=true;     shift ;;
@@ -146,12 +148,20 @@ Options:
   --config <file>            Path to user prod-config.yaml (required)
   --provision-output <file>  Path to provision-output.yaml (auto-detected if blank)
                              AWS-derived values that override --config keys
-  --role  <name>             Run only one role: rp | compute | storage | environment
-                             (default: all). 'environment' is laptop-side (no
-                             SSH) — installs the namespace, Rancher project,
-                             Istio gateway, external-PG secret, and (optionally)
+  --role  <name>             Run only one NODE role instead of the full install:
+                               rp | compute | storage   (default: all)
+                             A node role = that VM's setup, run ON the VM over SSH.
+
+  --stage environment        Run only the ENVIRONMENT stage (Stage 4) — this is
+                             NOT a node; it runs from your laptop against the
+                             cluster (kubectl/helm, no SSH-into-a-node) and
+                             installs the namespace, Rancher project, Istio
+                             gateway, external-PG secret, and (optionally)
                              commons-base + commons-services Helm charts.
-  --phase <n>                Run only one phase within the role (1, 2, 3)
+                             (--role environment / --role env are accepted too.)
+
+  --phase <n>                Run only one phase within the role/stage:
+                               compute: 1|2|3   storage/rp: 1   environment: 1|2
   --probe                    SSH-probe all 3 nodes and exit (no changes)
   --preflight                Run preflight on all 3 nodes and exit (no changes)
   --validate-certs           Validate customer TLS certs on your laptop and exit
@@ -835,11 +845,11 @@ main() {
                     run_local_phase environment 2
                 else
                     log_warn "Environment stage deferred — finish infra, connect Wireguard, then run:"
-                    log_warn "  ./openg2p-prod.sh --role environment --config ${CONFIG_FILE##*/}"
+                    log_warn "  ./openg2p-prod.sh --stage environment --config ${CONFIG_FILE##*/}"
                 fi
             else
                 log_info "install_environment=false — environment stage skipped."
-                log_info "Run it later with: ./openg2p-prod.sh --role environment --config <config>"
+                log_info "Run it later with: ./openg2p-prod.sh --stage environment --config <config>"
             fi
             show_summary
             ;;
