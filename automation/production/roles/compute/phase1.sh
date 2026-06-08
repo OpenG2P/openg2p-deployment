@@ -217,9 +217,9 @@ compute_configure_sysctl_hosts() {
         echo "fs.inotify.max_user_instances=1024" >> /etc/sysctl.conf
 
     # Idempotent /etc/hosts edits — replace any prior managed block.
-    # The customer admin hostnames (rancher, keycloak) resolve to the RP's
-    # private IP so that curl from this node (e.g. phase 3's API calls to
-    # Rancher) reaches them via the RP's Nginx → Istio NodePort → cluster
+    # The Rancher admin hostname resolves to the RP's private IP so that
+    # in-cluster components (e.g. the cattle cluster agent) reach the Rancher
+    # server URL via the RP's Nginx → Istio NodePort → cluster
     # service path. Cluster-internal references to storage/postgres use the
     # raw private IP directly (no aliases needed).
     local rp_private=$(cfg "rp_private_ip" "")
@@ -231,15 +231,12 @@ compute_configure_sysctl_hosts() {
 
     if [[ -n "$rp_private" ]]; then
         local rancher_h=$(get_rancher_hostname)
-        local keycloak_h=$(get_keycloak_hostname)
         {
             echo "# openg2p-managed-begin"
-            for h in "$rancher_h" "$keycloak_h"; do
-                [[ -n "$h" ]] && echo "${rp_private}  ${h}"
-            done
+            [[ -n "$rancher_h" ]] && echo "${rp_private}  ${rancher_h}"
             echo "# openg2p-managed-end"
         } >> /etc/hosts
-        log_info "Added /etc/hosts entries for admin hostnames → ${rp_private}"
+        log_info "Added /etc/hosts entry for the Rancher hostname → ${rp_private}"
     fi
 
     mark_step_done "$step"

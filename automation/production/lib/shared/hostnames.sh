@@ -14,7 +14,7 @@
 # Hard fails if neither is set — the customer MUST provide hostnames.
 # =============================================================================
 
-# Resolve <service>_hostname for one of: rancher | keycloak
+# Resolve <service>_hostname for an admin service (currently: rancher).
 _resolve_admin_hostname() {
     local service="$1"
     local explicit
@@ -36,46 +36,11 @@ _resolve_admin_hostname() {
 }
 
 get_rancher_hostname()    { _resolve_admin_hostname rancher; }
-get_keycloak_hostname()   { _resolve_admin_hostname keycloak; }
 
 # Bridge production flat keys to the dotted keys vendored single-node code reads.
 # Call this once after load_config "$CONFIG_FILE".
 hostnames_bridge_config_keys() {
-    # Only bridge if not already set, so user could override either way.
-    if [[ -z "${CONFIG[keycloak.admin_email]:-}" ]]; then
-        CONFIG[keycloak.admin_email]="$(cfg 'keycloak_admin_email' '')"
-    fi
     if [[ -z "${CONFIG[rancher.version]:-}" ]]; then
         CONFIG[rancher.version]="$(cfg 'rancher_version' '2.12.3')"
     fi
-}
-
-# Ensure rancher.<domain> / keycloak.<domain> are in /etc/hosts pointing at
-# the RP's private IP — required for phase 3's API calls from the compute
-# node, since admin tools are reachable only via the RP's private address
-# (which compute usually does not have a DNS resolver for).
-#
-# Idempotent and additive — does not remove unrelated /etc/hosts entries.
-ensure_admin_hostnames_in_etc_hosts() {
-    local rp_private
-    rp_private=$(cfg "rp_private_ip" "")
-    if [[ -z "$rp_private" ]]; then
-        rp_private=$(cfg "rp_internal_ip" "")   # legacy alias
-    fi
-    if [[ -z "$rp_private" ]]; then
-        log_warn "rp_private_ip not in config; cannot ensure /etc/hosts entries"
-        return 0
-    fi
-    local host service
-    for service in rancher keycloak; do
-        host=$(_resolve_admin_hostname "$service")
-        if [[ -z "$host" ]]; then
-            log_warn "Cannot resolve hostname for ${service} (set ${service}_hostname or public_domain)"
-            continue
-        fi
-        if ! grep -qE "(^|[[:space:]])${host}([[:space:]]|$)" /etc/hosts 2>/dev/null; then
-            echo "${rp_private} ${host}" >> /etc/hosts
-            log_info "Added /etc/hosts entry: ${rp_private} ${host}"
-        fi
-    done
 }

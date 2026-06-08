@@ -54,18 +54,20 @@ cluster_name: "openg2p"
 # The customer's DNS must resolve the admin hostnames to the RP's INTERNAL
 # IP (see rp_internal_ip below). Access to these is gated by Wireguard.
 #
-# Only TWO admin hostnames are exposed: rancher and keycloak. Grafana and
-# Prometheus are reached from inside the Rancher UI (Cluster Explorer →
-# Monitoring), so they do NOT need their own hostnames or certs.
+# Only ONE admin hostname is exposed at the infra level: rancher. Rancher uses
+# LOCAL authentication (no SSO) — create admin users directly in Rancher.
+# Grafana and Prometheus are reached from inside the Rancher UI (Cluster
+# Explorer → Monitoring), so they do NOT need their own hostnames or certs.
+# (The OpenG2P apps' Keycloak is installed per-environment at
+#  keycloak.<environment domain> by the environment stage — not here.)
 #
-# Single knob — set `public_domain` and both hostnames auto-derive as
-# rancher.<public_domain>, keycloak.<public_domain>.
+# Single knob — set `public_domain` and the hostname auto-derives as
+# rancher.<public_domain>.
 public_domain: ""                # e.g. "openg2p.gov.eth"
 #
-# Override individually only if your customer uses non-standard names
+# Override only if your customer uses a non-standard name
 # (e.g. "k8s-admin.dept.gov" instead of "rancher.openg2p.gov.eth"):
 rancher_hostname:    ""          # default: rancher.<public_domain>
-keycloak_hostname:   ""          # default: keycloak.<public_domain>
 
 # ---------------------------------------------------------------------------
 # TLS certificates                                                   [CUSTOMER]
@@ -85,13 +87,10 @@ tls_wildcard_cert:     ""   # e.g. "./certs/wildcard.fullchain.pem"
 tls_wildcard_key:      ""   # e.g. "./certs/wildcard.key"
 tls_wildcard_password: ""   # only for PFX/P12 inputs
 #
-# (b) Per-FQDN certs (leave (a) blank, fill in below) — rancher + keycloak:
+# (b) Per-FQDN cert (leave (a) blank, fill in below) — rancher only:
 tls_rancher_cert:    ""
 tls_rancher_key:     ""
 tls_rancher_password: ""
-tls_keycloak_cert:   ""
-tls_keycloak_key:    ""
-tls_keycloak_password: ""
 #
 # To validate certs WITHOUT running an install:
 #   ./openg2p-prod.sh --validate-certs --config prod-config.yaml
@@ -112,7 +111,7 @@ rp_public_ip:  ""    # [AWS] WG endpoint — the internet-reachable address.
                      #       IP or whatever address admin laptops dial in to.
 rp_private_ip: ""    # [AWS] The RP's primary NIC IP. Admin Nginx binds here;
                      #       WG-decapsulated traffic is delivered here; the
-                     #       customer's DNS for rancher/keycloak points here.
+                     #       customer's DNS for the rancher hostname points here.
 
 # SSH access from the orchestrator (your laptop)
 rp_ssh_host: ""       # [AWS] defaults to rp_public_ip if blank
@@ -177,7 +176,7 @@ wg_peers:    "100"           # [USER] — how many peer configs to pre-generate
 
 # [USER, optional] DNS resolver pushed to every WG peer. If set, the admin
 # laptop sends DNS queries through the tunnel while it's up — useful when the
-# admin hostnames (rancher.<domain>, keycloak.<domain>) are resolvable only
+# admin hostname (rancher.<domain>) and env hostnames are resolvable only
 # from inside the customer's network (split-horizon DNS, AWS Route53 private
 # hosted zone, etc.). The resolver's IP MUST be inside wg_subnet or
 # private_subnet so the query actually traverses the tunnel.
@@ -209,12 +208,6 @@ rke2_token: ""        # auto-generated if blank
 # ---------------------------------------------------------------------------
 rancher_version:  "2.12.3"
 rancher_replicas: "1"
-
-# ---------------------------------------------------------------------------
-# Keycloak (admin SSO for Rancher only — runs in-cluster with embedded PG)
-# ---------------------------------------------------------------------------
-keycloak_replicas: "1"
-keycloak_admin_email: ""    # [USER] e.g. "admin@yourcorp.gov.eth"
 
 # ---------------------------------------------------------------------------
 # Observability — OpenTelemetry + Grafana Loki (replaces Fluentd/OpenSearch)

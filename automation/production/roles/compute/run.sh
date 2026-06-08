@@ -4,8 +4,7 @@
 # =============================================================================
 # Phases:
 #   1 — host setup: tools, ufw, NFS client, RKE2 server, NFS CSI StorageClass
-#   2 — helmfile sync: Istio, Rancher, Keycloak, monitoring, logging
-#   3 — Rancher-Keycloak SAML integration (vendored from single-node)
+#   2 — helmfile sync: Istio, Rancher (local auth), monitoring, logging
 # =============================================================================
 
 set -euo pipefail
@@ -24,7 +23,6 @@ load_phase() {
     case "$1" in
         1) source "${SCRIPT_DIR}/phase1.sh" ;;
         2) source "${SCRIPT_DIR}/phase2.sh" ;;
-        3) source "${WORK_DIR}/lib/shared/phase3.sh" ;;
     esac
 }
 
@@ -40,7 +38,7 @@ parse_args() {
     [[ "$CONFIG_FILE" = /* ]] || CONFIG_FILE="${WORK_DIR}/${CONFIG_FILE}"
 
     if [[ -z "$RUN_PHASE" ]]; then
-        log_error "Compute role requires --phase <1|2|3>"
+        log_error "Compute role requires --phase <1|2>"
         exit 1
     fi
 }
@@ -65,15 +63,7 @@ main() {
     case "$RUN_PHASE" in
         1) run_compute_phase1 ;;
         2) run_compute_phase2 ;;
-        3)
-            # Phase 3 calls the Rancher API at https://<rancher_hostname>
-            # from this node, which only resolves if rancher/keycloak hostnames
-            # are in /etc/hosts pointing at the RP's private IP. Ensure they
-            # are — self-heals if phase 1 was run with an older script.
-            ensure_admin_hostnames_in_etc_hosts
-            run_phase3   # vendored from single-node — Rancher-Keycloak SAML
-            ;;
-        *) log_error "Invalid phase: ${RUN_PHASE}"; exit 1 ;;
+        *) log_error "Invalid phase: ${RUN_PHASE} (compute has phases 1 and 2)"; exit 1 ;;
     esac
 
     log_success "Compute node phase ${RUN_PHASE} complete."

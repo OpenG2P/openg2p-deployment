@@ -7,7 +7,7 @@
 #
 # Roles:
 #   reverse-proxy (rp) — Nginx (admin server blocks), Wireguard server, customer-supplied TLS certs
-#   compute            — RKE2 single control-plane, Istio, Rancher, Keycloak
+#   compute            — RKE2 single control-plane, Istio, Rancher (local auth), monitoring, logging
 #   storage            — NFS server, Postgres host install
 #
 # Usage:
@@ -65,7 +65,7 @@ LOG_FILE="${SCRIPT_DIR}/logs/openg2p-prod-$(date '+%Y%m%d-%H%M%S').log"
 # inside the remote nodes too. The orchestrator uses only the laptop-safe bits.
 source "${SCRIPT_DIR}/lib/shared/utils.sh"
 source "${SCRIPT_DIR}/lib/ssh-utils.sh"
-# Hostname getters (get_rancher_hostname / get_keycloak_hostname). Laptop-safe:
+# Hostname getter (get_rancher_hostname). Laptop-safe:
 # the getters only read CONFIG via cfg. Used by --validate-certs and the
 # completion summary.
 source "${SCRIPT_DIR}/lib/shared/hostnames.sh"
@@ -161,7 +161,7 @@ Options:
                              (--role environment / --role env are accepted too.)
 
   --phase <n>                Run only one phase within the role/stage:
-                               compute: 1|2|3   storage/rp: 1   environment: 1|2
+                               compute: 1|2   storage/rp: 1   environment: 1|2
   --probe                    SSH-probe all 3 nodes and exit (no changes)
   --preflight                Run preflight on all 3 nodes and exit (no changes)
   --validate-certs           Validate customer TLS certs on your laptop and exit
@@ -184,8 +184,7 @@ Order when --role all (default):
   2. Storage node: phase 1 (NFS server + Postgres host)
   3. Compute node: phase 1 (RKE2 + NFS client)
   4. Reverse-proxy:  phase 1 (Wireguard, customer cert ingest, Nginx admin server blocks)
-  5. Compute node: phase 2 (helmfile — Istio, Rancher, Keycloak, monitoring)
-  6. Compute node: phase 3 (Rancher-Keycloak SAML)
+  5. Compute node: phase 2 (helmfile — Istio, Rancher, monitoring, logging)
 
 State markers:
   • Each node:  /var/lib/openg2p/deploy-state/*.done
@@ -211,7 +210,6 @@ validate_orchestrator_config() {
         private_subnet
         wg_subnet wg_port
         rke2_version rancher_version
-        keycloak_admin_email
         postgres_version postgres_port
         nfs_export_path nfs_mount_path
     )
@@ -222,7 +220,7 @@ validate_orchestrator_config() {
     local pd=$(cfg public_domain)
     if [[ -z "$pd" ]]; then
         local missing=()
-        for h in rancher_hostname keycloak_hostname; do
+        for h in rancher_hostname; do
             [[ -z "$(cfg "$h")" ]] && missing+=("$h")
         done
         if [[ ${#missing[@]} -gt 0 ]]; then
@@ -241,15 +239,15 @@ validate_orchestrator_config() {
 
     check_subnet_overlap
 
-    # Wireguard DNS push — warn (don't fail) when not set. The admin hostnames
-    # (rancher/keycloak) resolve only via the customer's / VPC DNS, which is
-    # reachable only THROUGH the tunnel. Without wg_peer_dns the generated peer
-    # configs carry no `DNS =` line, so admins can't resolve the hostnames over
-    # the VPN unless they hand-edit /etc/hosts. On AWS, provisioning auto-fills
-    # this (VPC DNS), so the warning only surfaces for on-prem / manual configs.
+    # Wireguard DNS push — warn (don't fail) when not set. The admin hostname
+    # (rancher) and environment hostnames resolve only via the customer's / VPC
+    # DNS, reachable only THROUGH the tunnel. Without wg_peer_dns the generated
+    # peer configs carry no `DNS =` line, so admins can't resolve the hostnames
+    # over the VPN unless they hand-edit /etc/hosts. On AWS, provisioning
+    # auto-fills this (VPC DNS), so the warning only surfaces for on-prem.
     if [[ -z "$(cfg wg_peer_dns)" ]]; then
         log_warn "wg_peer_dns is not set — Wireguard peers will get NO DNS resolver."
-        log_warn "  Admin hostnames (rancher/keycloak) will not resolve over the VPN by default."
+        log_warn "  The Rancher hostname (and env hostnames) won't resolve over the VPN by default."
         log_warn "  Set wg_peer_dns in prod-config.yaml to a resolver INSIDE private_subnet/wg_subnet:"
         log_warn "    • on-prem: your internal DNS server's IP"
         log_warn "    • AWS:     the VPC DNS (<vpc-cidr-base>.2) — normally auto-filled by provisioning"
@@ -299,7 +297,7 @@ _validate_tls_cert_paths() {
     else
         # Per-FQDN mode — every service needs cert + key
         local svc cert key missing=()
-        for svc in rancher keycloak; do
+        for svc in rancher; do
             cert=$(_resolve "$(cfg "tls_${svc}_cert")")
             key=$(_resolve  "$(cfg "tls_${svc}_key")")
             if [[ -z "$cert" || -z "$key" ]]; then missing+=("$svc"); continue; fi
@@ -309,19 +307,19 @@ _validate_tls_cert_paths() {
         if [[ ${#missing[@]} -gt 0 ]]; then
             log_error "Customer TLS certs not configured" \
                       "Neither tls_wildcard_cert nor per-service tls_<svc>_cert/key are set for: ${missing[*]}" \
-                      "Set tls_wildcard_cert + tls_wildcard_key OR both tls_<service>_cert/key pairs (rancher, keycloak) in prod-config.yaml" \
+                      "Set tls_wildcard_cert + tls_wildcard_key OR the tls_rancher_cert/key pair in prod-config.yaml" \
                       "" \
                       "https://docs.openg2p.org/operations/deployment/automation/three-node-automation#id-4.-customer-supplied-tls-certificates"
             exit 1
         fi
-        log_success "TLS certs validated (per-FQDN mode: rancher, keycloak)"
+        log_success "TLS certs validated (per-FQDN mode: rancher)"
     fi
 }
 
 # Deep, laptop-side TLS validation for `--validate-certs`. Mirrors the RP-side
 # checks (roles/reverse-proxy/phase1.sh R1.5) but runs entirely on the laptop
 # with NO SSH, so cert problems surface in seconds instead of mid-install.
-# For each admin hostname (rancher, keycloak) it checks:
+# For the admin hostname (rancher) it checks:
 #   • the cert file parses as PEM X.509
 #   • the private key matches the cert (public-key compare; RSA or EC)
 #   • the cert is not expired (warns if it expires within 30 days)
@@ -370,10 +368,9 @@ validate_certs_deep() {
     log_info "Deep cert validation (${mode} mode) — laptop-only, no nodes touched"
 
     local fails=0 svc host cert key cpub kpub exp
-    for svc in rancher keycloak; do
+    for svc in rancher; do
         case "$svc" in
             rancher)  host=$(get_rancher_hostname) ;;
-            keycloak) host=$(get_keycloak_hostname) ;;
         esac
         if [[ -z "$host" ]]; then
             log_error "Cannot resolve ${svc} hostname" \
@@ -831,7 +828,6 @@ main() {
             run_role_phase compute 1
             run_role_phase rp      1
             run_role_phase compute 2
-            run_role_phase compute 3
             # Environment stage — laptop-side, no SSH. Skipped entirely when
             # install_environment is false in prod-config. Cluster access needs
             # the Wireguard VPN, which the operator connects post-install, so on
@@ -864,7 +860,6 @@ main() {
             else
                 run_role_phase compute 1
                 run_role_phase compute 2
-                run_role_phase compute 3
             fi
             ;;
         rp)
@@ -889,7 +884,6 @@ main() {
 
 show_summary() {
     local rancher_host=$(get_rancher_hostname 2>/dev/null)
-    local keycloak_host=$(get_keycloak_hostname 2>/dev/null)
     local rp_private=$(cfg rp_private_ip)
     [[ -z "$rp_private" ]] && rp_private=$(cfg rp_internal_ip)   # legacy alias
     local rp_user=$(cfg rp_ssh_user ubuntu)
@@ -899,24 +893,17 @@ show_summary() {
     local compute_user=$(cfg compute_ssh_user ubuntu)
     local compute_host=$(cfg compute_ssh_host)
     if [[ -z "$compute_host" ]]; then compute_host=$(cfg compute_private_ip); fi
-    local kc_email=$(cfg keycloak_admin_email)
     local wg_subnet=$(cfg wg_subnet "10.15.0.0/16")
     local wg_server_ip="${wg_subnet%.*.*/*}.0.1"
 
-    # Live-fetch the local Rancher admin password and Keycloak password from
-    # the cluster, so the summary contains exact ready-to-use credentials.
-    # Errors here are non-fatal — we just print '<failed to fetch>'.
+    # Live-fetch the local Rancher admin password from the cluster, so the
+    # summary contains the exact ready-to-use credential. Non-fatal on error.
     local rancher_pw="<failed to fetch — see kubectl command below>"
-    local keycloak_pw="<failed to fetch — see kubectl command below>"
     if ssh_run compute "true" >/dev/null 2>&1; then
         rancher_pw=$(ssh_run compute \
             "KUBECONFIG=/etc/rancher/rke2/rke2.yaml /var/lib/rancher/rke2/bin/kubectl -n cattle-system get secret rancher-secret -o jsonpath='{.data.adminPassword}' 2>/dev/null | base64 -d 2>/dev/null" \
             2>/dev/null) || rancher_pw="<failed to fetch>"
-        keycloak_pw=$(ssh_run compute \
-            "KUBECONFIG=/etc/rancher/rke2/rke2.yaml /var/lib/rancher/rke2/bin/kubectl -n keycloak-system get secret keycloak -o jsonpath='{.data.admin-password}' 2>/dev/null | base64 -d 2>/dev/null" \
-            2>/dev/null) || keycloak_pw="<failed to fetch>"
         if [[ -z "$rancher_pw"  ]]; then rancher_pw="<empty — secret may not exist>"; fi
-        if [[ -z "$keycloak_pw" ]]; then keycloak_pw="<empty — secret may not exist>"; fi
     fi
 
     # Live-fetch the host PostgreSQL superuser credentials from the storage
@@ -966,27 +953,24 @@ show_summary() {
 ║                                                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
-  ADMIN URLS (reachable only via Wireguard)
+  ADMIN URL (reachable only via Wireguard)
 
     Rancher:    https://${rancher_host}
-    Keycloak:   https://${keycloak_host}
 
   (Grafana and Prometheus are reachable from inside the Rancher UI —
    Cluster Explorer → Monitoring — not on their own hostnames.)
 
-  Each hostname should already resolve to the RP's PRIVATE IP via your
+  Rancher uses LOCAL authentication — create additional admin users directly
+  in Rancher (☰ → Users & Authentication → Users). There is no separate SSO.
+
+  The hostname should already resolve to the RP's PRIVATE IP via your
   customer's DNS:  ${rp_private}
 
   CREDENTIALS — KEEP THESE SAFE
 
-    ┌─ Rancher local admin (use this for the FIRST login) ─────────────────────┐
+    ┌─ Rancher local admin ────────────────────────────────────────────────────┐
     │   username:  admin                                                       │
     │   password:  ${rancher_pw}
-    └──────────────────────────────────────────────────────────────────────────┘
-
-    ┌─ Keycloak admin (use this AFTER you switch to "Login with Keycloak") ────┐
-    │   username:  ${kc_email}
-    │   password:  ${keycloak_pw}
     └──────────────────────────────────────────────────────────────────────────┘
 
     ┌─ PostgreSQL superuser on STORAGE node ───────────────────────────────────┐
@@ -1029,37 +1013,21 @@ show_summary() {
       Otherwise (wg_peer_dns blank), add a one-time /etc/hosts entry on your
       laptop:
 
-        ${rp_private}  ${rancher_host} ${keycloak_host}
+        ${rp_private}  ${rancher_host}
 
       Verify (macOS): dscacheutil -q host -a name ${rancher_host}
       Verify (Linux): getent hosts ${rancher_host}
       Both must return ${rp_private}.
 
-  STEP 4.  Login to Rancher — FIRST TIME (use the LOCAL admin)
+  STEP 4.  Login to Rancher (local authentication)
 
       Open:     https://${rancher_host}
-      Click:    "Use a local user"   (the small link below the Keycloak button)
       Username: admin
       Password: (the Rancher local admin password from above)
 
-      You're now in the Rancher UI as the local 'admin'.
-
-  STEP 5.  (Optional) From inside Rancher, browse to the keycloak-system
-           namespace → Secrets → "keycloak" → reveal the 'admin-password'
-           value. This is the same password we already printed above; the
-           UI is just a convenient way to retrieve it without using kubectl.
-
-  STEP 6.  Logout, then login again — but this time with KEYCLOAK SSO
-
-      In Rancher: top-right user menu → "Log Out".
-      Back at the login page, click the "Login with Keycloak" button.
-      You will be redirected to https://${keycloak_host}/...
-      Username: ${kc_email}
-      Password: (the Keycloak admin password from above)
-
-      After authenticating, Keycloak will redirect you back to Rancher with
-      a SAML assertion. Rancher should land you on the home page as the
-      Keycloak-authenticated admin user. SAML SSO is now verified working.
+      You're now in the Rancher UI as the local 'admin'. Create any further
+      admin users directly in Rancher: ☰ → Users & Authentication → Users.
+      (There is no external SSO for Rancher — it uses local auth only.)
 
 
 ══════════════════════════════════════════════════════════════════════════════

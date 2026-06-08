@@ -438,7 +438,7 @@ _stage_customer_certs() {
     else
         log_info "Staging per-FQDN customer certs..."
         local svc cert key chain
-        for svc in rancher keycloak; do
+        for svc in rancher; do
             cert=$(_resolve_path "$(_read_tls_key "tls_${svc}_cert")")
             key=$(_resolve_path  "$(_read_tls_key "tls_${svc}_key")")
             chain=$(_resolve_path "$(_read_tls_key "tls_${svc}_chain")")

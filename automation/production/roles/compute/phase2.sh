@@ -5,7 +5,7 @@
 # Steps:
 #   C2.1  Render helmfile-infra-values.yaml from prod-config
 #   C2.2  Install Istio via istioctl (uses charts/istio-install/templates/operator.yaml)
-#   C2.3  helmfile sync — Rancher, Keycloak (with embedded NFS-backed Postgres),
+#   C2.3  helmfile sync — Rancher (local auth, embedded NFS-backed Postgres),
 #         monitoring, logging, Istio EnvoyFilter, Gateways, VirtualServices
 # =============================================================================
 
@@ -17,7 +17,6 @@
 compute_render_helmfile_values() {
     local values_file="${WORK_DIR}/helmfile-infra-values.yaml"
     local rancher_host=$(get_rancher_hostname)
-    local keycloak_host=$(get_keycloak_hostname)
 
     # Loki's dedicated MinIO root password: prefer the config value, else reuse
     # a previously persisted one, else generate + persist (stable across re-runs
@@ -44,15 +43,11 @@ compute_render_helmfile_values() {
 # Generated at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
 
 rancher_hostname:    "${rancher_host}"
-keycloak_hostname:   "${keycloak_host}"
 node_ip:             "$(cfg 'compute_private_ip')"
 
 rancher:
   version:  "$(cfg 'rancher_version' '2.12.3')"
   replicas: $(cfg 'rancher_replicas' '1')
-
-keycloak:
-  replicas: $(cfg 'keycloak_replicas' '1')
 
 # Observability — Grafana Loki log store + its dedicated MinIO object store.
 loki:
@@ -131,7 +126,7 @@ compute_helmfile_sync() {
     local step="compute.phase2.helmfile"
     if skip_if_done "$step" "helmfile sync"; then return 0; fi
 
-    log_step "C2.3" "helmfile sync — Rancher, Keycloak, monitoring, logging"
+    log_step "C2.3" "helmfile sync — Rancher, monitoring, logging"
 
     ensure_kubeconfig
 
