@@ -116,6 +116,10 @@ YAML
     GENERATED_ENV_CONFIG="$out"
 }
 
+# Release name is fixed by the commons-services chart (catalog release-name).
+COMMONS_SERVICES_RELEASE="commons-services"
+RECONCILED_DEPS=""
+
 # ---------------------------------------------------------------------------
 # E2.3 / E2.4 — invoke env-cluster.sh's step 4 and step 5
 # ---------------------------------------------------------------------------
@@ -130,19 +134,153 @@ phase2_invoke_env_cluster() {
     # env-cluster.sh handles its own idempotency for steps 4/5 (helm upgrade
     # --install). KUBECONFIG is exported by phase2_resolve_values.
 
+    local force_arg=""
+    [[ "$FORCE_MODE" == "true" ]] && force_arg="--force"
+
+    # Step 4 — commons-base. Synchronous, hard-fail (no hook-deadlock here).
     log_step "E2.3" "Installing openg2p-commons-base (chart version ${COMMONS_VERSION})"
-    if [[ "$FORCE_MODE" == "true" ]]; then
-        "$ENV_CLUSTER_SH" --config "$GENERATED_ENV_CONFIG" --step 4 --force
+    "$ENV_CLUSTER_SH" --config "$GENERATED_ENV_CONFIG" --step 4 $force_arg
+
+    # Step 5 — commons-services.
+    #
+    # KNOWN CHART ISSUE (openg2p-commons-deployment): eSignet and
+    # mock-identity-system ship their schema-init (keymanager tables:
+    # key_alias, key_store, …) as `helm.sh/hook: post-install` Jobs. Those
+    # deadlock `helm --wait`: the pods that need the schema never become Ready,
+    # so the post-install hook that would create the schema never runs, and the
+    # install eventually times out as "failed". (keymanager's equivalent runs
+    # as a regular resource and is unaffected.)
+    #
+    # Work around it WITHOUT the 20-minute timeout: run the install in the
+    # background and, as soon as the release's ServiceAccounts exist, materialise
+    # those hook Jobs as regular Jobs (phase2_reconcile_commons_hooks). The
+    # schema gets created, the deployments recover, and the backgrounded
+    # `helm --wait` then finishes cleanly. Fully idempotent and a safe no-op once
+    # the chart stops shipping these as hooks.
+    log_step "E2.4" "Installing openg2p-commons-services (chart version ${COMMONS_VERSION})"
+    local svc_log="${STATE_DIR}/environment/commons-services-install.log"
+    ( "$ENV_CLUSTER_SH" --config "$GENERATED_ENV_CONFIG" --step 5 $force_arg ) \
+        >"$svc_log" 2>&1 &
+    local helm_pid=$!
+    log_info "commons-services install running in background (pid ${helm_pid})."
+    log_info "  detailed install log: ${svc_log}"
+
+    phase2_reconcile_commons_hooks "$COMMONS_SERVICES_RELEASE"
+
+    log_info "Waiting for the commons-services install to finish..."
+    if wait "$helm_pid"; then
+        log_success "commons-services install completed."
     else
-        "$ENV_CLUSTER_SH" --config "$GENERATED_ENV_CONFIG" --step 4
+        log_warn "commons-services helm exited non-zero — see ${svc_log}."
+        log_warn "The schema-init reconcile may already have healed it; verifying directly..."
     fi
 
-    log_step "E2.4" "Installing openg2p-commons-services (chart version ${COMMONS_VERSION})"
-    if [[ "$FORCE_MODE" == "true" ]]; then
-        "$ENV_CLUSTER_SH" --config "$GENERATED_ENV_CONFIG" --step 5 --force
-    else
-        "$ENV_CLUSTER_SH" --config "$GENERATED_ENV_CONFIG" --step 5
+    phase2_verify_health "$COMMONS_SERVICES_RELEASE"
+}
+
+# ---------------------------------------------------------------------------
+# E2.5 — reconcile post-install schema-init hooks into regular Jobs
+# ---------------------------------------------------------------------------
+phase2_reconcile_commons_hooks() {
+    local release="$1"
+    log_step "E2.5" "Reconciling commons-services schema-init hooks"
+
+    # The hook Jobs reference ServiceAccounts that helm creates during the main
+    # apply (before its post-install --wait). Poll until that SA exists so we
+    # know the manifests are applied and the SA the Job needs is present.
+    local sa="${release}-esignet"
+    local waited=0
+    while (( waited < 300 )); do
+        kubectl -n "$ENV_NAME" get sa "$sa" >/dev/null 2>&1 && break
+        sleep 10; waited=$((waited + 10))
+    done
+    if ! kubectl -n "$ENV_NAME" get sa "$sa" >/dev/null 2>&1; then
+        log_warn "ServiceAccount ${sa} not present after ${waited}s — skipping reconcile."
+        log_warn "(commons-services install may have failed early — see its log.)"
+        return 0
     fi
+
+    # Pull the rendered hooks, keep only the postgres-init Jobs (identified by
+    # the mosipid/postgres-init image), and strip the helm hook annotations so
+    # they apply as ordinary Jobs.
+    local out="${STATE_DIR}/environment/commons-pginit-reconcile.yaml"
+    helm get hooks "$release" -n "$ENV_NAME" 2>/dev/null \
+        | awk 'BEGIN{RS="\n---\n"} /kind: Job/ && /mosipid\/postgres-init/ {print "---"; print}' \
+        | grep -vE '^[[:space:]]*"?helm\.sh/hook(-delete-policy|-weight)?"?:' \
+        > "$out" 2>/dev/null || true
+
+    if ! grep -q "kind: Job" "$out" 2>/dev/null; then
+        log_info "No schema-init hook Jobs found — chart likely runs them as regular"
+        log_info "resources already. Nothing to reconcile."
+        return 0
+    fi
+
+    local jobs
+    jobs=$(grep -oE 'name: [a-z0-9-]+-postgres-init' "$out" | awk '{print $2}' | sort -u)
+    log_info "Schema-init Jobs to run as regular resources: $(echo $jobs | tr '\n' ' ')"
+
+    # Jobs are immutable — remove any prior copy before re-applying.
+    local j
+    for j in $jobs; do
+        kubectl -n "$ENV_NAME" delete job "$j" --ignore-not-found >/dev/null 2>&1 || true
+    done
+    if ! kubectl -n "$ENV_NAME" apply -f "$out" >/dev/null 2>&1; then
+        log_warn "Could not apply schema-init Jobs — falling back to helm's own hooks."
+        return 0
+    fi
+
+    # Wait for each to complete, then force-restart the matching deployment so
+    # its crashlooping pods pick up the schema immediately (no restart backoff).
+    RECONCILED_DEPS=""
+    for j in $jobs; do
+        log_info "  waiting for ${j} to complete..."
+        kubectl -n "$ENV_NAME" wait --for=condition=complete "job/${j}" --timeout=5m >/dev/null 2>&1 \
+            || log_warn "  ${j} not complete in 5m — check: kubectl -n ${ENV_NAME} logs job/${j}"
+        local dep="${j%-postgres-init}"
+        if kubectl -n "$ENV_NAME" get deploy "$dep" >/dev/null 2>&1; then
+            kubectl -n "$ENV_NAME" rollout restart deploy "$dep" >/dev/null 2>&1 || true
+            RECONCILED_DEPS="${RECONCILED_DEPS} ${dep}"
+        fi
+    done
+    log_success "Schema-init reconcile applied; restarted:${RECONCILED_DEPS:- (none)}"
+}
+
+# ---------------------------------------------------------------------------
+# E2.6 — verify the schema-dependent deployments are healthy
+# ---------------------------------------------------------------------------
+phase2_verify_health() {
+    local release="$1"
+    log_step "E2.6" "Verifying schema-dependent workloads are healthy"
+
+    # Check the deployments the reconcile touched; fall back to the two known
+    # keymanager-embedding services if reconcile found nothing.
+    local deps="$RECONCILED_DEPS"
+    [[ -z "$deps" ]] && deps="${release}-esignet ${release}-mock-identity-system"
+
+    local deadline=600 waited=0 d bad
+    while (( waited < deadline )); do
+        bad=""
+        for d in $deps; do
+            kubectl -n "$ENV_NAME" get deploy "$d" >/dev/null 2>&1 || continue
+            local ready spec
+            ready=$(kubectl -n "$ENV_NAME" get deploy "$d" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+            spec=$(kubectl -n "$ENV_NAME" get deploy "$d" -o jsonpath='{.spec.replicas}' 2>/dev/null)
+            [[ "${ready:-0}" -lt "${spec:-1}" ]] && bad="${bad} ${d}"
+        done
+        if [[ -z "$bad" ]]; then
+            log_success "Schema-dependent deployments are Ready:${deps}"
+            return 0
+        fi
+        printf "\r  waiting on:%s  (%ds/%ds)   " "$bad" "$waited" "$deadline"
+        sleep 15; waited=$((waited + 15))
+    done
+    echo ""
+    log_warn "Still not Ready after ${deadline}s:${bad}"
+    log_warn "Inspect: kubectl -n ${ENV_NAME} get pods | grep -v Running"
+    log_warn "And:     kubectl -n ${ENV_NAME} logs deploy/<name> --tail=50"
+    # Non-fatal: scaffolding + most services are up; let the operator triage the
+    # remaining ones rather than failing the whole orchestrator.
+    return 0
 }
 
 # ---------------------------------------------------------------------------
