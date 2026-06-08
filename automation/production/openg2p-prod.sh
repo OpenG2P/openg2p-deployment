@@ -933,7 +933,21 @@ show_summary() {
         fi
     fi
 
-    cat <<EOF
+    # Storage SSH endpoint (for the optional PostgreSQL tunnel below).
+    local storage_user=$(cfg storage_ssh_user ubuntu)
+    local storage_host=$(cfg storage_ssh_host)
+    if [[ -z "$storage_host" ]]; then storage_host=$(cfg storage_public_ip); fi
+    if [[ -z "$storage_host" ]]; then storage_host=$(cfg storage_private_ip); fi
+
+    # Persist the final summary (credentials + next steps) to a strict-perms
+    # file so the admin can read it any time without digging through verbose
+    # logs. Folder 0700, file 0600 — readable only by the install user.
+    local summary_dir="${SCRIPT_DIR}/setup-output"
+    local summary_file="${summary_dir}/SETUP-SUMMARY.txt"
+    mkdir -p "$summary_dir"
+    chmod 700 "$summary_dir" 2>/dev/null || true
+
+    cat > "$summary_file" <<EOF
 
 
 ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -966,7 +980,7 @@ show_summary() {
     └──────────────────────────────────────────────────────────────────────────┘
 
     ┌─ PostgreSQL superuser on STORAGE node ───────────────────────────────────┐
-    │   (currently idle — environment automation will use this later)          │
+    │   (used by the environment's commons charts + per-env databases)         │
     │   host:      ${pg_host}
     │   port:      ${pg_port}
     │   username:  ${pg_user}
@@ -1050,9 +1064,39 @@ show_summary() {
       kubectl get nodes
 
 
+══════════════════════════════════════════════════════════════════════════════
+  OPTIONAL — connect to host PostgreSQL from your laptop (Wireguard active)
+══════════════════════════════════════════════════════════════════════════════
+
+  Port 5432 on the storage node is firewalled to the compute node only, so
+  reach it via an SSH tunnel — do NOT expect ${pg_host}:${pg_port} to be
+  directly reachable just because you are on Wireguard.
+
+      ssh -i ${rp_key} ${storage_user}@${storage_host} -L ${pg_port}:localhost:${pg_port}
+      # then, in another terminal on your laptop:
+      psql -h localhost -p ${pg_port} -U ${pg_user}      # password: PostgreSQL superuser above
+
+  Alternative via the compute node (already allow-listed for 5432):
+      ssh -i ${rp_key} ${compute_user}@${compute_host} -L ${pg_port}:${pg_host}:${pg_port}
+
+
   Log file:  ${LOG_FILE}
 
 EOF
+    chmod 600 "$summary_file" 2>/dev/null || true
+
+    # Print it to the terminal as well (also captured in the log), then point
+    # the admin at the saved copy so it isn't lost in the verbose log.
+    cat "$summary_file"
+    cat <<PTR
+
+══════════════════════════════════════════════════════════════════════════════
+  📄 SAVED — the credentials + next steps above are written to:
+       ${summary_file}
+     (folder mode 700, file mode 600 — readable only by the install user)
+     Copy the credentials into your secrets vault, then delete this file.
+══════════════════════════════════════════════════════════════════════════════
+PTR
 }
 
 mkdir -p "${SCRIPT_DIR}/logs"

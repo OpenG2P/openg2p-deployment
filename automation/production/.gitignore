@@ -22,3 +22,6 @@ artifacts/
 peer*.conf
 *-ca.crt
 openg2p-ca.crt
+
+# Final setup summary (contains plaintext credentials)
+setup-output/
