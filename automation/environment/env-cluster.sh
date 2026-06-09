@@ -111,7 +111,7 @@ ensure_helm_repo() {
         return 0
     fi
 
-    local repo_url=$(cfg "commons_base.chart_repo" "https://openg2p.github.io/openg2p-helm")
+    local repo_url=$(cfg "commons_base.chart_repo" "https://openg2p.github.io/openg2p-helm/rancher")
     log_info "Ensuring Helm repo 'openg2p' is configured..."
 
     if helm repo list 2>/dev/null | grep -q "^openg2p"; then
