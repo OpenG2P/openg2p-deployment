@@ -17,7 +17,11 @@
 # if the desired object already exists. Re-run as many times as you need.
 # =============================================================================
 
-OPENG2P_REPO_URL="https://openg2p.github.io/openg2p-helm"
+# The Rancher CatalogV2 ClusterRepo must point at the Rancher-flavoured index
+# (…/openg2p-helm/rancher), not the root chart index. That sub-index carries the
+# `catalog.cattle.io/*` annotations Rancher needs to surface the OpenG2P charts
+# in the Apps catalog with proper display names.
+OPENG2P_REPO_URL="https://openg2p.github.io/openg2p-helm/rancher"
 PG_SUPERUSER_FILE="/etc/openg2p/secrets/postgres-superuser.env"
 
 # ---------------------------------------------------------------------------
@@ -153,11 +157,21 @@ env_verify_cluster() {
 env_register_clusterrepo() {
     log_step "E1.4" "Registering OpenG2P Helm repo in Rancher"
 
+    # Reconcile the URL rather than skip-on-exists: a repo created by an older
+    # run may carry a stale URL (e.g. the root index instead of …/rancher), and
+    # a plain existence check would never fix it.
+    local current_url=""
     if kubectl get clusterrepos.catalog.cattle.io openg2p >/dev/null 2>&1; then
-        log_info "Rancher ClusterRepo 'openg2p' already exists — skipping."
+        current_url=$(kubectl get clusterrepos.catalog.cattle.io openg2p \
+            -o jsonpath='{.spec.url}' 2>/dev/null || true)
+    fi
+
+    if [[ "$current_url" == "$OPENG2P_REPO_URL" ]]; then
+        log_info "Rancher ClusterRepo 'openg2p' already points at ${OPENG2P_REPO_URL} — unchanged."
         return 0
     fi
 
+    # apply reconciles spec.url whether the repo is new or its URL changed.
     kubectl apply -f - <<YAML >/dev/null
 apiVersion: catalog.cattle.io/v1
 kind: ClusterRepo
@@ -167,8 +181,16 @@ spec:
   url: ${OPENG2P_REPO_URL}
 YAML
 
-    log_success "Rancher ClusterRepo 'openg2p' registered (${OPENG2P_REPO_URL})."
-    log_info "Rancher UI → Apps → Repositories will list it within ~30s."
+    if [[ -n "$current_url" ]]; then
+        log_success "Rancher ClusterRepo 'openg2p' URL updated: ${current_url} -> ${OPENG2P_REPO_URL}."
+        # Nudge Rancher's catalog controller to re-download the index now.
+        kubectl annotate clusterrepos.catalog.cattle.io openg2p \
+            catalog.cattle.io/force-update="$(date -u +%s 2>/dev/null || echo refresh)" \
+            --overwrite >/dev/null 2>&1 || true
+    else
+        log_success "Rancher ClusterRepo 'openg2p' registered (${OPENG2P_REPO_URL})."
+    fi
+    log_info "Rancher UI → Apps → Repositories will reflect it within ~30s."
 }
 
 # ---------------------------------------------------------------------------

@@ -97,14 +97,14 @@ admin_email: "${ENV_ADMIN_EMAIL}"
 commons_base:
   chart_name:    "openg2p-commons-base"
   chart_path:    ""
-  chart_repo:    "https://openg2p.github.io/openg2p-helm"
+  chart_repo:    "https://openg2p.github.io/openg2p-helm/rancher"
   chart_version: "${COMMONS_VERSION}"
   extra_helm_args: "${base_extras}"
 
 commons_services:
   chart_name:    "openg2p-commons-services"
   chart_path:    ""
-  chart_repo:    "https://openg2p.github.io/openg2p-helm"
+  chart_repo:    "https://openg2p.github.io/openg2p-helm/rancher"
   chart_version: "${COMMONS_VERSION}"
   extra_helm_args: "${svc_extras}"
 

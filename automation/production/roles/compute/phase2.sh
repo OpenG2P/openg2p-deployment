@@ -7,6 +7,9 @@
 #   C2.2  Install Istio via istioctl (uses charts/istio-install/templates/operator.yaml)
 #   C2.3  helmfile sync — Rancher (local auth, embedded NFS-backed Postgres),
 #         monitoring, logging, Istio EnvoyFilter, Gateways, VirtualServices
+#   C2.4  Bootstrap Rancher — set a known admin password (saved to
+#         cattle-system/rancher-secret), set server-url, rename the "local"
+#         cluster to cluster_name (LOCAL auth — no Keycloak/SAML)
 # =============================================================================
 
 # Hostname helpers come from lib/shared/hostnames.sh (sourced by compute/run.sh).
@@ -149,10 +152,209 @@ compute_helmfile_sync() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────
+# C2.4  Bootstrap Rancher (LOCAL auth) — admin password, server-url, cluster name
+# ─────────────────────────────────────────────────────────────────────────
+# Rancher ships with a one-time random bootstrap password and names the cluster
+# it manages "local". This step (idempotent) turns that into a usable install:
+#   - reset the admin password to a known value, saved in the K8s secret
+#     cattle-system/rancher-secret (the secret the completion summary reads)
+#   - set the server-url to https://rancher.<domain>
+#   - rename the built-in "local" cluster to cluster_name, so the Rancher UI
+#     shows e.g. "openg2p" instead of "local"
+#
+# Rancher uses LOCAL authentication — there is NO Keycloak/SAML wiring here.
+# (This is the Keycloak-free remainder of the former phase 3, which was removed
+#  wholesale when the Keycloak<->Rancher SAML integration was dropped.)
+
+# Try a Rancher local-auth login; echo the session token (empty on failure).
+_rancher_try_login() {
+    local url="$1" password="$2" response
+    response=$(curl -sk -X POST "${url}/v3-public/localProviders/local?action=login" \
+        -H "Content-Type: application/json" \
+        -d "{\"username\":\"admin\",\"password\":\"${password}\"}" 2>/dev/null)
+    echo "$response" | jq -r '.token // empty' 2>/dev/null || true
+}
+
+# Authenticated Rancher API call.
+_rancher_api() {
+    local method="$1" url="$2" token="$3" data="${4:-}"
+    if [[ -n "$data" ]]; then
+        curl -sk -X "$method" "$url" -H "Authorization: Bearer ${token}" \
+            -H "Content-Type: application/json" -d "$data" 2>/dev/null
+    else
+        curl -sk -X "$method" "$url" -H "Authorization: Bearer ${token}" \
+            -H "Content-Type: application/json" 2>/dev/null
+    fi
+}
+
+compute_bootstrap_rancher() {
+    local step="compute.phase2.rancher_bootstrap"
+    if skip_if_done "$step" "Rancher bootstrap"; then return 0; fi
+
+    log_step "C2.4" "Bootstrap Rancher — admin password, server-url, cluster name"
+
+    ensure_kubeconfig
+
+    local rancher_host rancher_url
+    rancher_host=$(get_rancher_hostname)
+    rancher_url="https://${rancher_host}"
+
+    # ── Wait for the Rancher deployment to be available ──────────────────
+    wait_for_command "Rancher deployment ready" \
+        "kubectl -n cattle-system rollout status deployment/rancher --timeout=5s" \
+        600 15 || {
+        log_error "Rancher is not ready" \
+                  "Rancher deployment did not become available" \
+                  "Check Rancher pods" \
+                  "kubectl -n cattle-system get pods"
+        exit 1
+    }
+    sleep 10
+
+    # ── Verify we can actually REACH Rancher's API ───────────────────────
+    # An unreachable API returns an empty body that looks just like a wrong
+    # password, so probe connectivity explicitly before trying to log in.
+    log_info "Probing Rancher API connectivity at ${rancher_url}..."
+    local probe_code
+    probe_code=$(curl -sk -o /dev/null --max-time 10 -w '%{http_code}' \
+                 "${rancher_url}/v3-public" 2>/dev/null) || probe_code="000"
+    case "$probe_code" in
+        200|301|302|401|403) log_success "Rancher API reachable (HTTP ${probe_code})." ;;
+        *)
+            log_error "Cannot reach Rancher at ${rancher_url} (HTTP '${probe_code}')" \
+                      "DNS resolution or TCP connect to ${rancher_url} failed from the compute node" \
+                      "Check /etc/hosts maps ${rancher_host} to the RP private IP and that RP nginx routes 443 to compute:30080" \
+                      "getent hosts ${rancher_host}; curl -kv ${rancher_url}/ping"
+            exit 1
+            ;;
+    esac
+
+    # ── Bootstrap the admin password ─────────────────────────────────────
+    # Resolution order (no password is ever stored in the config file):
+    #   1. RANCHER_ADMIN_PASSWORD env var (operator override)
+    #   2. cattle-system/rancher-secret  (a previous run — makes this idempotent)
+    #   3. cattle-system/bootstrap-secret (fresh install → auto-generate + set)
+    #   4. kubectl exec reset-password    (operator changed it manually)
+    log_info "Bootstrapping Rancher admin password..."
+    local rancher_admin_password="" rancher_token=""
+
+    # 1. env var
+    if [[ -n "${RANCHER_ADMIN_PASSWORD:-}" ]]; then
+        rancher_token=$(_rancher_try_login "$rancher_url" "$RANCHER_ADMIN_PASSWORD")
+        if [[ -n "$rancher_token" ]]; then
+            rancher_admin_password="$RANCHER_ADMIN_PASSWORD"
+            log_success "Rancher login successful (source: RANCHER_ADMIN_PASSWORD)."
+        fi
+    fi
+
+    # 2. existing rancher-secret
+    if [[ -z "$rancher_token" ]]; then
+        local secret_password
+        secret_password=$(kubectl -n cattle-system get secret rancher-secret \
+            -o jsonpath='{.data.adminPassword}' 2>/dev/null | base64 -d 2>/dev/null || true)
+        if [[ -n "$secret_password" ]]; then
+            rancher_token=$(_rancher_try_login "$rancher_url" "$secret_password")
+            if [[ -n "$rancher_token" ]]; then
+                rancher_admin_password="$secret_password"
+                log_success "Rancher login successful (source: existing rancher-secret)."
+            fi
+        fi
+    fi
+
+    # 3. bootstrap password (fresh install) → set a generated admin password
+    if [[ -z "$rancher_token" ]]; then
+        log_info "Trying the one-time bootstrap password (fresh install)..."
+        local bootstrap_password
+        bootstrap_password=$(kubectl -n cattle-system get secret bootstrap-secret \
+            -o jsonpath='{.data.bootstrapPassword}' 2>/dev/null | base64 -d 2>/dev/null || true)
+        if [[ -z "$bootstrap_password" ]]; then
+            bootstrap_password=$(kubectl -n cattle-system get pods -l app=rancher \
+                -o jsonpath='{.items[0].metadata.name}' 2>/dev/null | \
+                xargs -I{} kubectl -n cattle-system logs {} 2>/dev/null | \
+                grep "Bootstrap Password:" | head -1 | awk '{print $NF}' || true)
+        fi
+        if [[ -n "$bootstrap_password" ]]; then
+            rancher_token=$(_rancher_try_login "$rancher_url" "$bootstrap_password")
+            if [[ -n "$rancher_token" ]]; then
+                rancher_admin_password="openg2p-$(openssl rand -hex 8)"
+                log_info "Bootstrap login successful. Setting a new admin password..."
+                curl -sk -X POST "${rancher_url}/v3/users?action=changepassword" \
+                    -H "Authorization: Bearer ${rancher_token}" \
+                    -H "Content-Type: application/json" \
+                    -d "{\"currentPassword\":\"${bootstrap_password}\",\"newPassword\":\"${rancher_admin_password}\"}" \
+                    > /dev/null 2>&1
+                rancher_token=$(_rancher_try_login "$rancher_url" "$rancher_admin_password")
+                [[ -n "$rancher_token" ]] && log_success "Rancher admin password generated and set."
+            fi
+        fi
+    fi
+
+    # 4. force reset via kubectl exec
+    if [[ -z "$rancher_token" ]]; then
+        log_warn "All known passwords failed — force-resetting via kubectl exec..."
+        local reset_password
+        reset_password=$(kubectl -n cattle-system exec deploy/rancher -- reset-password 2>/dev/null \
+            | tail -1 | tr -d '[:space:]' || true)
+        if [[ -n "$reset_password" ]]; then
+            rancher_token=$(_rancher_try_login "$rancher_url" "$reset_password")
+            if [[ -n "$rancher_token" ]]; then
+                rancher_admin_password="openg2p-$(openssl rand -hex 8)"
+                curl -sk -X POST "${rancher_url}/v3/users?action=changepassword" \
+                    -H "Authorization: Bearer ${rancher_token}" \
+                    -H "Content-Type: application/json" \
+                    -d "{\"currentPassword\":\"${reset_password}\",\"newPassword\":\"${rancher_admin_password}\"}" \
+                    > /dev/null 2>&1
+                rancher_token=$(_rancher_try_login "$rancher_url" "$rancher_admin_password")
+                [[ -n "$rancher_token" ]] && log_success "Rancher admin password reset and set."
+            fi
+        fi
+    fi
+
+    if [[ -z "$rancher_token" ]]; then
+        log_error "Cannot log in to Rancher to bootstrap the admin password" \
+                  "All methods failed (env var, rancher-secret, bootstrap-secret, kubectl reset)" \
+                  "Retry with an explicit password, then re-run this phase" \
+                  "RANCHER_ADMIN_PASSWORD=yourpass <orchestrator> --role compute --phase 2 --force"
+        exit 1
+    fi
+
+    # ── Persist the admin password + set the server URL ──────────────────
+    _rancher_api PUT "${rancher_url}/v3/settings/server-url" "$rancher_token" \
+        "{\"value\":\"${rancher_url}\"}" > /dev/null 2>&1
+
+    kubectl -n cattle-system create secret generic rancher-secret \
+        --from-literal=adminPassword="${rancher_admin_password}" \
+        --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
+    log_success "Rancher admin ready — password saved to cattle-system/rancher-secret."
+
+    # ── Rename the built-in "local" cluster to cluster_name ──────────────
+    local cluster_display_name
+    cluster_display_name=$(cfg "cluster_name" "openg2p")
+    if [[ "$cluster_display_name" != "local" ]]; then
+        log_info "Setting Rancher cluster display name to '${cluster_display_name}'..."
+        local rename_response rename_error
+        rename_response=$(_rancher_api PUT "${rancher_url}/v3/clusters/local" "$rancher_token" \
+            "{\"name\":\"${cluster_display_name}\"}")
+        rename_error=$(echo "$rename_response" | jq -r '.message // empty' 2>/dev/null || true)
+        if [[ -n "$rename_error" ]]; then
+            log_warn "API rename failed (${rename_error}); trying kubectl patch..."
+            kubectl patch clusters.management.cattle.io local --type=merge \
+                -p "{\"spec\":{\"displayName\":\"${cluster_display_name}\"}}" > /dev/null 2>&1 || \
+                log_warn "Could not rename cluster — rename it manually in the Rancher UI."
+        else
+            log_success "Rancher cluster display name set to '${cluster_display_name}'."
+        fi
+    fi
+
+    mark_step_done "$step"
+}
+
+# ─────────────────────────────────────────────────────────────────────────
 # Phase entry
 # ─────────────────────────────────────────────────────────────────────────
 run_compute_phase2() {
     compute_render_helmfile_values
     compute_install_istio
     compute_helmfile_sync
+    compute_bootstrap_rancher
 }
