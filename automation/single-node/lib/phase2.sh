@@ -2,7 +2,7 @@
 # =============================================================================
 # OpenG2P Deployment Automation — Phase 2: Platform Components (Helmfile)
 # =============================================================================
-# Installs Istio, Rancher, Keycloak, Monitoring, and Logging on the K8s cluster
+# Installs Istio, Rancher, Monitoring, and Logging on the K8s cluster
 # using Helmfile. Sourced by openg2p-infra.sh — do not run directly.
 # =============================================================================
 
@@ -56,22 +56,17 @@ install_istio_if_needed() {
 generate_helmfile_infra_values() {
     local values_file="${SCRIPT_DIR}/helmfile-infra-values.yaml"
     local rancher_host=$(get_rancher_hostname)
-    local keycloak_host=$(get_keycloak_hostname)
 
     cat > "$values_file" <<EOF
 # Auto-generated from infra config — do not edit manually
 # Generated at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
 
 rancher_hostname: "${rancher_host}"
-keycloak_hostname: "${keycloak_host}"
 node_ip: "$(cfg 'node_ip')"
 
 rancher:
   version: "$(cfg 'rancher.version' '2.12.3')"
   replicas: $(cfg 'rancher.replicas' '1')
-
-keycloak:
-  replicas: $(cfg 'keycloak.replicas' '1')
 EOF
 
     log_success "Helmfile infra values generated at ${values_file}"

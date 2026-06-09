@@ -209,10 +209,11 @@ env_phase2_step1_commons_base() {
         extra=($extra_args)
     fi
 
-    # The commons-base chart deploys its own per-env Keycloak and derives
-    # both keycloakBaseUrl and keycloakInternalUrl from baseDomain and
+    # The commons-base chart deploys this environment's own Keycloak and
+    # derives both keycloakBaseUrl and keycloakInternalUrl from baseDomain and
     # Release.Name automatically. Do NOT override those globals here —
-    # they must point to the per-env Keycloak, not the infra Keycloak.
+    # they must point to this environment's Keycloak. (Rancher does not use
+    # Keycloak — it authenticates locally.)
     helm_install_chart "$env_name" "$release_name" "$chart_ref" "$chart_version" \
         "openg2p-commons-base" \
         --set "global.baseDomain=${base_domain}" \

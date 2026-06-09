@@ -75,7 +75,7 @@ main() {
     echo -e "${RED}║${NC}                                                              ${RED}║${NC}"
     echo -e "${RED}║${NC}    • RKE2 Kubernetes cluster and ALL workloads               ${RED}║${NC}"
     echo -e "${RED}║${NC}    • ALL environments and their data                         ${RED}║${NC}"
-    echo -e "${RED}║${NC}    • Rancher, Keycloak, Istio, monitoring                    ${RED}║${NC}"
+    echo -e "${RED}║${NC}    • Rancher, Istio, monitoring, logging                     ${RED}║${NC}"
     echo -e "${RED}║${NC}    • Wireguard VPN server and ALL peer configs               ${RED}║${NC}"
     echo -e "${RED}║${NC}    • dnsmasq DNS server                                      ${RED}║${NC}"
     echo -e "${RED}║${NC}    • Nginx reverse proxy and TLS certificates                ${RED}║${NC}"

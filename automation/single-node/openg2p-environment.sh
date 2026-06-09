@@ -96,7 +96,7 @@ EOF
 show_env_summary() {
     local env_name=$(cfg "environment")
     local base_domain=$(get_env_base_domain)
-    # Per-env Keycloak deployed by the commons-base chart (not the infra Keycloak)
+    # Per-env Keycloak deployed by the commons-base chart (Rancher uses local auth)
     local keycloak_url="https://keycloak.${base_domain}"
 
     echo ""

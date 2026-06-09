@@ -33,7 +33,7 @@ base_domain: ""
 # Infrastructure reference
 # ---------------------------------------------------------------------------
 # Path to the infra config file (used to inherit node_ip, domain_mode,
-# local_domain, keycloak_hostname, letsencrypt settings, etc.)
+# local_domain, rancher_hostname, letsencrypt settings, etc.)
 # Relative paths are resolved from the automation/single-node/ directory.
 infra_config: "infra-config.yaml"
 

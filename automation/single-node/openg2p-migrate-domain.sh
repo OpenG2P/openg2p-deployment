@@ -10,12 +10,10 @@
 #
 # What it does:
 #   Phase 1: Infrastructure domain migration
-#     - Validates DNS records for new hostnames
-#     - Obtains Let's Encrypt certificates for Rancher + Keycloak
-#     - Updates Nginx server blocks with new hostnames and cert paths
-#     - Patches Keycloak KC_HOSTNAME to new hostname
+#     - Validates DNS records for the new Rancher hostname
+#     - Obtains Let's Encrypt certificate for Rancher
+#     - Updates Nginx server block with new hostname and cert path
 #     - Updates Rancher server-url
-#     - Re-configures Rancher-Keycloak SAML with new hostnames
 #     - Removes CoreDNS local domain forward (no longer needed)
 #     - Updates infra-config.yaml
 #
@@ -113,7 +111,7 @@ update_yaml_key() {
     local value="$3"
 
     if [[ "$key" == *.* ]]; then
-        # Nested key: e.g., keycloak.admin_email
+        # Nested key: e.g., tls.method
         local parent="${key%%.*}"
         local child="${key#*.}"
         # Match "  child: ..." under the parent section
@@ -136,24 +134,22 @@ migrate_infra() {
     log_step "M1" "Phase 1 — Infrastructure Domain Migration"
 
     local new_rancher_host=$(cfg "new_rancher_hostname")
-    local new_keycloak_host=$(cfg "new_keycloak_hostname")
     local new_domain_mode=$(cfg "new_domain_mode" "custom")
     local tls_method=$(cfg "tls.method" "letsencrypt")
     local node_ip=$(cfg "node_ip")
 
-    if [[ -z "$new_rancher_host" || -z "$new_keycloak_host" ]]; then
-        log_error "new_rancher_hostname and new_keycloak_hostname are required"
+    if [[ -z "$new_rancher_host" ]]; then
+        log_error "new_rancher_hostname is required"
         return 1
     fi
 
     # ── M1.1: Validate DNS ──────────────────────────────────────────────
-    log_info "Validating DNS records for new hostnames..."
-    check_dns_for_domains "$node_ip" "$new_rancher_host" "$new_keycloak_host"
+    log_info "Validating DNS records for the new Rancher hostname..."
+    check_dns_for_domains "$node_ip" "$new_rancher_host"
 
     # ── M1.2: Obtain/install TLS certificates ───────────────────────────
     # Temporarily set config values so cert functions resolve correctly
     CONFIG["rancher_hostname"]="$new_rancher_host"
-    CONFIG["keycloak_hostname"]="$new_keycloak_host"
     CONFIG["domain_mode"]="custom"
     CONFIG["tls.method"]="$tls_method"
 
@@ -162,16 +158,8 @@ migrate_infra() {
 
         local rancher_cert_src=$(cfg "tls.rancher_cert" "")
         local rancher_key_src=$(cfg "tls.rancher_key" "")
-        local keycloak_cert_src=$(cfg "tls.keycloak_cert" "")
-        local keycloak_key_src=$(cfg "tls.keycloak_key" "")
-
-        if [[ -z "$keycloak_cert_src" && -n "$rancher_cert_src" ]]; then
-            keycloak_cert_src="$rancher_cert_src"
-            keycloak_key_src="$rancher_key_src"
-        fi
 
         install_provided_cert "$new_rancher_host" "$rancher_cert_src" "$rancher_key_src" || return 1
-        install_provided_cert "$new_keycloak_host" "$keycloak_cert_src" "$keycloak_key_src" || return 1
     else
         log_info "Obtaining Let's Encrypt certificates..."
         local le_email=$(cfg "tls.letsencrypt_email" "")
@@ -196,11 +184,9 @@ migrate_infra() {
     # ── M1.3: Update Nginx infra server blocks ──────────────────────────
     log_info "Updating Nginx infrastructure server blocks..."
 
-    local rancher_cert rancher_key keycloak_cert keycloak_key
+    local rancher_cert rancher_key
     rancher_cert=$(get_cert_path "$new_rancher_host" "cert")
     rancher_key=$(get_cert_path "$new_rancher_host" "key")
-    keycloak_cert=$(get_cert_path "$new_keycloak_host" "cert")
-    keycloak_key=$(get_cert_path "$new_keycloak_host" "key")
 
     backup_file "/etc/nginx/sites-available/openg2p-infra.conf"
 
@@ -210,7 +196,7 @@ upstream istio_ingress {
 }
 server {
     listen 80;
-    server_name ${new_rancher_host} ${new_keycloak_host};
+    server_name ${new_rancher_host};
     return 301 https://\$host\$request_uri;
 }
 server {
@@ -236,75 +222,15 @@ server {
         proxy_pass_request_headers      on;
     }
 }
-server {
-    listen 443 ssl;
-    server_name ${new_keycloak_host};
-    ssl_certificate     ${keycloak_cert};
-    ssl_certificate_key ${keycloak_key};
-    ssl_protocols       TLSv1.2 TLSv1.3;
-    location / {
-        proxy_pass                      http://istio_ingress;
-        proxy_http_version              1.1;
-        proxy_buffering                 on;
-        proxy_buffers                   8 16k;
-        proxy_buffer_size               16k;
-        proxy_busy_buffers_size         32k;
-        proxy_set_header                Upgrade \$http_upgrade;
-        proxy_set_header                Connection "upgrade";
-        proxy_set_header                Host \$host;
-        proxy_set_header                X-Real-IP \$remote_addr;
-        proxy_set_header                X-Forwarded-Host \$host;
-        proxy_set_header                X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header                X-Forwarded-Proto https;
-        proxy_pass_request_headers      on;
-    }
-}
 EOF
 
     nginx -t || { log_error "Nginx config test failed"; return 1; }
     systemctl reload nginx
-    log_success "Nginx updated for ${new_rancher_host} and ${new_keycloak_host}."
-
-    # ── M1.4: Patch Keycloak KC_HOSTNAME ────────────────────────────────
-    log_info "Patching Keycloak KC_HOSTNAME to ${new_keycloak_host}..."
+    log_success "Nginx updated for ${new_rancher_host}."
 
     ensure_kubeconfig || return 1
 
-    kubectl -n keycloak-system set env statefulset/keycloak \
-        "KC_HOSTNAME=${new_keycloak_host}" > /dev/null 2>&1 || {
-        log_warn "Could not patch KC_HOSTNAME via set env, trying direct patch..."
-        kubectl -n keycloak-system get statefulset keycloak -o json | \
-            jq --arg host "$new_keycloak_host" '
-                (.spec.template.spec.containers[0].env) |=
-                (map(select(.name != "KC_HOSTNAME")) + [{"name":"KC_HOSTNAME","value":$host}])
-            ' | kubectl apply -f - > /dev/null 2>&1
-    }
-
-    log_info "Waiting for Keycloak to restart with new hostname..."
-    kubectl -n keycloak-system rollout status statefulset/keycloak --timeout=180s || {
-        log_warn "Keycloak rollout status timed out. It may still be restarting."
-    }
-    sleep 10
-    log_success "Keycloak KC_HOSTNAME set to ${new_keycloak_host}."
-
-    # ── M1.5: Update Keycloak Istio Gateway + VirtualService ────────────
-    log_info "Updating Keycloak Istio Gateway and VirtualService..."
-
-    # Update the Gateway
-    kubectl -n keycloak-system get gateway keycloak -o json 2>/dev/null | \
-        jq --arg host "$new_keycloak_host" \
-           '.spec.servers[0].hosts = [$host]' | \
-        kubectl apply -f - > /dev/null 2>&1 || log_warn "Could not update Keycloak Gateway."
-
-    # Update the VirtualService
-    kubectl -n keycloak-system get virtualservice keycloak -o json 2>/dev/null | \
-        jq --arg host "$new_keycloak_host" \
-           '.spec.hosts = [$host]' | \
-        kubectl apply -f - > /dev/null 2>&1 || log_warn "Could not update Keycloak VirtualService."
-
-    log_success "Keycloak Istio routing updated."
-
-    # ── M1.6: Update Rancher server-url ──────────────────────────────────
+    # ── M1.4: Update Rancher server-url ──────────────────────────────────
     log_info "Updating Rancher server-url to https://${new_rancher_host}..."
 
     local rancher_admin_password="${RANCHER_ADMIN_PASSWORD:-}"
@@ -343,22 +269,7 @@ EOF
         fi
     fi
 
-    # ── M1.7: Re-configure SAML with new hostnames ──────────────────────
-    log_info "Re-configuring Rancher-Keycloak SAML for new hostnames..."
-
-    # Override hostnames in CONFIG so phase3 functions use new values
-    CONFIG["domain_mode"]="custom"
-    CONFIG["rancher_hostname"]="$new_rancher_host"
-    CONFIG["keycloak_hostname"]="$new_keycloak_host"
-
-    # Reset the phase3 state marker so it re-runs
-    rm -f "${STATE_DIR}/phase3.rancher_keycloak.done"
-    FORCE_MODE=true
-    run_phase3
-
-    log_success "SAML re-configured for new hostnames."
-
-    # ── M1.8: Remove CoreDNS local domain forward ───────────────────────
+    # ── M1.5: Remove CoreDNS local domain forward ───────────────────────
     log_info "Removing CoreDNS local domain forward (no longer needed)..."
 
     local old_local_domain=$(cfg "local_domain" "openg2p.test")
@@ -393,7 +304,7 @@ EOF
         log_info "CoreDNS has no local domain forward — nothing to remove."
     fi
 
-    # ── M1.9: Update infra-config.yaml ──────────────────────────────────
+    # ── M1.6: Update infra-config.yaml ──────────────────────────────────
     log_info "Updating infra-config.yaml..."
 
     local infra_config_path=$(cfg "infra_config" "infra-config.yaml")
@@ -403,7 +314,6 @@ EOF
         backup_file "$infra_config_path"
         update_yaml_key "$infra_config_path" "domain_mode" "$new_domain_mode"
         update_yaml_key "$infra_config_path" "rancher_hostname" "$new_rancher_host"
-        update_yaml_key "$infra_config_path" "keycloak_hostname" "$new_keycloak_host"
         update_yaml_key "$infra_config_path" "tls.method" "$tls_method"
         if [[ "$tls_method" == "letsencrypt" ]]; then
             local le_email=$(cfg "tls.letsencrypt_email" "")
@@ -426,8 +336,6 @@ migrate_environments() {
     log_step "M2" "Phase 2 — Environment Domain Migration"
 
     local node_ip=$(cfg "node_ip")
-    local new_keycloak_host=$(cfg "new_keycloak_hostname")
-    local new_keycloak_url="https://${new_keycloak_host}"
     local le_email=$(cfg "tls.letsencrypt_email" "$(cfg 'letsencrypt_email' '')")
     local le_challenge=$(cfg "tls.letsencrypt_challenge" "$(cfg 'letsencrypt_challenge' 'dns')")
 
@@ -454,7 +362,7 @@ migrate_environments() {
         log_info "━━━ Migrating environment: ${env_name} → ${env_domain} ━━━"
 
         migrate_single_environment "$env_name" "$env_config" "$env_domain" \
-            "$node_ip" "$new_keycloak_url" "$le_email" "$le_challenge"
+            "$node_ip" "$le_email" "$le_challenge"
 
         env_index=$((env_index + 1))
     done
@@ -471,9 +379,8 @@ migrate_single_environment() {
     local env_config_file="$2"
     local new_base_domain="$3"
     local node_ip="$4"
-    local new_keycloak_url="$5"
-    local le_email="$6"
-    local le_challenge="$7"
+    local le_email="$5"
+    local le_challenge="$6"
 
     ensure_kubeconfig || return 1
 
@@ -665,13 +572,11 @@ main() {
     fi
 
     local new_rancher=$(cfg "new_rancher_hostname")
-    local new_keycloak=$(cfg "new_keycloak_hostname")
 
     echo ""
     log_info "Current mode:     ${BOLD}$(cfg 'domain_mode' 'local')${NC}"
     log_info "New mode:         ${BOLD}$(cfg 'new_domain_mode' 'custom')${NC}"
     log_info "New Rancher:      ${BOLD}${new_rancher}${NC}"
-    log_info "New Keycloak:     ${BOLD}${new_keycloak}${NC}"
     log_info "Node IP:          ${BOLD}$(cfg 'node_ip')${NC}"
     echo ""
 
@@ -703,7 +608,6 @@ main() {
     echo -e "${GREEN}║                                                              ║${NC}"
     echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${GREEN}║${NC}  Rancher:   ${BOLD}https://${new_rancher}${NC}"
-    echo -e "${GREEN}║${NC}  Keycloak:  ${BOLD}https://${new_keycloak}${NC}"
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}  Config files updated (backups: *.pre-migration)             ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"

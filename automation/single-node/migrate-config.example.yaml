@@ -25,9 +25,8 @@ infra_config: "infra-config.yaml"
 # ---------------------------------------------------------------------------
 new_domain_mode: "custom"
 
-# New hostnames for Rancher and Keycloak
+# New hostname for Rancher (uses local authentication — no SSO hostname)
 new_rancher_hostname: "rancher.openg2p.org"
-new_keycloak_hostname: "keycloak.openg2p.org"
 
 # ---------------------------------------------------------------------------
 # TLS certificates for the new domain
@@ -44,12 +43,9 @@ tls:
   cloudflare_api_token: ""
 
   # --- User-provided certificate paths (when method is "provided") ---
-  # For Rancher and Keycloak. If you have a single wildcard cert,
-  # set rancher_cert/key and leave keycloak_cert/key empty.
+  # For the Rancher hostname.
   rancher_cert: ""
   rancher_key: ""
-  keycloak_cert: ""
-  keycloak_key: ""
 
 # ---------------------------------------------------------------------------
 # Environments to migrate

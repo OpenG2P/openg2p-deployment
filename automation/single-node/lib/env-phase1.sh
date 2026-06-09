@@ -45,7 +45,7 @@ env_phase1_step1_validate() {
     ensure_kubeconfig || return 1
 
     # Check that infra script completed
-    if [[ ! -f "${STATE_DIR}/phase3.rancher_keycloak.done" ]]; then
+    if [[ ! -f "${STATE_DIR}/phase3.rancher_config.done" ]]; then
         log_error "Infrastructure setup not complete" \
                   "The infra script (openg2p-infra.sh) must finish all 3 phases first" \
                   "Run openg2p-infra.sh before creating environments" \

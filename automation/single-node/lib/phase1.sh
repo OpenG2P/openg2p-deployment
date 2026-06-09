@@ -22,15 +22,6 @@ get_rancher_hostname() {
     fi
 }
 
-get_keycloak_hostname() {
-    local mode=$(cfg "domain_mode" "custom")
-    if [[ "$mode" == "local" ]]; then
-        echo "keycloak.$(cfg 'local_domain' 'openg2p.test')"
-    else
-        cfg "keycloak_hostname"
-    fi
-}
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Tool installers — dedicated functions for tools whose install commands
 # have nested subshells that break when passed through eval
@@ -816,15 +807,15 @@ phase1_step7b_coredns_custom() {
     log_info "Verifying DNS resolution from inside a pod..."
     local test_ip
     test_ip=$(kubectl run dns-test --rm -i --restart=Never --image=busybox:1.36 \
-        -- nslookup "keycloak.${local_domain}" 2>/dev/null | \
+        -- nslookup "rancher.${local_domain}" 2>/dev/null | \
         grep -A1 "Name:" | tail -1 | awk '{print $2}' || true)
 
     if [[ "$test_ip" == "$node_ip" ]]; then
-        log_success "CoreDNS resolves keycloak.${local_domain} -> ${node_ip} from inside pods."
+        log_success "CoreDNS resolves rancher.${local_domain} -> ${node_ip} from inside pods."
     else
         log_warn "CoreDNS verification returned '${test_ip}' (expected ${node_ip})."
         log_warn "Pods may need a few more seconds. Check manually:"
-        log_warn "  kubectl run dns-test --rm -it --restart=Never --image=busybox:1.36 -- nslookup keycloak.${local_domain}"
+        log_warn "  kubectl run dns-test --rm -it --restart=Never --image=busybox:1.36 -- nslookup rancher.${local_domain}"
     fi
 
     mark_step_done "$step_id"
@@ -854,19 +845,9 @@ phase1_step8_certificates_provided() {
     log_step "1.8" "Installing user-provided TLS certificates"
 
     local rancher_host=$(get_rancher_hostname)
-    local keycloak_host=$(get_keycloak_hostname)
 
     local rancher_cert_src=$(cfg "tls.rancher_cert" "")
     local rancher_key_src=$(cfg "tls.rancher_key" "")
-    local keycloak_cert_src=$(cfg "tls.keycloak_cert" "")
-    local keycloak_key_src=$(cfg "tls.keycloak_key" "")
-
-    # If only one pair is provided, assume it's a wildcard for both
-    if [[ -z "$keycloak_cert_src" && -n "$rancher_cert_src" ]]; then
-        keycloak_cert_src="$rancher_cert_src"
-        keycloak_key_src="$rancher_key_src"
-        log_info "Using same certificate for both Rancher and Keycloak (wildcard assumed)."
-    fi
 
     if [[ -z "$rancher_cert_src" || -z "$rancher_key_src" ]]; then
         log_error "tls.rancher_cert and tls.rancher_key are required when tls.method is 'provided'" \
@@ -876,7 +857,6 @@ phase1_step8_certificates_provided() {
     fi
 
     install_provided_cert "$rancher_host" "$rancher_cert_src" "$rancher_key_src" || return 1
-    install_provided_cert "$keycloak_host" "$keycloak_cert_src" "$keycloak_key_src" || return 1
 
     log_success "User-provided TLS certificates installed."
 }
@@ -886,7 +866,6 @@ phase1_step8_certificates_local() {
 
     local local_domain=$(cfg "local_domain" "openg2p.test")
     local rancher_host=$(get_rancher_hostname)
-    local keycloak_host=$(get_keycloak_hostname)
     local ca_dir="/etc/openg2p/ca"
     local certs_dir="/etc/openg2p/certs"
 
@@ -905,7 +884,7 @@ phase1_step8_certificates_local() {
         log_success "Local CA already exists."
     fi
 
-    for domain in "$rancher_host" "$keycloak_host"; do
+    for domain in "$rancher_host"; do
         local cert_path="${certs_dir}/${domain}"
         if [[ -f "${cert_path}/fullchain.pem" && -f "${cert_path}/privkey.pem" ]]; then
             log_success "Certificate for ${domain} already exists."
@@ -964,7 +943,6 @@ phase1_step8_certificates_letsencrypt() {
     local email=$(cfg "tls.letsencrypt_email" "$(cfg 'letsencrypt_email' '')")
     local challenge=$(cfg "tls.letsencrypt_challenge" "$(cfg 'letsencrypt_challenge' 'dns')")
     local rancher_host=$(get_rancher_hostname)
-    local keycloak_host=$(get_keycloak_hostname)
 
     install_if_missing "certbot" \
         "certbot --version" \
@@ -1003,11 +981,11 @@ phase1_step8_certificates_letsencrypt() {
     esac
 
     local certs_exist=true
-    for domain in "$rancher_host" "$keycloak_host"; do
+    for domain in "$rancher_host"; do
         [[ ! -d "/etc/letsencrypt/live/${domain}" ]] && certs_exist=false && break
     done
     if [[ "$certs_exist" == "true" ]]; then
-        log_success "TLS certificates already exist for Rancher and Keycloak."
+        log_success "TLS certificate already exists for Rancher."
         return 0
     fi
 
@@ -1018,7 +996,7 @@ phase1_step8_certificates_letsencrypt() {
 
     log_info "Requesting certificates (challenge: ${challenge})..."
 
-    for domain in "$rancher_host" "$keycloak_host"; do
+    for domain in "$rancher_host"; do
         [[ -d "/etc/letsencrypt/live/${domain}" ]] && { log_success "Cert for ${domain} exists."; continue; }
         log_info "Requesting certificate for ${domain}..."
         case "$challenge" in
@@ -1064,20 +1042,17 @@ phase1_step9_nginx() {
     local node_ip=$(cfg "node_ip")
     local domain_mode=$(cfg "domain_mode" "custom")
     local rancher_host=$(get_rancher_hostname)
-    local keycloak_host=$(get_keycloak_hostname)
 
     install_if_missing "nginx" \
         "nginx -v" \
         "apt-get install -y -qq nginx > /dev/null 2>&1" \
         "https://nginx.org/en/linux_packages.html"
 
-    local rancher_cert rancher_key keycloak_cert keycloak_key
+    local rancher_cert rancher_key
     rancher_cert=$(get_cert_path "$rancher_host" "cert")
     rancher_key=$(get_cert_path "$rancher_host" "key")
-    keycloak_cert=$(get_cert_path "$keycloak_host" "cert")
-    keycloak_key=$(get_cert_path "$keycloak_host" "key")
 
-    for cert in "$rancher_cert" "$rancher_key" "$keycloak_cert" "$keycloak_key"; do
+    for cert in "$rancher_cert" "$rancher_key"; do
         if [[ ! -f "$cert" ]]; then
             log_error "TLS cert not found: ${cert}" \
                       "Certificate step may not have completed" \
@@ -1096,7 +1071,7 @@ upstream istio_ingress {
 }
 server {
     listen 80;
-    server_name ${rancher_host} ${keycloak_host};
+    server_name ${rancher_host};
     return 301 https://\$host\$request_uri;
 }
 server {
@@ -1104,29 +1079,6 @@ server {
     server_name ${rancher_host};
     ssl_certificate     ${rancher_cert};
     ssl_certificate_key ${rancher_key};
-    ssl_protocols       TLSv1.2 TLSv1.3;
-    location / {
-        proxy_pass                      http://istio_ingress;
-        proxy_http_version              1.1;
-        proxy_buffering                 on;
-        proxy_buffers                   8 16k;
-        proxy_buffer_size               16k;
-        proxy_busy_buffers_size         32k;
-        proxy_set_header                Upgrade \$http_upgrade;
-        proxy_set_header                Connection "upgrade";
-        proxy_set_header                Host \$host;
-        proxy_set_header                X-Real-IP \$remote_addr;
-        proxy_set_header                X-Forwarded-Host \$host;
-        proxy_set_header                X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header                X-Forwarded-Proto https;
-        proxy_pass_request_headers      on;
-    }
-}
-server {
-    listen 443 ssl;
-    server_name ${keycloak_host};
-    ssl_certificate     ${keycloak_cert};
-    ssl_certificate_key ${keycloak_key};
     ssl_protocols       TLSv1.2 TLSv1.3;
     location / {
         proxy_pass                      http://istio_ingress;
@@ -1166,7 +1118,7 @@ EOF
         return 1
     }
 
-    log_success "Nginx configured for ${rancher_host} and ${keycloak_host}."
+    log_success "Nginx configured for ${rancher_host}."
     mark_step_done "$step_id"
 }
 

@@ -29,15 +29,13 @@ cluster_name: "openg2p"
 #   "custom" (default) — You provide your own domain names and DNS records.
 #                         TLS certificates are obtained via Let's Encrypt.
 #                         Required for production and public-facing deployments.
-#                         You must fill in rancher_hostname, keycloak_hostname,
-#                         and the TLS section below.
+#                         You must fill in rancher_hostname and the TLS section below.
 #
 #   "local"            — No domain names or DNS needed. The script sets up:
 #                         • dnsmasq on the VM for local DNS (*.openg2p.test)
 #                         • A local Certificate Authority with self-signed certs
 #                         • Wireguard DNS push so VPN clients resolve automatically
-#                         Hostnames are auto-derived:
-#                           rancher.openg2p.test, keycloak.openg2p.test
+#                         Hostname is auto-derived: rancher.openg2p.test
 #                         Great for sandboxes, demos, pilots, and air-gapped setups.
 #                         Can be migrated to "custom" later.
 domain_mode: "custom"
@@ -52,11 +50,9 @@ local_domain: "openg2p.test"
 # ---------------------------------------------------------------------------
 # Rancher management UI hostname
 # Example: rancher.openg2p.org
+# Rancher uses LOCAL authentication — there is no separate SSO hostname.
+# Create admin users directly in Rancher (☰ → Users & Authentication → Users).
 rancher_hostname: ""
-
-# Keycloak authentication hostname
-# Example: keycloak.openg2p.org
-keycloak_hostname: ""
 
 # ---------------------------------------------------------------------------
 # TLS Certificates (only needed when domain_mode is "custom")
@@ -86,12 +82,8 @@ tls:
 
   # --- User-provided certificate paths (only when method is "provided") ---
   # Paths to fullchain (cert + intermediate CA) and private key files.
-  # If you have a single wildcard cert, set rancher_cert/key and leave
-  # keycloak_cert/key empty — the same cert will be used for both.
   rancher_cert: ""
   rancher_key: ""
-  keycloak_cert: ""
-  keycloak_key: ""
 
 # ---------------------------------------------------------------------------
 # RKE2 Kubernetes
@@ -125,11 +117,6 @@ rancher:
   # On re-run: read from the K8s secret
   # Override: RANCHER_ADMIN_PASSWORD=xxx sudo ./openg2p-infra.sh ...
 
-# ---------------------------------------------------------------------------
-# Keycloak
-# ---------------------------------------------------------------------------
-keycloak:
-  replicas: "1"
-  # Email address for the Keycloak admin user.
-  # Required for Rancher-Keycloak SAML integration (Keycloak uses email as username).
-  admin_email: "admin@openg2p.org"
+# Note: Keycloak is NOT installed at the infra level. Rancher uses local
+# authentication. The OpenG2P apps' Keycloak is deployed per-environment by
+# openg2p-environment.sh (at keycloak.<environment domain>), not here.

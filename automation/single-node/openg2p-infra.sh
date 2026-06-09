@@ -4,8 +4,8 @@
 # =============================================================================
 # Sets up the complete base infrastructure on a single Ubuntu 24.04 VM:
 #   Phase 1 (bash):     Tools, firewall, RKE2, Wireguard, NFS, DNS, TLS, Nginx
-#   Phase 2 (helmfile): Istio, Rancher, Keycloak, Monitoring, Logging
-#   Phase 3 (APIs):     Rancher bootstrap, Rancher-Keycloak SAML integration
+#   Phase 2 (helmfile): Istio, Rancher, Monitoring, Logging
+#   Phase 3 (APIs):     Rancher bootstrap (local admin, cluster name, RBAC roles)
 #
 # Supports two domain modes:
 #   "custom" — your own domains + Let's Encrypt (production)
@@ -94,9 +94,7 @@ show_summary() {
     local node_ip=$(cfg "node_ip")
     local cluster_display_name=$(cfg "cluster_name" "openg2p")
     local rancher_host=$(get_rancher_hostname)
-    local keycloak_host=$(get_keycloak_hostname)
     local local_domain=$(cfg "local_domain" "openg2p.test")
-    local admin_email=$(cfg "keycloak.admin_email" "admin@openg2p.org")
     # cluster_subnet is an undocumented override; default is split tunnel
     local allowed_ips=$(cfg "wireguard.cluster_subnet" "split-tunnel")
 
@@ -109,7 +107,6 @@ show_summary() {
     echo -e "${GREEN}║${NC}  Domain mode: ${BOLD}${domain_mode}${NC}"
     echo -e "${GREEN}║${NC}  Cluster:     ${BOLD}${cluster_display_name}${NC}"
     echo -e "${GREEN}║${NC}  Rancher:     ${BOLD}https://${rancher_host}${NC}"
-    echo -e "${GREEN}║${NC}  Keycloak:    ${BOLD}https://${keycloak_host}${NC}"
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
     echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${GREEN}║${NC}  ${BOLD}Laptop Setup (do these steps on your machine):${NC}             ${GREEN}║${NC}"
@@ -163,10 +160,12 @@ show_summary() {
     echo -e "${GREEN}║${NC}      kubectl get nodes                                        ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
     echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${GREEN}║${NC}  ${BOLD}Login:${NC}                                                      ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}  Open https://${rancher_host} and click 'Login with Keycloak' ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}    Username: ${BOLD}${admin_email}${NC}"
-    echo -e "${GREEN}║${NC}    Password: Keycloak admin password (see below)              ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}  ${BOLD}Login (Rancher uses local authentication):${NC}                  ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}  Open https://${rancher_host} and log in as the local admin.  ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}    Username: ${BOLD}admin${NC}"
+    echo -e "${GREEN}║${NC}    Password: Rancher local admin password (see below)         ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}  Create additional admin/users directly in Rancher:          ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}    ☰ → Users & Authentication → Users                        ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}  ${BOLD}Credentials (note these down!):${NC}                            ${GREEN}║${NC}"
     # Show Rancher admin password if saved
@@ -177,8 +176,6 @@ show_summary() {
         echo -e "${GREEN}║${NC}  Rancher local admin:    user: ${BOLD}admin${NC}  password: ${BOLD}${saved_pw}${NC}"
         echo -e "${GREEN}║${NC}  (also in K8s secret: cattle-system/rancher-secret)         ${GREEN}║${NC}"
     fi
-    echo -e "${GREEN}║${NC}  Keycloak admin password: see K8s secret                    ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}    keycloak-system/keycloak (key: admin-password)            ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
     echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${GREEN}║${NC}  ${BOLD}What's next:${NC}                                                ${GREEN}║${NC}"
@@ -224,25 +221,23 @@ main() {
     if [[ "$domain_mode" == "local" ]]; then
         validate_config "node_ip" "node_name"
     else
-        validate_config "node_ip" "node_name" "rancher_hostname" "keycloak_hostname" "letsencrypt_email"
+        validate_config "node_ip" "node_name" "rancher_hostname" "letsencrypt_email"
     fi
 
     local rancher_host=$(get_rancher_hostname)
-    local keycloak_host=$(get_keycloak_hostname)
 
     log_info "Deployment log: ${LOG_FILE}"
     log_info "Config file:    ${CONFIG_FILE}"
     log_info "Cluster:        $(cfg 'cluster_name' 'openg2p')"
     log_info "Node:           $(cfg 'node_name' 'node1') @ $(cfg 'node_ip')"
     log_info "Rancher:        ${rancher_host}"
-    log_info "Keycloak:       ${keycloak_host}"
     echo ""
 
     case "${RUN_PHASE:-all}" in
         1)
             check_prerequisites
             if [[ "$domain_mode" == "custom" ]]; then
-                check_dns_for_domains "$(cfg 'node_ip')" "$rancher_host" "$keycloak_host"
+                check_dns_for_domains "$(cfg 'node_ip')" "$rancher_host"
             fi
             run_phase1
             ;;
@@ -255,7 +250,7 @@ main() {
         all)
             check_prerequisites
             if [[ "$domain_mode" == "custom" ]]; then
-                check_dns_for_domains "$(cfg 'node_ip')" "$rancher_host" "$keycloak_host"
+                check_dns_for_domains "$(cfg 'node_ip')" "$rancher_host"
             fi
             run_phase1
             run_phase2
