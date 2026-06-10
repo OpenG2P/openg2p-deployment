@@ -7,9 +7,10 @@
 #   Phase 2 (helmfile): Istio, Rancher, Monitoring, Logging
 #   Phase 3 (APIs):     Rancher bootstrap (local admin, cluster name, RBAC roles)
 #
-# Supports two domain modes:
-#   "custom" — your own domains + Let's Encrypt (production)
-#   "local"  — local DNS (dnsmasq) + self-signed CA (sandbox/pilot)
+# Local-only sandbox: local DNS (dnsmasq, *.<local_domain>) + a self-signed CA.
+# Private by default — the web UIs (80/443) are reachable only over Wireguard or
+# from inside the VPC, even on a public IP. Set public_access: true to expose
+# them to the Internet (security risk; see infra-config.example.yaml).
 #
 # After this completes, run openg2p-environment.sh to create environments.
 #
@@ -80,9 +81,10 @@ Options:
   --reset            Clear all infra state markers and exit
   --help             Show this help message
 
-Domain modes (set in config file):
-  custom  — Your own domains + Let's Encrypt (default, for production)
-  local   — Local DNS + self-signed CA (for sandboxes, no domain needed)
+This is a local-only sandbox: it sets up local DNS (dnsmasq, *.<local_domain>)
+and a self-signed CA. By default the sandbox is reachable only over Wireguard
+or from inside the VPC — set public_access: true in the config to expose it to
+the public Internet (carries security risk; see infra-config.example.yaml).
 
 Docs: https://docs.openg2p.org/deployment/deployment-instructions/infrastructure-setup
 EOF
@@ -90,11 +92,11 @@ EOF
 
 # ---------------------------------------------------------------------------
 show_summary() {
-    local domain_mode=$(cfg "domain_mode" "custom")
     local node_ip=$(cfg "node_ip")
     local cluster_display_name=$(cfg "cluster_name" "openg2p")
     local rancher_host=$(get_rancher_hostname)
     local local_domain=$(cfg "local_domain" "openg2p.test")
+    local public_access=$(cfg "public_access" "false")
     # cluster_subnet is an undocumented override; default is split tunnel
     local allowed_ips=$(cfg "wireguard.cluster_subnet" "split-tunnel")
 
@@ -104,9 +106,13 @@ show_summary() {
     echo -e "${GREEN}║   Base Infrastructure Setup Complete!                        ║${NC}"
     echo -e "${GREEN}║                                                              ║${NC}"
     echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${GREEN}║${NC}  Domain mode: ${BOLD}${domain_mode}${NC}"
     echo -e "${GREEN}║${NC}  Cluster:     ${BOLD}${cluster_display_name}${NC}"
     echo -e "${GREEN}║${NC}  Rancher:     ${BOLD}https://${rancher_host}${NC}"
+    if [[ "$public_access" == "true" ]]; then
+        echo -e "${GREEN}║${NC}  Access:      ${BOLD}PUBLIC${NC} — 80/443 open to the Internet (0.0.0.0/0)"
+    else
+        echo -e "${GREEN}║${NC}  Access:      ${BOLD}private${NC} — reachable only via Wireguard / VPC"
+    fi
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
     echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${GREEN}║${NC}  ${BOLD}Laptop Setup (do these steps on your machine):${NC}             ${GREEN}║${NC}"
@@ -120,8 +126,7 @@ show_summary() {
     echo -e "${GREEN}║${NC}    set wireguard.endpoint in config or edit peer1.conf.     ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
 
-    if [[ "$domain_mode" == "local" ]]; then
-        if [[ "$allowed_ips" == "0.0.0.0/0" ]]; then
+    if [[ "$allowed_ips" == "0.0.0.0/0" ]]; then
             echo -e "${GREEN}║${NC}  ${BOLD}Step 2: DNS${NC}                                                ${GREEN}║${NC}"
             echo -e "${GREEN}║${NC}    Full tunnel — DNS push is included in peer config.      ${GREEN}║${NC}"
             echo -e "${GREEN}║${NC}    All *.${local_domain} resolves automatically.             ${GREEN}║${NC}"
@@ -149,7 +154,6 @@ show_summary() {
         echo -e "${GREEN}║${NC}      sudo cp ca.crt /usr/local/share/ca-certificates/       ${GREEN}║${NC}"
         echo -e "${GREEN}║${NC}      sudo update-ca-certificates                            ${GREEN}║${NC}"
         echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
-    fi
 
     echo -e "${GREEN}║${NC}  ${BOLD}Step 4: kubectl/helm access from laptop${NC}                    ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}    Copy remote kubeconfig from the VM:                       ${GREEN}║${NC}"
@@ -215,14 +219,7 @@ main() {
 
     load_config "$CONFIG_FILE"
 
-    local domain_mode=$(cfg "domain_mode" "custom")
-    log_info "Domain mode: ${BOLD}${domain_mode}${NC}"
-
-    if [[ "$domain_mode" == "local" ]]; then
-        validate_config "node_ip" "node_name"
-    else
-        validate_config "node_ip" "node_name" "rancher_hostname" "letsencrypt_email"
-    fi
+    validate_config "node_ip" "node_name"
 
     local rancher_host=$(get_rancher_hostname)
 
@@ -236,9 +233,6 @@ main() {
     case "${RUN_PHASE:-all}" in
         1)
             check_prerequisites
-            if [[ "$domain_mode" == "custom" ]]; then
-                check_dns_for_domains "$(cfg 'node_ip')" "$rancher_host"
-            fi
             run_phase1
             ;;
         2)
@@ -249,9 +243,6 @@ main() {
             ;;
         all)
             check_prerequisites
-            if [[ "$domain_mode" == "custom" ]]; then
-                check_dns_for_domains "$(cfg 'node_ip')" "$rancher_host"
-            fi
             run_phase1
             run_phase2
             run_phase3

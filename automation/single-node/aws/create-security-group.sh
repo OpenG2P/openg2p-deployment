@@ -30,6 +30,11 @@ VPC_ID=""
 VPC_CIDR=""
 REGION=""
 WG_PORT="51820"
+# Private by default: 80/443 are opened only to the VPC CIDR. The sandbox is
+# then reachable over Wireguard or from inside the VPC, but NOT from the public
+# Internet. Pass --public-web to open 80/443 to 0.0.0.0/0 (security risk — must
+# be paired with public_access: true in infra-config.yaml).
+PUBLIC_WEB="false"
 
 # ---------------------------------------------------------------------------
 # Parse args
@@ -40,14 +45,17 @@ while [[ $# -gt 0 ]]; do
         --vpc-cidr)  VPC_CIDR="$2"; shift 2 ;;
         --region)    REGION="$2"; shift 2 ;;
         --wg-port)   WG_PORT="$2"; shift 2 ;;
+        --public-web) PUBLIC_WEB="true"; shift ;;
         --help|-h)
-            echo "Usage: $0 --vpc-id vpc-xxxxxxxxx [--region ap-south-1] [--vpc-cidr 172.29.0.0/16] [--wg-port 51820]"
+            echo "Usage: $0 --vpc-id vpc-xxxxxxxxx [--region ap-south-1] [--vpc-cidr 172.29.0.0/16] [--wg-port 51820] [--public-web]"
             echo ""
             echo "Options:"
-            echo "  --vpc-id    VPC ID (required)"
-            echo "  --vpc-cidr  VPC CIDR for inter-node rules (auto-detected if omitted)"
-            echo "  --region    AWS region (uses default from aws configure if omitted)"
-            echo "  --wg-port   Wireguard UDP port (default: 51820)"
+            echo "  --vpc-id     VPC ID (required)"
+            echo "  --vpc-cidr   VPC CIDR for inter-node rules (auto-detected if omitted)"
+            echo "  --region     AWS region (uses default from aws configure if omitted)"
+            echo "  --wg-port    Wireguard UDP port (default: 51820)"
+            echo "  --public-web Open 80/443 to 0.0.0.0/0 (PUBLIC — security risk)."
+            echo "               Default: 80/443 are restricted to the VPC CIDR (private)."
             exit 0
             ;;
         *) echo "Unknown option: $1. Use --help for usage."; exit 1 ;;
@@ -113,22 +121,32 @@ echo "  Created: ${SG_ID}"
 echo ""
 echo "Adding inbound rules..."
 
-# ── Public access (from anywhere) ────────────────────────────────────────
+# ── Always-public ports (SSH + Wireguard tunnel) ─────────────────────────
 echo "  [public] TCP 22    — SSH"
 aws ec2 authorize-security-group-ingress $REGION_FLAG --group-id "$SG_ID" \
     --protocol tcp --port 22 --cidr 0.0.0.0/0 > /dev/null
 
-echo "  [public] TCP 443   — HTTPS (Nginx reverse proxy)"
-aws ec2 authorize-security-group-ingress $REGION_FLAG --group-id "$SG_ID" \
-    --protocol tcp --port 443 --cidr 0.0.0.0/0 > /dev/null
-
-echo "  [public] TCP 80    — HTTP (redirect / Let's Encrypt)"
-aws ec2 authorize-security-group-ingress $REGION_FLAG --group-id "$SG_ID" \
-    --protocol tcp --port 80 --cidr 0.0.0.0/0 > /dev/null
-
 echo "  [public] UDP ${WG_PORT}  — Wireguard VPN"
 aws ec2 authorize-security-group-ingress $REGION_FLAG --group-id "$SG_ID" \
     --protocol udp --port "$WG_PORT" --cidr 0.0.0.0/0 > /dev/null
+
+# ── Web ports (80/443) — private by default ──────────────────────────────
+# Reachable over Wireguard (the decapsulated traffic never re-traverses the SG)
+# or from inside the VPC. Use --public-web to expose them to the Internet.
+if [[ "$PUBLIC_WEB" == "true" ]]; then
+    WEB_CIDR="0.0.0.0/0"
+    echo "  [PUBLIC] TCP 443  — HTTPS (Nginx) — OPEN TO THE INTERNET (--public-web)"
+    echo "  [PUBLIC] TCP 80   — HTTP redirect — OPEN TO THE INTERNET (--public-web)"
+    echo "           ⚠️  Pair this with public_access: true in infra-config.yaml."
+else
+    WEB_CIDR="$VPC_CIDR"
+    echo "  [vpc]    TCP 443  — HTTPS (Nginx) — restricted to ${VPC_CIDR}"
+    echo "  [vpc]    TCP 80   — HTTP redirect — restricted to ${VPC_CIDR}"
+fi
+aws ec2 authorize-security-group-ingress $REGION_FLAG --group-id "$SG_ID" \
+    --protocol tcp --port 443 --cidr "$WEB_CIDR" > /dev/null
+aws ec2 authorize-security-group-ingress $REGION_FLAG --group-id "$SG_ID" \
+    --protocol tcp --port 80 --cidr "$WEB_CIDR" > /dev/null
 
 # ── Inter-node / VPC (for multi-node scaling) ────────────────────────────
 echo "  [vpc]    TCP 6443  — K8s API server"

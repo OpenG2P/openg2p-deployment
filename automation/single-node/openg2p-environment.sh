@@ -152,7 +152,7 @@ main() {
         exit 1
     fi
 
-    # Load infra config to inherit node_ip, domain_mode, etc.
+    # Load infra config to inherit node_ip, local_domain, etc.
     local infra_config_path=$(cfg "infra_config" "infra-config.yaml")
     [[ "$infra_config_path" = /* ]] || infra_config_path="${SCRIPT_DIR}/${infra_config_path}"
     if [[ -f "$infra_config_path" ]]; then
@@ -162,18 +162,16 @@ main() {
         load_config "$CONFIG_FILE"
     else
         log_warn "Infra config not found: ${infra_config_path}"
-        log_warn "node_ip, domain_mode, etc. must be set in env config."
+        log_warn "node_ip, local_domain, etc. must be set in env config."
     fi
 
     if [[ "$FORCE_MODE" == "true" ]]; then
         reset_state "env-${env_name}."
     fi
 
-    local domain_mode=$(cfg "domain_mode" "custom")
     local base_domain=$(get_env_base_domain)
 
     log_info "Environment:    ${BOLD}${env_name}${NC}"
-    log_info "Domain mode:    ${BOLD}${domain_mode}${NC}"
     log_info "Base domain:    ${BOLD}${base_domain}${NC}"
     log_info "Deployment log: ${LOG_FILE}"
     log_info "Config file:    ${CONFIG_FILE}"

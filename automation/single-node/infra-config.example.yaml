@@ -22,68 +22,43 @@ node_name: "node1"
 cluster_name: "openg2p"
 
 # ---------------------------------------------------------------------------
-# Domain mode
+# Local domain
 # ---------------------------------------------------------------------------
-# Controls how hostnames and TLS certificates are set up.
+# This is a local-only sandbox. No public domain names or DNS provider are
+# needed. The script sets up:
+#   • dnsmasq on the VM for local DNS (*.<local_domain>)
+#   • A local Certificate Authority with self-signed certs
+#   • Wireguard DNS push so VPN clients resolve hostnames automatically
+# All hostnames are auto-derived as <service>.<local_domain>
+# (e.g. rancher.openg2p.test). Rancher uses LOCAL authentication — create
+# admin users directly in Rancher (☰ → Users & Authentication → Users).
 #
-#   "custom" (default) — You provide your own domain names and DNS records.
-#                         TLS certificates are obtained via Let's Encrypt.
-#                         Required for production and public-facing deployments.
-#                         You must fill in rancher_hostname and the TLS section below.
-#
-#   "local"            — No domain names or DNS needed. The script sets up:
-#                         • dnsmasq on the VM for local DNS (*.openg2p.test)
-#                         • A local Certificate Authority with self-signed certs
-#                         • Wireguard DNS push so VPN clients resolve automatically
-#                         Hostname is auto-derived: rancher.openg2p.test
-#                         Great for sandboxes, demos, pilots, and air-gapped setups.
-#                         Can be migrated to "custom" later.
-domain_mode: "custom"
-
-# Local domain base (only used when domain_mode is "local")
-# All hostnames will be <service>.<local_domain>
-# Uses .test TLD (reserved by RFC 2606 for testing, avoids mDNS conflicts)
+# Uses the .test TLD (reserved by RFC 2606 for testing, avoids mDNS conflicts).
 local_domain: "openg2p.test"
 
 # ---------------------------------------------------------------------------
-# Domain configuration (only needed when domain_mode is "custom")
+# Public access (security-sensitive)
 # ---------------------------------------------------------------------------
-# Rancher management UI hostname
-# Example: rancher.openg2p.org
-# Rancher uses LOCAL authentication — there is no separate SSO hostname.
-# Create admin users directly in Rancher (☰ → Users & Authentication → Users).
-rancher_hostname: ""
-
-# ---------------------------------------------------------------------------
-# TLS Certificates (only needed when domain_mode is "custom")
-# ---------------------------------------------------------------------------
-tls:
-  # How to obtain TLS certificates:
-  #   "letsencrypt" (default) — Automatically obtain certs from Let's Encrypt.
-  #                              Requires letsencrypt_email and internet access.
-  #   "provided"              — You supply your own cert and key files.
-  #                              Set the paths below. Supports wildcard certs.
-  method: "letsencrypt"
-
-  # --- Let's Encrypt settings (only when method is "letsencrypt") ---
-
-  # Email for Let's Encrypt registration
-  letsencrypt_email: ""
-
-  # Challenge method:
-  #   "dns"            — Manual DNS-01 (recommended). Script pauses for TXT record.
-  #   "dns-cloudflare" — Automated via Cloudflare API token.
-  #   "dns-route53"    — Automated via AWS Route 53 credentials.
-  #   "http"           — HTTP-01. Requires port 80 open to internet.
-  letsencrypt_challenge: "dns"
-
-  # Cloudflare API token (only if challenge is "dns-cloudflare")
-  cloudflare_api_token: ""
-
-  # --- User-provided certificate paths (only when method is "provided") ---
-  # Paths to fullchain (cert + intermediate CA) and private key files.
-  rancher_cert: ""
-  rancher_key: ""
+# Controls who can reach the web UIs (Rancher + environment services on 80/443).
+#
+#   false (default) — PRIVATE. Even if this VM has a public IP, the sandbox is
+#                     reachable only over Wireguard or from inside the VPC. The
+#                     firewall blocks 80/443 from the public Internet. This is
+#                     the recommended, safe default.
+#
+#   true            — PUBLIC. Opens 80/443 to 0.0.0.0/0 so anyone who can route
+#                     to the public IP (and adds the hostnames to their
+#                     /etc/hosts, accepting the self-signed cert) can reach the
+#                     sandbox WITHOUT the VPN.
+#
+#   ⚠️  SECURITY WARNING: Setting this to true exposes the Rancher cluster-admin
+#       UI and every environment service to the public Internet, protected only
+#       by a self-signed certificate and local passwords. This is a sandbox, not
+#       a hardened deployment — only enable it if you understand and accept the
+#       risk, and prefer restricting the source IPs (ufw / cloud security group)
+#       to the specific addresses that need access.
+#       On AWS you must ALSO open 80/443 in the security group (see the docs).
+public_access: false
 
 # ---------------------------------------------------------------------------
 # RKE2 Kubernetes

@@ -21,15 +21,10 @@ get_env_base_domain() {
         echo "$explicit"
         return
     fi
-    # Auto-derive in local mode: <environment>.<local_domain>
-    local domain_mode=$(cfg "domain_mode" "custom")
-    if [[ "$domain_mode" == "local" ]]; then
-        local env_name=$(cfg "environment")
-        local local_domain=$(cfg "local_domain" "openg2p.test")
-        echo "${env_name}.${local_domain}"
-    else
-        echo ""
-    fi
+    # Auto-derive: <environment>.<local_domain>
+    local env_name=$(cfg "environment")
+    local local_domain=$(cfg "local_domain" "openg2p.test")
+    echo "${env_name}.${local_domain}"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -57,9 +52,9 @@ env_phase1_step1_validate() {
     # Validate required config
     local base_domain=$(get_env_base_domain)
     if [[ -z "$base_domain" ]]; then
-        log_error "No base_domain for this environment" \
-                  "In custom mode, base_domain must be explicitly set in env config" \
-                  "Set base_domain: dev.yourdomain.org in your config"
+        log_error "Could not determine base_domain for this environment" \
+                  "It auto-derives as <environment>.<local_domain> — ensure both are set" \
+                  "Check 'environment' and 'local_domain' in your config (or set base_domain explicitly)"
         return 1
     fi
     log_info "Environment base domain: ${base_domain}"
@@ -84,42 +79,10 @@ env_phase1_step2_certificates() {
     local step_id="env-${env_name}.phase1.certificates"
     skip_if_done "$step_id" "TLS certificates for ${env_name}" && return 0
 
-    local domain_mode=$(cfg "domain_mode" "custom")
-    local tls_method=$(cfg "tls.method" "")
     local base_domain=$(get_env_base_domain)
 
-    if [[ "$domain_mode" == "local" ]]; then
-        env_phase1_step2_certificates_local "$base_domain"
-    elif [[ "$tls_method" == "provided" ]]; then
-        env_phase1_step2_certificates_provided "$base_domain"
-    else
-        env_phase1_step2_certificates_letsencrypt "$base_domain"
-    fi
+    env_phase1_step2_certificates_local "$base_domain"
     mark_step_done "$step_id"
-}
-
-env_phase1_step2_certificates_provided() {
-    local base_domain="$1"
-    log_step "E1.2" "Installing user-provided TLS certificate for *.${base_domain}"
-
-    local cert_src=$(cfg "tls.cert" "")
-    local key_src=$(cfg "tls.key" "")
-
-    # Fall back to infra-level rancher cert if env-level not set (wildcard reuse)
-    if [[ -z "$cert_src" ]]; then
-        cert_src=$(cfg "tls.rancher_cert" "")
-        key_src=$(cfg "tls.rancher_key" "")
-    fi
-
-    if [[ -z "$cert_src" || -z "$key_src" ]]; then
-        log_error "tls.cert and tls.key are required when tls.method is 'provided'" \
-                  "Set the paths to your wildcard certificate and key in the config" \
-                  "Check the tls section in your env config"
-        return 1
-    fi
-
-    install_provided_cert "$base_domain" "$cert_src" "$key_src" || return 1
-    log_success "User-provided certificate installed for *.${base_domain}."
 }
 
 env_phase1_step2_certificates_local() {
@@ -181,75 +144,6 @@ EOF
     log_success "Wildcard certificate generated for *.${base_domain}."
 }
 
-env_phase1_step2_certificates_letsencrypt() {
-    local base_domain="$1"
-    log_step "E1.2" "Obtaining Let's Encrypt certificate for *.${base_domain}"
-
-    local email=$(cfg "letsencrypt_email")
-    local challenge=$(cfg "letsencrypt_challenge" "dns")
-
-    if [[ -z "$email" ]]; then
-        log_error "letsencrypt_email not set" \
-                  "Required for obtaining Let's Encrypt certificates" \
-                  "Set letsencrypt_email in your config file"
-        return 1
-    fi
-
-    # Check if cert already exists
-    if [[ -d "/etc/letsencrypt/live/${base_domain}" ]]; then
-        log_success "Let's Encrypt cert for ${base_domain} already exists."
-        return 0
-    fi
-
-    # For environments we need a wildcard cert: *.dev.openg2p.org
-    # Wildcard certs require DNS-01 challenge (HTTP-01 doesn't support wildcards)
-    if [[ "$challenge" == "http" ]]; then
-        log_error "HTTP-01 challenge cannot issue wildcard certificates" \
-                  "Environment certs need wildcard (*.${base_domain})" \
-                  "Use dns, dns-cloudflare, or dns-route53 challenge" \
-                  "Set letsencrypt_challenge: dns in your config"
-        return 1
-    fi
-
-    if systemctl is-active --quiet nginx 2>/dev/null; then
-        log_info "Stopping Nginx temporarily for certificate generation..."
-        systemctl stop nginx
-    fi
-
-    log_info "Requesting wildcard certificate for *.${base_domain} (challenge: ${challenge})..."
-
-    case "$challenge" in
-        dns)
-            log_info "Manual DNS-01: certbot will prompt you to create TXT records."
-            certbot certonly --manual --preferred-challenges dns --agree-tos \
-                --email "$email" -d "${base_domain}" -d "*.${base_domain}" || {
-                log_error "Cert failed for *.${base_domain}" "DNS-01 challenge failed" \
-                          "Verify: dig TXT _acme-challenge.${base_domain}"; return 1; } ;;
-        dns-cloudflare)
-            certbot certonly --dns-cloudflare \
-                --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
-                --dns-cloudflare-propagation-seconds 30 \
-                --non-interactive --agree-tos --email "$email" \
-                -d "${base_domain}" -d "*.${base_domain}" || {
-                log_error "Cert failed for *.${base_domain}" "Cloudflare DNS-01 failed" \
-                          "Check API token and zone permissions"; return 1; } ;;
-        dns-route53)
-            certbot certonly --dns-route53 --dns-route53-propagation-seconds 30 \
-                --non-interactive --agree-tos --email "$email" \
-                -d "${base_domain}" -d "*.${base_domain}" || {
-                log_error "Cert failed for *.${base_domain}" "Route53 DNS-01 failed" \
-                          "Check AWS credentials"; return 1; } ;;
-        *) log_error "Unknown challenge: '${challenge}'" "Valid: dns, dns-cloudflare, dns-route53" ""; return 1 ;;
-    esac
-
-    # Restart Nginx if it was running
-    if systemctl is-enabled --quiet nginx 2>/dev/null; then
-        systemctl start nginx
-    fi
-
-    log_success "Wildcard certificate obtained for *.${base_domain}."
-}
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 1.3: Nginx server block for environment domain
 # ─────────────────────────────────────────────────────────────────────────────
@@ -261,7 +155,6 @@ env_phase1_step3_nginx() {
     log_step "E1.3" "Adding Nginx server block for environment '${env_name}'"
 
     local node_ip=$(cfg "node_ip")
-    local domain_mode=$(cfg "domain_mode" "custom")
     local base_domain=$(get_env_base_domain)
 
     local env_cert env_key
@@ -473,15 +366,12 @@ GWEOF
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 1.8: CA certificate ConfigMap (local mode only)
+# Step 1.8: CA certificate ConfigMap
 # ─────────────────────────────────────────────────────────────────────────────
-# In local mode, services inside pods need to trust our self-signed CA
-# when talking to https://keycloak.openg2p.test. We create a ConfigMap
-# with the CA cert so it can be mounted into pods and added to trust stores.
+# Services inside pods need to trust our self-signed CA when talking to
+# https://keycloak.<env>.<local_domain>. We create a ConfigMap with the CA
+# cert so it can be mounted into pods and added to trust stores.
 env_phase1_step8_ca_configmap() {
-    local domain_mode=$(cfg "domain_mode" "custom")
-    [[ "$domain_mode" == "local" ]] || return 0
-
     local env_name=$(cfg "environment")
     log_step "E1.8" "Creating CA certificate ConfigMap in namespace '${env_name}'"
 

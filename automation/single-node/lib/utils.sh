@@ -204,12 +204,6 @@ validate_config() {
         ((errors++))
     fi
 
-    local email=$(cfg "letsencrypt_email")
-    if [[ -n "$email" ]] && ! [[ "$email" =~ ^[^@]+@[^@]+\.[^@]+$ ]]; then
-        log_warn "Invalid email format: '${email}'"
-        ((errors++))
-    fi
-
     if [[ $errors -gt 0 ]]; then
         log_error "Configuration validation failed with ${errors} error(s)" \
                   "Required fields are missing or invalid in your config file" \
@@ -392,61 +386,6 @@ check_prerequisites() {
 }
 
 # ---------------------------------------------------------------------------
-# DNS verification
-# ---------------------------------------------------------------------------
-check_dns_resolution() {
-    local domain="$1"
-    local expected_ip="$2"
-
-    log_info "Checking DNS resolution for ${domain}..."
-
-    local resolved_ip
-    resolved_ip=$(dig +short "$domain" 2>/dev/null | tail -1 || true)
-
-    if [[ -z "$resolved_ip" ]]; then
-        log_error "DNS resolution failed for '${domain}'" \
-                  "No DNS A record found for this domain" \
-                  "Create an A record pointing '${domain}' to '${expected_ip}' at your DNS provider" \
-                  "dig +short ${domain}" \
-                  "https://docs.openg2p.org/deployment/resource-requirements#domain-mapping"
-        return 1
-    fi
-
-    if [[ "$resolved_ip" != "$expected_ip" ]]; then
-        log_warn "DNS for '${domain}' resolves to '${resolved_ip}' but expected '${expected_ip}'."
-        log_warn "This may be correct if you are using a load balancer or proxy."
-    else
-        log_success "DNS: ${domain} → ${resolved_ip} — OK."
-    fi
-    return 0
-}
-
-check_dns_for_domains() {
-    local expected_ip="$1"
-    shift
-    local domains=("$@")
-
-    log_info "Verifying DNS records..."
-    local dns_ok=true
-
-    for domain in "${domains[@]}"; do
-        if ! check_dns_resolution "$domain" "$expected_ip"; then
-            dns_ok=false
-        fi
-    done
-
-    if [[ "$dns_ok" != "true" ]]; then
-        log_manual_action \
-            "DNS records are not configured correctly." \
-            "Create A records for the domains listed above, pointing to ${expected_ip}" \
-            "DNS propagation can take minutes to hours."
-        exit 1
-    fi
-
-    log_success "All DNS records verified."
-}
-
-# ---------------------------------------------------------------------------
 # Wait helpers
 # ---------------------------------------------------------------------------
 wait_for_command() {
@@ -534,115 +473,19 @@ install_if_missing() {
 # ---------------------------------------------------------------------------
 # TLS certificate helpers
 # ---------------------------------------------------------------------------
-# Resolves cert/key paths for a given hostname based on the TLS method.
-# Supports three modes:
-#   - "local"     → self-signed certs from local CA (/etc/openg2p/certs/)
-#   - "letsencrypt" → Let's Encrypt certs (/etc/letsencrypt/live/)
-#   - "provided"  → user-supplied cert paths (passed directly)
+# Resolves cert/key paths for a given hostname. All certs are self-signed by
+# the local CA and installed under /etc/openg2p/certs/<hostname>/.
 #
 # Usage: get_cert_path <hostname> "cert|key"
 # Returns the file path to stdout.
 get_cert_path() {
     local hostname="$1"
     local type="$2"  # "cert" or "key"
-    local domain_mode=$(cfg "domain_mode" "custom")
-    local tls_method=$(cfg "tls.method" "")
-
-    # Determine effective TLS method
-    # Local mode always uses local certs, regardless of tls.method setting
-    if [[ "$domain_mode" == "local" ]]; then
-        tls_method="local"
-    elif [[ -z "$tls_method" ]]; then
-        tls_method="letsencrypt"
-    fi
-
-    case "$tls_method" in
-        local)
-            if [[ "$type" == "cert" ]]; then
-                echo "/etc/openg2p/certs/${hostname}/fullchain.pem"
-            else
-                echo "/etc/openg2p/certs/${hostname}/privkey.pem"
-            fi
-            ;;
-        letsencrypt)
-            if [[ "$type" == "cert" ]]; then
-                echo "/etc/letsencrypt/live/${hostname}/fullchain.pem"
-            else
-                echo "/etc/letsencrypt/live/${hostname}/privkey.pem"
-            fi
-            ;;
-        provided)
-            # Provided certs are installed to /etc/openg2p/certs/<hostname>/
-            # by install_provided_cert(). Return the installed path.
-            if [[ "$type" == "cert" ]]; then
-                echo "/etc/openg2p/certs/${hostname}/fullchain.pem"
-            else
-                echo "/etc/openg2p/certs/${hostname}/privkey.pem"
-            fi
-            ;;
-        *)
-            log_error "Unknown tls.method: '${tls_method}'" \
-                      "Valid values: letsencrypt, provided" \
-                      "Check tls.method in your config"
-            return 1
-            ;;
-    esac
-}
-
-# Installs user-provided certs to a standard location and validates them.
-# Usage: install_provided_cert <hostname> <cert_path> <key_path>
-install_provided_cert() {
-    local hostname="$1"
-    local cert_src="$2"
-    local key_src="$3"
-    local dest_dir="/etc/openg2p/certs/${hostname}"
-
-    if [[ ! -f "$cert_src" ]]; then
-        log_error "Certificate file not found: ${cert_src}" \
-                  "The path specified in tls config does not exist" \
-                  "Check the file path in your config"
-        return 1
-    fi
-    if [[ ! -f "$key_src" ]]; then
-        log_error "Key file not found: ${key_src}" \
-                  "The path specified in tls config does not exist" \
-                  "Check the file path in your config"
-        return 1
-    fi
-
-    # Validate cert matches hostname
-    local cert_cn
-    cert_cn=$(openssl x509 -noout -subject -in "$cert_src" 2>/dev/null | sed 's/.*CN\s*=\s*//')
-    local cert_san
-    cert_san=$(openssl x509 -noout -ext subjectAltName -in "$cert_src" 2>/dev/null || true)
-
-    if echo "$cert_san" | grep -qi "$hostname" || echo "$cert_san" | grep -qi "\*\."; then
-        log_info "Certificate SAN matches ${hostname}."
-    elif echo "$cert_cn" | grep -qi "$hostname" || echo "$cert_cn" | grep -qi "\*\."; then
-        log_info "Certificate CN matches ${hostname}."
+    if [[ "$type" == "cert" ]]; then
+        echo "/etc/openg2p/certs/${hostname}/fullchain.pem"
     else
-        log_warn "Certificate CN='${cert_cn}' may not match hostname '${hostname}'."
-        log_warn "Proceeding anyway — verify manually if you see TLS errors."
+        echo "/etc/openg2p/certs/${hostname}/privkey.pem"
     fi
-
-    # Validate cert and key match
-    local cert_md5 key_md5
-    cert_md5=$(openssl x509 -noout -modulus -in "$cert_src" 2>/dev/null | md5sum | awk '{print $1}')
-    key_md5=$(openssl rsa -noout -modulus -in "$key_src" 2>/dev/null | md5sum | awk '{print $1}')
-    if [[ "$cert_md5" != "$key_md5" ]]; then
-        log_error "Certificate and key do not match" \
-                  "The modulus of the cert and key are different" \
-                  "Ensure the key file corresponds to the certificate"
-        return 1
-    fi
-
-    # Copy to standard location
-    mkdir -p "$dest_dir"
-    cp "$cert_src" "${dest_dir}/fullchain.pem"
-    cp "$key_src" "${dest_dir}/privkey.pem"
-    chmod 600 "${dest_dir}/privkey.pem"
-
-    log_success "Certificate installed for ${hostname} at ${dest_dir}/."
 }
 
 # ---------------------------------------------------------------------------

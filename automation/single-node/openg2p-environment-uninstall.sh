@@ -80,7 +80,7 @@ main() {
     load_config "$CONFIG_FILE"
     local ENV_NAME=$(cfg "environment")
 
-    # Load infra config for domain_mode, local_domain, node_ip
+    # Load infra config for local_domain, node_ip
     local infra_config_path=$(cfg "infra_config" "infra-config.yaml")
     [[ "$infra_config_path" = /* ]] || infra_config_path="${SCRIPT_DIR}/${infra_config_path}"
     if [[ -f "$infra_config_path" ]]; then
@@ -225,14 +225,11 @@ main() {
     log_success "Nginx config removed."
 
     # ── Step 7: Remove TLS certificates ─────────────────────────────────
-    local domain_mode=$(cfg "domain_mode" "custom")
-    if [[ "$domain_mode" == "local" ]]; then
-        local base_domain=$(get_env_base_domain)
-        if [[ -n "$base_domain" ]]; then
-            log_info "Removing TLS certificate for *.${base_domain}..."
-            rm -rf "/etc/openg2p/certs/${base_domain}" 2>/dev/null || true
-            log_success "TLS certificate removed."
-        fi
+    local base_domain=$(get_env_base_domain)
+    if [[ -n "$base_domain" ]]; then
+        log_info "Removing TLS certificate for *.${base_domain}..."
+        rm -rf "/etc/openg2p/certs/${base_domain}" 2>/dev/null || true
+        log_success "TLS certificate removed."
     fi
 
     # ── Step 8: Remove Rancher Project ──────────────────────────────────

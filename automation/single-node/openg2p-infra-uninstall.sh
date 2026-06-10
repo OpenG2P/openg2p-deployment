@@ -51,7 +51,7 @@ This script completely removes the OpenG2P base infrastructure:
   - dnsmasq DNS server
   - Nginx reverse proxy
   - NFS server and CSI driver
-  - TLS certificates (local CA and Let's Encrypt)
+  - TLS certificates (local CA and self-signed certs)
   - All deployment state markers
 
 WARNING: This is DESTRUCTIVE and IRREVERSIBLE. ALL data will be lost.
@@ -192,8 +192,6 @@ main() {
 
     rm -rf /etc/openg2p/ca
     rm -rf /etc/openg2p/certs
-    # Don't remove Let's Encrypt certs — they may be used by other services
-    # and certbot manages them.
     log_success "Local CA and certificates removed."
 
     # ── Step 8: Clean up state and logs ─────────────────────────────────

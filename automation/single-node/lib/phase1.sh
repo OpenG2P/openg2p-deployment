@@ -11,15 +11,10 @@
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Helper: get effective hostnames (derived in local mode, from config in custom)
+# Helper: get effective Rancher hostname (always derived from the local domain)
 # ─────────────────────────────────────────────────────────────────────────────
 get_rancher_hostname() {
-    local mode=$(cfg "domain_mode" "custom")
-    if [[ "$mode" == "local" ]]; then
-        echo "rancher.$(cfg 'local_domain' 'openg2p.test')"
-    else
-        cfg "rancher_hostname"
-    fi
+    echo "rancher.$(cfg 'local_domain' 'openg2p.test')"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -179,7 +174,11 @@ phase1_step2_firewall() {
 
     local node_ip=$(cfg "node_ip")
     local wg_port=$(cfg "wireguard.port" "51820")
-    local domain_mode=$(cfg "domain_mode" "custom")
+    # public_access: when false (default), the web ports (80/443) are reachable
+    # ONLY over Wireguard or from inside the VPC — NOT from the public Internet,
+    # even if the VM has a public IP. Set it to "true" to expose the sandbox
+    # publicly (see the security warning in infra-config.example.yaml).
+    local public_access=$(cfg "public_access" "false")
 
     # Install ufw if not present
     install_if_missing "ufw" \
@@ -207,20 +206,42 @@ phase1_step2_firewall() {
     ufw default deny incoming > /dev/null
     ufw default allow outgoing > /dev/null
 
-    # ── Public access (from anywhere) ────────────────────────────────────
-    log_info "Allowing public ports..."
+    # VPC scope (node's /16) and Wireguard subnet — used for the default,
+    # private web-port rules and the inter-node rules below.
+    local vpc_cidr wg_subnet_cidr
+    vpc_cidr=$(echo "$node_ip" | awk -F. '{printf "%s.%s.0.0/16", $1, $2}')
+    wg_subnet_cidr=$(cfg "wireguard.subnet" "10.15.0.0/16")
+
+    # ── Always-public ports ──────────────────────────────────────────────
+    # SSH (management channel) and the Wireguard UDP port (so external clients
+    # can establish the tunnel in the first place) are always world-reachable.
+    log_info "Allowing always-public ports (SSH, Wireguard)..."
     ufw_allow "TCP 22    SSH"              22/tcp                         || return 1
-    ufw_allow "TCP 443   HTTPS (Nginx)"    443/tcp                        || return 1
-    ufw_allow "TCP 80    HTTP (redirect)"  80/tcp                         || return 1
     ufw_allow "UDP ${wg_port}  Wireguard"  "${wg_port}/udp"               || return 1
+
+    # ── Web ports (80/443) — private by default ──────────────────────────
+    # By default the sandbox is NOT exposed to the public Internet. The web
+    # ports are reachable only over Wireguard (the wg-subnet allow-all rule
+    # below) or from inside the VPC. Set public_access: true to expose them
+    # to the world (0.0.0.0/0) — this carries real security risk.
+    if [[ "$public_access" == "true" ]]; then
+        log_warn "public_access=true — exposing 80/443 to the PUBLIC INTERNET (0.0.0.0/0)."
+        log_warn "  The Rancher admin UI and all environment services will be publicly reachable."
+        ufw_allow "TCP 443   HTTPS (Nginx, PUBLIC)"  443/tcp             || return 1
+        ufw_allow "TCP 80    HTTP  (redirect, PUBLIC)" 80/tcp            || return 1
+    else
+        log_info "Restricting 80/443 to Wireguard + VPC (private by default)..."
+        ufw_allow "TCP 443 HTTPS (VPC)"   from "$vpc_cidr"       to any port 443 proto tcp || return 1
+        ufw_allow "TCP 80  HTTP  (VPC)"   from "$vpc_cidr"       to any port 80  proto tcp || return 1
+        ufw_allow "TCP 443 HTTPS (WG)"    from "$wg_subnet_cidr" to any port 443 proto tcp || return 1
+        ufw_allow "TCP 80  HTTP  (WG)"    from "$wg_subnet_cidr" to any port 80  proto tcp || return 1
+    fi
 
     # ── Inter-node / VPC (for multi-node scaling) ────────────────────────
     # These ports only need to be reachable from other cluster nodes.
     # We allow from the node's /16 subnet as a reasonable VPC-level scope.
     # On a single-node setup these are accessed locally; the rules are
     # pre-configured so that adding worker nodes later "just works."
-    local vpc_cidr
-    vpc_cidr=$(echo "$node_ip" | awk -F. '{printf "%s.%s.0.0/16", $1, $2}')
     log_info "Allowing inter-node ports from ${vpc_cidr}..."
 
     ufw_allow "TCP 6443  K8s API"          from "$vpc_cidr" to any port 6443 proto tcp          || return 1
@@ -242,8 +263,6 @@ phase1_step2_firewall() {
     # ── Wireguard VPN peers (trusted, allow all) ──────────────────────
     # VPN peers are authenticated via Wireguard keys — allow them full
     # access to services on this node (DNS, HTTPS, K8s API, etc.)
-    local wg_subnet_cidr
-    wg_subnet_cidr=$(cfg "wireguard.subnet" "10.15.0.0/16")
     log_info "Allowing all traffic from Wireguard peers (${wg_subnet_cidr})..."
     ufw_allow "Wireguard subnet (all)" from "$wg_subnet_cidr"  || return 1
 
@@ -389,7 +408,6 @@ phase1_step4_wireguard() {
         allowed_ips="${wg_subnet}, ${vpc_cidr_wg}"
     fi
     local wg_endpoint=$(cfg "wireguard.endpoint" "$node_ip")
-    local domain_mode=$(cfg "domain_mode" "custom")
     local wg_iface="wg0"
     local peer_dir="/etc/wireguard/peers"
 
@@ -448,14 +466,10 @@ PostDown = iptables -D FORWARD -i ${wg_iface} -j ACCEPT; iptables -D FORWARD -o 
 EOF
 
     # DNS line for peer configs:
-    # In local domain mode, clients need to resolve *.openg2p.test via the VM's dnsmasq.
-    # We always include DNS in local mode — on macOS/Windows Wireguard clients this
-    # adds the VM as a DNS server without breaking normal internet resolution.
-    # In custom domain mode, DNS is handled by public DNS (Let's Encrypt domains).
-    local peer_dns_line=""
-    if [[ "$domain_mode" == "local" ]]; then
-        peer_dns_line="DNS = ${node_ip}"
-    fi
+    # Clients need to resolve *.<local_domain> via the VM's dnsmasq. On
+    # macOS/Windows Wireguard clients this adds the VM as a DNS server without
+    # breaking normal internet resolution.
+    local peer_dns_line="DNS = ${node_ip}"
 
     # Generate peer configs
     mkdir -p "$peer_dir"
@@ -541,16 +555,14 @@ EOF
     log_info "Peer configs are at: ${peer_dir}/"
     log_info "  Example: ${peer_dir}/peer1/peer1.conf"
     log_info "Copy a peer config to your laptop and import into Wireguard client."
-    if [[ "$domain_mode" == "local" ]]; then
-        if [[ "$allowed_ips" == "0.0.0.0/0" ]]; then
-            log_info "DNS push is enabled — VPN clients will resolve *.openg2p.test automatically."
-        else
-            local local_domain=$(cfg "local_domain" "openg2p.test")
-            log_info "Split tunnel mode — configure per-domain DNS on your laptop:"
-            log_info "  macOS:   sudo mkdir -p /etc/resolver && echo 'nameserver ${node_ip}' | sudo tee /etc/resolver/${local_domain}"
-            log_info "  Windows: Add-DnsClientNrptRule -Namespace '.${local_domain}' -NameServers '${node_ip}'"
-            log_info "  Linux:   sudo resolvectl dns ${wg_iface} ${node_ip} && sudo resolvectl domain ${wg_iface} '~${local_domain}'"
-        fi
+    if [[ "$allowed_ips" == "0.0.0.0/0" ]]; then
+        log_info "DNS push is enabled — VPN clients will resolve *.$(cfg 'local_domain' 'openg2p.test') automatically."
+    else
+        local local_domain=$(cfg "local_domain" "openg2p.test")
+        log_info "Split tunnel mode — configure per-domain DNS on your laptop:"
+        log_info "  macOS:   sudo mkdir -p /etc/resolver && echo 'nameserver ${node_ip}' | sudo tee /etc/resolver/${local_domain}"
+        log_info "  Windows: Add-DnsClientNrptRule -Namespace '.${local_domain}' -NameServers '${node_ip}'"
+        log_info "  Linux:   sudo resolvectl dns ${wg_iface} ${node_ip} && sudo resolvectl domain ${wg_iface} '~${local_domain}'"
     fi
     log_info ""
 
@@ -648,14 +660,9 @@ phase1_step6_nfs_csi() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 7: Local DNS (dnsmasq) — only in local domain_mode
+# Step 7: Local DNS (dnsmasq)
 # ─────────────────────────────────────────────────────────────────────────────
 phase1_step7_local_dns() {
-    local domain_mode=$(cfg "domain_mode" "custom")
-    if [[ "$domain_mode" != "local" ]]; then
-        return 0
-    fi
-
     local step_id="phase1.local_dns"
     skip_if_done "$step_id" "Local DNS (dnsmasq)" && return 0
 
@@ -757,9 +764,6 @@ EOF
 # so the "import custom/*.server" approach doesn't work. We inject the
 # server block directly into the main rke2-coredns-rke2-coredns ConfigMap.
 phase1_step7b_coredns_custom() {
-    local domain_mode=$(cfg "domain_mode" "custom")
-    [[ "$domain_mode" == "local" ]] || return 0
-
     local step_id="phase1.coredns_custom"
     skip_if_done "$step_id" "CoreDNS local domain forwarding" && return 0
 
@@ -828,37 +832,8 @@ phase1_step8_certificates() {
     local step_id="phase1.certificates"
     skip_if_done "$step_id" "TLS certificates" && return 0
 
-    local domain_mode=$(cfg "domain_mode" "custom")
-    local tls_method=$(cfg "tls.method" "")
-
-    if [[ "$domain_mode" == "local" ]]; then
-        phase1_step8_certificates_local
-    elif [[ "$tls_method" == "provided" ]]; then
-        phase1_step8_certificates_provided
-    else
-        phase1_step8_certificates_letsencrypt
-    fi
+    phase1_step8_certificates_local
     mark_step_done "$step_id"
-}
-
-phase1_step8_certificates_provided() {
-    log_step "1.8" "Installing user-provided TLS certificates"
-
-    local rancher_host=$(get_rancher_hostname)
-
-    local rancher_cert_src=$(cfg "tls.rancher_cert" "")
-    local rancher_key_src=$(cfg "tls.rancher_key" "")
-
-    if [[ -z "$rancher_cert_src" || -z "$rancher_key_src" ]]; then
-        log_error "tls.rancher_cert and tls.rancher_key are required when tls.method is 'provided'" \
-                  "Set the paths to your certificate and key files in the config" \
-                  "Check tls section in your config file"
-        return 1
-    fi
-
-    install_provided_cert "$rancher_host" "$rancher_cert_src" "$rancher_key_src" || return 1
-
-    log_success "User-provided TLS certificates installed."
 }
 
 phase1_step8_certificates_local() {
@@ -936,100 +911,6 @@ EOF
     log_info ""
 }
 
-phase1_step8_certificates_letsencrypt() {
-    log_step "1.8" "Obtaining Let's Encrypt TLS certificates"
-
-    # Support both new tls.* keys and legacy top-level keys
-    local email=$(cfg "tls.letsencrypt_email" "$(cfg 'letsencrypt_email' '')")
-    local challenge=$(cfg "tls.letsencrypt_challenge" "$(cfg 'letsencrypt_challenge' 'dns')")
-    local rancher_host=$(get_rancher_hostname)
-
-    install_if_missing "certbot" \
-        "certbot --version" \
-        "apt-get install -y -qq certbot > /dev/null 2>&1" \
-        "https://certbot.eff.org/"
-
-    case "$challenge" in
-        dns-cloudflare)
-            if ! certbot plugins 2>/dev/null | grep -q dns-cloudflare; then
-                log_error "certbot-dns-cloudflare plugin not installed" \
-                          "Install it manually: apt-get install python3-certbot-dns-cloudflare" \
-                          "Or: pip3 install certbot-dns-cloudflare"
-                return 1
-            fi
-            local cf_token=$(cfg "tls.cloudflare_api_token" "$(cfg 'cloudflare_api_token' '')")
-            if [[ -z "$cf_token" ]]; then
-                log_error "Cloudflare API token not set" \
-                          "cloudflare_api_token is empty in config" \
-                          "Set cloudflare_api_token in your config file" \
-                          "" "https://dash.cloudflare.com/profile/api-tokens"
-                return 1
-            fi
-            mkdir -p /etc/letsencrypt
-            echo "dns_cloudflare_api_token = ${cf_token}" > /etc/letsencrypt/cloudflare.ini
-            chmod 600 /etc/letsencrypt/cloudflare.ini
-            ;;
-        dns-route53)
-            if ! certbot plugins 2>/dev/null | grep -q dns-route53; then
-                log_error "certbot-dns-route53 plugin not installed" \
-                          "Install it manually: apt-get install python3-certbot-dns-route53" \
-                          "Or: pip3 install certbot-dns-route53" \
-                          "Also ensure AWS credentials are configured (aws configure)"
-                return 1
-            fi
-            ;;
-    esac
-
-    local certs_exist=true
-    for domain in "$rancher_host"; do
-        [[ ! -d "/etc/letsencrypt/live/${domain}" ]] && certs_exist=false && break
-    done
-    if [[ "$certs_exist" == "true" ]]; then
-        log_success "TLS certificate already exists for Rancher."
-        return 0
-    fi
-
-    if systemctl is-active --quiet nginx 2>/dev/null; then
-        log_info "Stopping Nginx temporarily for certificate generation..."
-        systemctl stop nginx
-    fi
-
-    log_info "Requesting certificates (challenge: ${challenge})..."
-
-    for domain in "$rancher_host"; do
-        [[ -d "/etc/letsencrypt/live/${domain}" ]] && { log_success "Cert for ${domain} exists."; continue; }
-        log_info "Requesting certificate for ${domain}..."
-        case "$challenge" in
-            dns)
-                log_info "Manual DNS-01: certbot will prompt you to create a TXT record."
-                certbot certonly --manual --preferred-challenges dns --agree-tos \
-                    --email "$email" -d "$domain" || {
-                    log_error "Cert failed for ${domain}" "DNS-01 challenge failed" \
-                              "Verify: dig TXT _acme-challenge.${domain}"; return 1; } ;;
-            dns-cloudflare)
-                certbot certonly --dns-cloudflare \
-                    --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
-                    --dns-cloudflare-propagation-seconds 30 \
-                    --non-interactive --agree-tos --email "$email" -d "$domain" || {
-                    log_error "Cert failed for ${domain}" "Cloudflare DNS-01 failed" \
-                              "Check API token and zone permissions"; return 1; } ;;
-            dns-route53)
-                certbot certonly --dns-route53 --dns-route53-propagation-seconds 30 \
-                    --non-interactive --agree-tos --email "$email" -d "$domain" || {
-                    log_error "Cert failed for ${domain}" "Route53 DNS-01 failed" \
-                              "Check AWS credentials"; return 1; } ;;
-            http)
-                certbot certonly --standalone --non-interactive --agree-tos \
-                    --email "$email" -d "$domain" || {
-                    log_error "Cert failed for ${domain}" "HTTP-01 failed — port 80 not reachable?" \
-                              "Ensure port 80 is open"; return 1; } ;;
-            *) log_error "Unknown challenge: '${challenge}'" "Valid: dns, dns-cloudflare, dns-route53, http" ""; return 1 ;;
-        esac
-        log_success "Certificate obtained for ${domain}."
-    done
-    log_success "All TLS certificates obtained."
-}
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 9: Nginx Reverse Proxy
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1040,7 +921,6 @@ phase1_step9_nginx() {
     log_step "1.9" "Installing and configuring Nginx reverse proxy"
 
     local node_ip=$(cfg "node_ip")
-    local domain_mode=$(cfg "domain_mode" "custom")
     local rancher_host=$(get_rancher_hostname)
 
     install_if_missing "nginx" \
@@ -1145,10 +1025,10 @@ run_phase1() {
     phase1_step4_wireguard
     phase1_step5_nfs_server
     phase1_step6_nfs_csi
-    phase1_step7_local_dns      # Only runs in local mode
-    phase1_step7b_coredns_custom  # Apply CoreDNS forward for local domain
-    phase1_step8_certificates   # Branches: local CA or Let's Encrypt
-    phase1_step9_nginx          # Uses certs from whichever mode
+    phase1_step7_local_dns      # dnsmasq for *.<local_domain>
+    phase1_step7b_coredns_custom  # CoreDNS forward for the local domain
+    phase1_step8_certificates   # local CA + self-signed certs
+    phase1_step9_nginx          # Nginx reverse proxy using the self-signed certs
 
     log_success "Phase 1 complete — all host-level components installed."
 }
