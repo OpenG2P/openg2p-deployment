@@ -157,6 +157,24 @@ env_verify_cluster() {
 env_register_clusterrepo() {
     log_step "E1.4" "Registering OpenG2P Helm repo in Rancher"
 
+    # On a freshly-installed cluster the env stage runs right after infra, so
+    # Rancher's catalog (catalog.cattle.io) API and overall kubectl discovery
+    # may not be ready yet — calls time out mid-body
+    # ("...request canceled while reading body"). E1.3's cluster-info probe is
+    # too small to catch this. Gate on a clean LIST of ClusterRepos first: it
+    # waits out both "Rancher still starting" and a briefly flaky tunnel, and
+    # (unlike a name lookup) returns success for an empty collection, so it's an
+    # unambiguous "API is up and answering" signal that also protects E1.5–E1.8.
+    if ! wait_for_command "Rancher catalog API (catalog.cattle.io) ready" \
+            "kubectl get clusterrepos.catalog.cattle.io" \
+            300 10; then
+        log_error "Rancher catalog API did not become ready" \
+                  "kubectl could not list catalog.cattle.io ClusterRepos within the timeout" \
+                  "Check Rancher is up and your Wireguard tunnel is stable, then re-run the environment stage" \
+                  "kubectl -n cattle-system get pods; kubectl get apiservices | grep cattle"
+        exit 1
+    fi
+
     # Reconcile the URL rather than skip-on-exists: a repo created by an older
     # run may carry a stale URL (e.g. the root index instead of …/rancher), and
     # a plain existence check would never fix it.
@@ -171,8 +189,9 @@ env_register_clusterrepo() {
         return 0
     fi
 
-    # apply reconciles spec.url whether the repo is new or its URL changed.
-    kubectl apply -f - <<YAML >/dev/null
+    # apply reconciles spec.url whether the repo is new or its URL changed;
+    # retry so a single transient body-read timeout doesn't abort the stage.
+    if ! kubectl_apply_retry 4 10 <<YAML
 apiVersion: catalog.cattle.io/v1
 kind: ClusterRepo
 metadata:
@@ -180,6 +199,13 @@ metadata:
 spec:
   url: ${OPENG2P_REPO_URL}
 YAML
+    then
+        log_error "Failed to register the OpenG2P ClusterRepo" \
+                  "kubectl apply kept timing out / failing against the cluster" \
+                  "Re-run the environment stage once Rancher and the Wireguard tunnel are stable" \
+                  "./openg2p-prod.sh --config <your-config> --stage environment"
+        exit 1
+    fi
 
     if [[ -n "$current_url" ]]; then
         log_success "Rancher ClusterRepo 'openg2p' URL updated: ${current_url} -> ${OPENG2P_REPO_URL}."
@@ -270,7 +296,7 @@ env_create_istio_gateway() {
         return 0
     fi
 
-    kubectl apply -f - <<YAML >/dev/null
+    if ! kubectl_apply_retry 4 10 <<YAML
 apiVersion: networking.istio.io/v1beta1
 kind: Gateway
 metadata:
@@ -297,6 +323,13 @@ spec:
         number: 8080
         protocol: HTTP2
 YAML
+    then
+        log_error "Failed to create the Istio Gateway for *.${ENV_BASE_DOMAIN}" \
+                  "kubectl apply kept timing out / failing against the cluster" \
+                  "Re-run the environment stage once the cluster/tunnel are stable" \
+                  "./openg2p-prod.sh --config <your-config> --stage environment"
+        exit 1
+    fi
     log_success "Istio Gateway configured for *.${ENV_BASE_DOMAIN}."
 }
 

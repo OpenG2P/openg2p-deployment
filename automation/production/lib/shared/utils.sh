@@ -474,6 +474,35 @@ wait_for_command() {
     return 1
 }
 
+# ---------------------------------------------------------------------------
+# kubectl_apply_retry — apply a manifest read from stdin, retrying on transient
+# API failures. On a freshly-installed cluster the API server / aggregation
+# layer (e.g. Rancher's catalog.cattle.io) can still be stabilising, or a WG
+# tunnel can briefly hiccup, producing errors like:
+#   "Unexpected error when reading response body: ... Client.Timeout ..."
+# The whole manifest is slurped first so every attempt re-applies the same
+# bytes; `kubectl apply` is idempotent, so re-attempts are safe.
+# Usage:  kubectl_apply_retry [attempts] [delay_s] <<YAML ... YAML
+# ---------------------------------------------------------------------------
+kubectl_apply_retry() {
+    local attempts="${1:-4}"
+    local delay="${2:-10}"
+    local manifest; manifest=$(cat)
+    local n=1 err
+    while true; do
+        if err=$(printf '%s\n' "$manifest" | kubectl apply -f - 2>&1 >/dev/null); then
+            return 0
+        fi
+        if (( n >= attempts )); then
+            log_warn "kubectl apply failed after ${attempts} attempts: ${err}"
+            return 1
+        fi
+        log_warn "kubectl apply attempt ${n}/${attempts} failed (transient API/timeout?); retrying in ${delay}s..."
+        sleep "$delay"
+        n=$((n + 1))
+    done
+}
+
 wait_for_pod_ready() {
     local namespace="$1"
     local label="$2"
