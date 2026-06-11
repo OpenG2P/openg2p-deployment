@@ -215,6 +215,24 @@ validate_orchestrator_config() {
     )
     validate_config "${required[@]}"
 
+    # Kubernetes node names must be RFC 1123 DNS subdomains (lowercase
+    # alphanumeric, '-' and '.', start/end alphanumeric — NO underscores or
+    # uppercase). compute_node_name is written verbatim as RKE2's `node-name:`,
+    # i.e. the K8s Node object's name; an invalid value makes kubelet fail to
+    # register the node and the install dies with an opaque error. Catch it here
+    # on the laptop, before anything is staged to the nodes.
+    local _nn_key _nn_val
+    for _nn_key in compute_node_name storage_node_name; do
+        _nn_val=$(cfg "$_nn_key")
+        if [[ -n "$_nn_val" ]] && ! is_dns1123_subdomain "$_nn_val"; then
+            log_error "Invalid Kubernetes node name in '${_nn_key}': '${_nn_val}'" \
+                      "K8s node names must be RFC 1123 DNS subdomains: lowercase letters, digits, '-' and '.', starting and ending with a letter or digit. Underscores ('_') and uppercase are NOT allowed." \
+                      "Use hyphens instead — e.g. '$(printf '%s' "$_nn_val" | tr 'A-Z_' 'a-z-')' — then update ${_nn_key} in prod-config.yaml" \
+                      ""
+            exit 1
+        fi
+    done
+
     # Customer hostnames: either public_domain (to auto-derive both) or
     # every individual *_hostname must be set.
     local pd=$(cfg public_domain)

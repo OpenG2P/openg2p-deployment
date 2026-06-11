@@ -186,6 +186,17 @@ cfg_bool() {
 # ---------------------------------------------------------------------------
 # Config validation — caller provides required keys list
 # ---------------------------------------------------------------------------
+# Is the string a valid RFC 1123 DNS subdomain? Kubernetes requires node names
+# (and namespaces, service names, …) to match this: lowercase letters, digits,
+# '-' and '.', starting and ending with an alphanumeric, total ≤253 chars.
+# The usual culprits that fail it are underscores ('_') and uppercase letters.
+# Returns 0 (valid) / 1 (invalid).
+is_dns1123_subdomain() {
+    local name="$1"
+    local re='^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$'
+    [[ ${#name} -le 253 ]] && [[ "$name" =~ $re ]]
+}
+
 validate_config() {
     local -a required_keys=("$@")
     log_info "Validating configuration..."

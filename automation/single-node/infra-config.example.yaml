@@ -34,6 +34,11 @@ cluster_name: "openg2p"
 # admin users directly in Rancher (☰ → Users & Authentication → Users).
 #
 # Uses the .test TLD (reserved by RFC 2606 for testing, avoids mDNS conflicts).
+#
+# TLS: ALL certificates are SELF-SIGNED by the built-in local CA. There is no
+# option to supply your own certificate or use Let's Encrypt / a public CA —
+# this is a sandbox. Trust the CA on your client (/etc/openg2p/ca/ca.crt) or
+# accept the browser warning.
 local_domain: "openg2p.test"
 
 # ---------------------------------------------------------------------------

@@ -123,6 +123,11 @@ rp_ssh_key:  "~/.ssh/id_rsa"   # [AWS]
 # ---------------------------------------------------------------------------
 # [AWS] fields below auto-fill from provision-output.yaml — leave blank when it
 # exists. (compute_node_name is [USER].) Fill in only for non-AWS / on-prem.
+#
+# compute_node_name becomes the Kubernetes Node name, so it MUST be a valid RFC
+# 1123 DNS subdomain: lowercase letters, digits, '-' and '.' only, starting and
+# ending with a letter/digit. NO underscores ('_'), NO uppercase — otherwise
+# kubelet refuses to register the node. Use 'compute-1', not 'compute_1'.
 compute_private_ip: ""            # [AWS]
 compute_node_name:  "compute-1"   # [USER]
 compute_ssh_host:   ""            # [AWS] defaults to compute_private_ip
