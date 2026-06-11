@@ -113,10 +113,23 @@ storage_configure_nfs() {
     chown nobody:nogroup "$export_path"
     chmod 0777 "$export_path"   # subdirectories will be created by clients
 
-    # Replace any existing openg2p line, then append fresh
+    # Idempotent rewrite: drop our previous marker line and the export line for
+    # this exact path, then append a single fresh entry.
+    #
+    # The export line *starts* with the path and is followed by whitespace, so
+    # anchor the match at ^ and require trailing whitespace. (The earlier pattern
+    # looked for spaces *around* the path — " ${export_path} " — which never
+    # matched the real line, so the stale export line was never removed and each
+    # run appended another, making `exportfs -ra` fail with "duplicated export
+    # entries".) Escape regex metacharacters so dots/brackets in a custom
+    # nfs_export_path stay literal, and use ^…[[:space:]] so we don't clobber an
+    # unrelated export that merely shares this path as a prefix.
     local marker="# openg2p-cluster:${cluster_name}"
-    sed -i "\|${marker}|d" /etc/exports
-    sed -i "\| ${export_path} |d" /etc/exports || true
+    local esc_path
+    esc_path=$(printf '%s' "$export_path" | sed 's/[].[*^$\\]/\\&/g')
+    touch /etc/exports
+    sed -i "\|^${marker}\$|d" /etc/exports
+    sed -i "\|^${esc_path}[[:space:]]|d" /etc/exports
     cat >> /etc/exports <<EOF
 ${marker}
 ${export_path}    ${compute_ip}(rw,sync,no_subtree_check,no_root_squash)
