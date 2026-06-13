@@ -6,7 +6,7 @@
 #
 # openg2p-commons is split into two charts that must be installed in order:
 #   1. openg2p-commons-base     — Infrastructure: PostgreSQL, Kafka, MinIO,
-#                                  OpenSearch, Redis, SoftHSM, keycloak-init
+#                                  Redis, SoftHSM, keycloak-init
 #   2. openg2p-commons-services — Applications: eSignet, KeyManager, Superset,
 #                                  ODK, master-data, reporting, mock-identity
 #

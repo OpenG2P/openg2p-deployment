@@ -49,7 +49,7 @@ releases:
                     protocol: HTTP2
 
   # ─────────────────────────────────────────────────────────────────────────
-  # OpenG2P Commons (shared PostgreSQL, OpenSearch, MinIO, Kafka, etc.)
+  # OpenG2P Commons (shared PostgreSQL, MinIO, Kafka, Redis, etc.)
   # ─────────────────────────────────────────────────────────────────────────
   - name: openg2p-commons
     namespace: {{ .Values.namespace | quote }}

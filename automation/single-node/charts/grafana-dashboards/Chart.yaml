@@ -1,0 +1,8 @@
+apiVersion: v2
+name: grafana-dashboards
+description: >-
+  Provisions Grafana dashboards as ConfigMaps (labeled grafana_dashboard=1) for
+  the rancher-monitoring Grafana dashboard sidecar to auto-load. Drop any
+  *.json dashboard into the dashboards/ directory.
+type: application
+version: 0.1.0

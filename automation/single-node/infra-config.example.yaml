@@ -100,3 +100,31 @@ rancher:
 # Note: Keycloak is NOT installed at the infra level. Rancher uses local
 # authentication. The OpenG2P apps' Keycloak is deployed per-environment by
 # openg2p-environment.sh (at keycloak.<environment domain>), not here.
+
+# ---------------------------------------------------------------------------
+# Observability — OpenTelemetry + Grafana Loki (replaces Fluentd/OpenSearch)
+# ---------------------------------------------------------------------------
+# Cluster logs are collected by an OpenTelemetry agent (DaemonSet), shipped to
+# a Grafana Loki store, and viewed in the existing Grafana. PII is redacted in
+# the OTel pipeline before storage. Loki uses its own dedicated MinIO.
+loki_retention_hours:     "168"   # log retention; 168h = 7 days
+loki_minio_root_user:     "loki"  # internal-only object store for Loki
+loki_minio_root_password: ""      # auto-generated if blank (saved under /etc/openg2p/secrets)
+loki_minio_size:          "50Gi"  # PVC size for Loki's MinIO
+
+# Alerting — critical log/infra alerts route through the existing Alertmanager.
+# Leave a channel blank to keep it inactive; fill in to enable it later.
+alert_slack_webhook_url:  ""        # Slack / Mattermost / Rocket.Chat webhook
+alert_slack_channel:      "#alerts"
+alert_smtp_smarthost:     ""        # e.g. "smtp.example.org:587"
+alert_smtp_from:          ""        # e.g. "alerts@openg2p.org"
+alert_smtp_username:      ""        # SMTP auth user (blank = no auth)
+alert_smtp_password:      ""
+alert_smtp_to:            ""        # recipient, e.g. "ops@openg2p.org"
+alert_telegram_bot_token: ""
+alert_telegram_chat_id:   ""        # numeric chat/group id
+
+# AI layer (optional, OFF by default). Disabling leaves observability working.
+ai_enabled:           "false"
+ai_openrouter_api_key: ""
+ai_model:             "openrouter/qwen/qwen-2.5-72b-instruct"

@@ -1,0 +1,95 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 0,
+  "schemaVersion": 39,
+  "tags": ["openg2p", "logs", "health"],
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "30s",
+  "title": "OpenG2P — Logs & Health",
+  "uid": "openg2p-logs-health",
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Error lines (last 1h)",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 1 }, { "color": "red", "value": 100 } ] } }, "overrides": [] },
+      "options": { "colorMode": "background", "graphMode": "area", "textMode": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [ { "refId": "A", "datasource": { "type": "loki", "uid": "loki" }, "expr": "sum(count_over_time({k8s_namespace_name=~\".+\"} |~ `(?i)\\b(error|exception|fatal)\\b` [1h]))", "queryType": "instant" } ]
+    },
+    {
+      "type": "stat",
+      "title": "Pods CrashLooping",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] },
+      "options": { "colorMode": "background", "graphMode": "none", "textMode": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "count(max_over_time(kube_pod_container_status_waiting_reason{reason=\"CrashLoopBackOff\"}[5m]) > 0) or vector(0)" } ]
+    },
+    {
+      "type": "stat",
+      "title": "Total log rate (lines/s)",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "blue", "value": null } ] }, "unit": "logs" }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "area", "textMode": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [ { "refId": "A", "datasource": { "type": "loki", "uid": "loki" }, "expr": "sum(rate({k8s_namespace_name=~\".+\"} [5m]))", "queryType": "range" } ]
+    },
+    {
+      "type": "stat",
+      "title": "OOMKilled (last 1h)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] },
+      "options": { "colorMode": "background", "graphMode": "none", "textMode": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(increase(kube_pod_container_status_last_terminated_reason{reason=\"OOMKilled\"}[1h])) or vector(0)" } ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Log volume by namespace (lines/s)",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 15, "stacking": { "mode": "normal", "group": "A" }, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "loki", "uid": "loki" }, "expr": "sum by (k8s_namespace_name) (rate({k8s_namespace_name=~\".+\"} [5m]))", "queryType": "range" } ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Error rate by service (lines/s)",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" }, "color": { "mode": "palette-classic" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "loki", "uid": "loki" }, "expr": "sum by (service_name) (rate({k8s_namespace_name=~\".+\"} |~ `(?i)\\b(error|exception|fatal)\\b` [5m]))", "queryType": "range" } ]
+    },
+    {
+      "type": "table",
+      "title": "Top erroring pods (last 1h)",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "filterable": true } }, "overrides": [] },
+      "options": { "showHeader": true, "sortBy": [ { "displayName": "Value", "desc": true } ] },
+      "targets": [ { "refId": "A", "datasource": { "type": "loki", "uid": "loki" }, "expr": "topk(15, sum by (k8s_namespace_name, k8s_pod_name) (count_over_time({k8s_namespace_name=~\".+\"} |~ `(?i)\\b(error|exception|fatal)\\b` [1h])))", "queryType": "instant", "format": "table" } ],
+      "transformations": [ { "id": "organize", "options": { "excludeByName": { "Time": true } } } ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Pod restarts (15m increase)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "bars", "fillOpacity": 60, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total[15m])) > 0" } ]
+    },
+    {
+      "type": "logs",
+      "title": "Recent errors (all namespaces)",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 11, "w": 24, "x": 0, "y": 20 },
+      "options": { "showTime": true, "showLabels": false, "wrapLogMessage": true, "enableLogDetails": true, "dedupStrategy": "none", "sortOrder": "Descending" },
+      "targets": [ { "refId": "A", "datasource": { "type": "loki", "uid": "loki" }, "expr": "{k8s_namespace_name=~\".+\"} |~ `(?i)\\b(error|exception|fatal)\\b`", "queryType": "range" } ]
+    }
+  ]
+}
