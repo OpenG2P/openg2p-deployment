@@ -46,7 +46,7 @@ commons_base:
   chart_name: "openg2p-commons-base"
   chart_path: ""
   chart_repo: "https://openg2p.github.io/openg2p-helm/rancher"
-  chart_version: "2.0.0-develop"
+  chart_version: "0.0.0-develop"
   extra_helm_args: ""
 
 # ---------------------------------------------------------------------------
@@ -56,7 +56,7 @@ commons_services:
   chart_name: "openg2p-commons-services"
   chart_path: ""
   chart_repo: "https://openg2p.github.io/openg2p-helm/rancher"
-  chart_version: "2.0.0-develop"
+  chart_version: "0.0.0-develop"
   extra_helm_args: ""
 
 # ---------------------------------------------------------------------------
