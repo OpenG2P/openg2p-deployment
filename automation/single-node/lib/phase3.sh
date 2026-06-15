@@ -6,6 +6,7 @@
 #   - Bootstrap Rancher admin password
 #   - Set the Rancher server URL and cluster display name
 #   - Create custom project RoleTemplates (no-secrets variants)
+#   - Register the OpenG2P Helm repo as a Rancher catalog ClusterRepo
 #
 # Rancher uses local authentication. Administrators create additional users
 # directly in Rancher (☰ → Users & Authentication → Users). There is no
@@ -54,6 +55,72 @@ rancher_try_login() {
         -H "Content-Type: application/json" \
         -d "{\"username\":\"admin\",\"password\":\"${password}\"}" 2>/dev/null)
     echo "$response" | jq -r '.token // empty' 2>/dev/null || true
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Register the OpenG2P Helm repo as a Rancher CatalogV2 ClusterRepo
+# ─────────────────────────────────────────────────────────────────────────────
+# This surfaces the OpenG2P charts in the Rancher UI → Apps → Repositories so
+# administrators can browse/install them from the catalog. The ClusterRepo must
+# point at the Rancher-flavoured index (…/openg2p-helm/rancher), NOT the root
+# chart index — the sub-index carries the catalog.cattle.io/* annotations
+# Rancher needs to display the charts with proper names.
+#
+# Idempotent: reconciles spec.url whether the repo is new or carries a stale URL.
+OPENG2P_REPO_URL="https://openg2p.github.io/openg2p-helm/rancher"
+
+register_openg2p_clusterrepo() {
+    log_info "Registering OpenG2P Helm repo in Rancher's catalog..."
+
+    # On a freshly-installed cluster phase 3 runs right after Rancher comes up,
+    # so the catalog.cattle.io API may not be served yet. Gate on a clean LIST
+    # of ClusterRepos — it returns success even for an empty collection, so it
+    # is an unambiguous "API is up and answering" signal.
+    if ! wait_for_command "Rancher catalog API (catalog.cattle.io) ready" \
+            "kubectl get clusterrepos.catalog.cattle.io" \
+            300 10; then
+        log_warn "Rancher catalog API did not become ready — skipping ClusterRepo registration."
+        log_warn "  Re-run phase 3 once Rancher is fully up: sudo $0 --config <config> --phase 3"
+        return 0
+    fi
+
+    # Reconcile the URL rather than skip-on-exists: a repo created by an older
+    # run may carry a stale URL, and a plain existence check would never fix it.
+    local current_url=""
+    if kubectl get clusterrepos.catalog.cattle.io openg2p >/dev/null 2>&1; then
+        current_url=$(kubectl get clusterrepos.catalog.cattle.io openg2p \
+            -o jsonpath='{.spec.url}' 2>/dev/null || true)
+    fi
+
+    if [[ "$current_url" == "$OPENG2P_REPO_URL" ]]; then
+        log_success "Rancher ClusterRepo 'openg2p' already points at ${OPENG2P_REPO_URL} — unchanged."
+        return 0
+    fi
+
+    if ! kubectl apply -f - <<YAML > /dev/null 2>&1
+apiVersion: catalog.cattle.io/v1
+kind: ClusterRepo
+metadata:
+  name: openg2p
+spec:
+  url: ${OPENG2P_REPO_URL}
+YAML
+    then
+        log_warn "Failed to register the OpenG2P ClusterRepo (non-fatal)."
+        log_warn "  You can add it manually in Rancher UI → Apps → Repositories (${OPENG2P_REPO_URL})."
+        return 0
+    fi
+
+    if [[ -n "$current_url" ]]; then
+        log_success "Rancher ClusterRepo 'openg2p' URL updated: ${current_url} -> ${OPENG2P_REPO_URL}."
+        # Nudge Rancher's catalog controller to re-download the index now.
+        kubectl annotate clusterrepos.catalog.cattle.io openg2p \
+            catalog.cattle.io/force-update="$(date -u +%s 2>/dev/null || echo refresh)" \
+            --overwrite >/dev/null 2>&1 || true
+    else
+        log_success "Rancher ClusterRepo 'openg2p' registered (${OPENG2P_REPO_URL})."
+    fi
+    log_info "  Rancher UI → Apps → Repositories will reflect it within ~30s."
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -362,6 +429,9 @@ RTEOF
             log_warn "Failed to create RoleTemplate 'project-readonly-no-secrets'."
         fi
     fi
+
+    # ── Step 3.4: Register the OpenG2P Helm repo in Rancher's catalog ──────
+    register_openg2p_clusterrepo
 
     # ── Done ─────────────────────────────────────────────────────────────
     log_success "Rancher configuration complete."

@@ -5,7 +5,7 @@
 # Sets up the complete base infrastructure on a single Ubuntu 24.04 VM:
 #   Phase 1 (bash):     Tools, firewall, RKE2, Wireguard, NFS, DNS, TLS, Nginx
 #   Phase 2 (helmfile): Istio, Rancher, Monitoring, Logging
-#   Phase 3 (APIs):     Rancher bootstrap (local admin, cluster name, RBAC roles)
+#   Phase 3 (APIs):     Rancher bootstrap (local admin, cluster name, RBAC roles, catalog repo)
 #
 # Local-only sandbox: local DNS (dnsmasq, *.<local_domain>) + a self-signed CA.
 # Private by default — the web UIs (80/443) are reachable only over Wireguard or
