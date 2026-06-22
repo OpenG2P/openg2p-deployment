@@ -91,12 +91,17 @@ JSON
     local tagspec
     tagspec="ResourceType=instance,Tags=[{Key=Name,Value=${name}},{Key=Project,Value=${project}},{Key=Role,Value=backup}]"
 
-    aws ec2 run-instances \
+    # --associate-public-ip-address: the deployer SSHes to the backup node by
+    # public IP to install/run openg2p-backup.sh (same model as Compute/Storage).
+    # Its SG already restricts SSH to admin_cidr, so the posture is unchanged.
+    # Use aws_cli (not bare aws) so AWS_REGION/AWS_PROFILE are honoured.
+    aws_cli ec2 run-instances \
         --image-id "$ami" \
         --instance-type "$type" \
         --subnet-id "$subnet" \
         --security-group-ids "$sg" \
         --key-name "$key" \
+        --associate-public-ip-address \
         --block-device-mappings "$bdm" \
         --tag-specifications "$tagspec" \
         --user-data "$userdata" \
