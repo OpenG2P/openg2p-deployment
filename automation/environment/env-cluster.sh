@@ -467,9 +467,12 @@ step4_commons_base() {
     # Admin email maps to the chart's default staff-realm admin user.
     # Only pass it if the user actually set admin_email in the config;
     # otherwise let the chart use its own default.
+    # NOTE: set the staffAdminEmail SCALAR, never users[0].email. A --set on a
+    # list element replaces the whole element, wiping username/password/
+    # clientRoleMappings and breaking keycloak-init (KeyError: 'username').
     local -a admin_args=()
     if [[ -n "$admin_email" ]]; then
-        admin_args=(--set "keycloak-init.realms.staff.users[0].email=${admin_email}")
+        admin_args=(--set "keycloak-init.staffAdminEmail=${admin_email}")
     fi
 
     # Pre-flight: resource name length check (Kubernetes DNS-1123 limit = 63 chars).
