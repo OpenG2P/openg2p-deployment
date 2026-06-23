@@ -231,12 +231,34 @@ load_cluster_config() {
     done
 
     # Auto-detect provision-output.yaml next to prod-config.yaml — same
-    # convention the production orchestrator uses.
-    local provision_output="$(dirname "$prod_path")/provision-output.yaml"
+    # convention the production orchestrator uses. Canonicalise the dir so
+    # resolved key paths don't carry ../ noise into log/error messages.
+    local prod_dir; prod_dir="$(cd "$(dirname "$prod_path")" && pwd)"
+    local provision_output="${prod_dir}/provision-output.yaml"
     if [[ -f "$provision_output" ]]; then
         log_info "Loading provision output from ${provision_output}"
         load_config "$provision_output"
     fi
+
+    # ── Normalise SSH key paths ──────────────────────────────────────────
+    # provision-output.yaml writes *_ssh_key as a path RELATIVE TO the
+    # production/ directory (e.g. "./aws/keys/openg2p-prod-key.pem"). The
+    # production orchestrator runs from production/, so that resolves fine
+    # there. But THIS orchestrator runs from backups/, so a relative key
+    # path would resolve against the wrong cwd and ssh would fail with
+    # "Identity file not accessible" → "Permission denied (publickey)".
+    #
+    # Fix: expand ~ and make any relative *_ssh_key absolute, anchored on
+    # the prod-config directory (where provision-output's paths are relative
+    # to). Absolute paths and ~-paths are left as-is.
+    local kvar kval
+    for kvar in rp_ssh_key compute_ssh_key storage_ssh_key backup_ssh_key; do
+        kval="${CONFIG[$kvar]:-}"
+        [[ -z "$kval" ]] && continue
+        kval="${kval/#\~/$HOME}"               # expand ~
+        [[ "$kval" = /* ]] || kval="${prod_dir}/${kval}"   # relative → anchor on prod_dir
+        CONFIG["$kvar"]="$kval"
+    done
 }
 
 # ---------------------------------------------------------------------------
