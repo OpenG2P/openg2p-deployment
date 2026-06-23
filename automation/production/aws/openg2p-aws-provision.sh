@@ -443,8 +443,20 @@ provision_backup_node() {
     BACKUP_PRIVATE_IP="${ips#*|}"
     log_info "  Backup: public=${BACKUP_PUBLIC_IP}  private=${BACKUP_PRIVATE_IP}"
 
+    # SSH-wait is NON-FATAL for the backup node. The IPs above are already
+    # captured into globals, so write_provision_output (which runs after this
+    # function) still records backup_* keys even if SSH isn't up yet. The
+    # backup node is an optional add-on — unlike the critical 3 nodes, a slow
+    # SSH here must not abort the whole run and lose the provision output.
+    # The operator can then run ./openg2p-backup.sh install once SSH is up.
     if [[ "$SKIP_SSH_WAIT" != "true" ]]; then
-        aws_wait_ssh "$BACKUP_PUBLIC_IP" "ubuntu" "$key_path" "$SSH_WAIT_TIMEOUT" "Backup" || exit 1
+        if ! aws_wait_ssh "$BACKUP_PUBLIC_IP" "ubuntu" "$key_path" "$SSH_WAIT_TIMEOUT" "Backup"; then
+            log_warn "SSH to the backup node did not come up within ${SSH_WAIT_TIMEOUT}s."
+            log_warn "Provision output WILL still be written with the backup node's IPs."
+            log_warn "Common cause: the backup SG was created before its ingress rules"
+            log_warn "were applied. Re-run this provisioner (idempotent) to apply rules,"
+            log_warn "then: cd ../../backups && ./openg2p-backup.sh install --config backup-config.yaml"
+        fi
     fi
 }
 

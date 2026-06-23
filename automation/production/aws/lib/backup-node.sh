@@ -10,22 +10,23 @@
 # ---------------------------------------------------------------------------
 # aws_apply_sg_rules_backup — SSH ingress from admin_cidr + intra-VPC.
 # Argument: <sg_id> <admin_cidr> <vpc_cidr>
-# Idempotent — same pattern as the existing aws_apply_sg_rules_* functions.
+# Mirrors aws_apply_sg_rules_storage/compute in lib/aws-utils.sh exactly —
+# uses aws_add_ingress (the real helper), which is idempotent and halts on a
+# genuine error. The "ALL from VPC" rule covers everything the backup node
+# needs from the other nodes: PG archive_command over SSH from storage,
+# restic SSH-tar streams from RP/compute, and NFS reads from storage.
 # ---------------------------------------------------------------------------
 aws_apply_sg_rules_backup() {
     local sg_id="$1"
     local admin_cidr="$2"
     local vpc_cidr="$3"
 
-    # SSH from admin (laptop) — for the orchestrator's install/restore use.
-    aws_sg_authorize_ingress "$sg_id" "tcp" 22 22 "$admin_cidr" "SSH from admin" || true
-
-    # SSH from anywhere in the VPC — RP/compute/storage may probe back during
-    # install (e.g. host-key acceptance for archive_command). Cheap to allow.
-    aws_sg_authorize_ingress "$sg_id" "tcp" 22 22 "$vpc_cidr" "SSH from VPC" || true
-
-    # Postgres archive_command pushes to the backup host over SSH (port 22),
-    # already covered by VPC ingress above. No separate port needed.
+    aws_add_ingress "$sg_id" "TCP/22  from ${admin_cidr}" \
+        --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=${admin_cidr},Description=admin SSH}]"
+    aws_add_ingress "$sg_id" "ICMP    from ${admin_cidr}" \
+        --ip-permissions "IpProtocol=icmp,FromPort=-1,ToPort=-1,IpRanges=[{CidrIp=${admin_cidr},Description=admin ping}]"
+    aws_add_ingress "$sg_id" "ALL     from ${vpc_cidr} (intra-VPC)" \
+        --ip-permissions "IpProtocol=-1,IpRanges=[{CidrIp=${vpc_cidr},Description=intra-VPC}]"
 }
 
 # ---------------------------------------------------------------------------
