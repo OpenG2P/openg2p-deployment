@@ -225,38 +225,36 @@ remote_preflight() {
 
     local repo_root="$(cfg backup_repo_root /var/lib/openg2p-backup)"
 
-    # Push utils.sh + the prod shared utils to a tmpdir on the backup host
-    # so we can call backup_host_preflight there.
+    # Push lib/utils.sh + the production shared lib to a flat tmpdir on the
+    # backup host, then run a tiny wrapper that sources lib/utils.sh normally
+    # (with PROD_SHARED_LIB pre-pointed at the copy) and calls
+    # backup_host_preflight. No nested bash -c / declare -f gymnastics — that
+    # construction mangled argument passing under `set -u`.
     local tmpdir; tmpdir=$(mktemp -d -t openg2p-backup-stage.XXXXXX)
     trap "rm -rf '$tmpdir'" RETURN
 
-    mkdir -p "$tmpdir/lib"
-    cp "${SCRIPT_DIR}/lib/utils.sh" "$tmpdir/lib/utils.sh"
-    mkdir -p "$tmpdir/production-lib"
-    cp "${SCRIPT_DIR}/../production/lib/shared/utils.sh" "$tmpdir/production-lib/utils.sh"
+    cp "${SCRIPT_DIR}/lib/utils.sh"                      "$tmpdir/utils.sh"
+    cp "${SCRIPT_DIR}/../production/lib/shared/utils.sh" "$tmpdir/production-utils.sh"
 
-    # Inline a thin wrapper that adjusts paths and invokes the function.
-    cat > "$tmpdir/run-preflight.sh" <<EOF
+    # The wrapper is fully self-contained. It takes the repo_root as $1.
+    # PROD_SHARED_LIB is exported so lib/utils.sh sources our copy instead
+    # of the repo-relative path (which doesn't exist on the backup host).
+    # PROD_SSH_LIB points at a non-existent file so lib/utils.sh skips the
+    # ssh-utils source (its guard is `[[ -f ... ]] && source`).
+    cat > "$tmpdir/run-preflight.sh" <<'WRAPPER'
 #!/usr/bin/env bash
 set -euo pipefail
-SCRIPT_DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PROD_SHARED_LIB="${HERE}/production-utils.sh"
+export PROD_SSH_LIB="${HERE}/__absent_ssh_lib__"
 # shellcheck source=/dev/null
-source "\$SCRIPT_DIR/production-lib/utils.sh"
-# Provide cfg() shim — preflight only needs it via parameters, but
-# load_config-less mode means CONFIG is empty; that's fine.
-# shellcheck source=/dev/null
-PROD_SHARED_LIB="\$SCRIPT_DIR/production-lib/utils.sh" \\
-    bash -c '
-        # re-source utils with adjusted constants
-        source "'\$SCRIPT_DIR'/production-lib/utils.sh"
-        $(declare -f group_enabled enabled_groups backup_host_preflight)
-        backup_host_preflight "${repo_root}"
-    '
-EOF
+source "${HERE}/utils.sh"
+backup_host_preflight "${1:-/var/lib/openg2p-backup}"
+WRAPPER
     chmod +x "$tmpdir/run-preflight.sh"
 
     ssh_push "backup" "${tmpdir}/" "/tmp/openg2p-backup-preflight/"
-    if ! ssh_run "backup" "bash /tmp/openg2p-backup-preflight/run-preflight.sh"; then
+    if ! ssh_run "backup" "bash /tmp/openg2p-backup-preflight/run-preflight.sh $(printf '%q' "$repo_root")"; then
         log_error "Backup host preflight failed" \
                   "See output above" \
                   "Resize the VM or fix the issue, then re-run" \

@@ -12,8 +12,12 @@ set -euo pipefail
 
 BACKUPS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKUPS_ROOT_DIR="$(cd "${BACKUPS_LIB_DIR}/.." && pwd)"
-PROD_SHARED_LIB="${BACKUPS_ROOT_DIR}/../production/lib/shared/utils.sh"
-PROD_SSH_LIB="${BACKUPS_ROOT_DIR}/../production/lib/ssh-utils.sh"
+# PROD_SHARED_LIB / PROD_SSH_LIB can be pre-set by the caller (e.g. the
+# remote-preflight wrapper on the backup host, where the production/ tree
+# isn't laid out in the usual ../production/ location). Default to the
+# standard repo-relative path when not pre-set.
+PROD_SHARED_LIB="${PROD_SHARED_LIB:-${BACKUPS_ROOT_DIR}/../production/lib/shared/utils.sh}"
+PROD_SSH_LIB="${PROD_SSH_LIB:-${BACKUPS_ROOT_DIR}/../production/lib/ssh-utils.sh}"
 
 if [[ ! -f "$PROD_SHARED_LIB" ]]; then
     echo "[FATAL] Production shared lib not found at ${PROD_SHARED_LIB}" >&2
