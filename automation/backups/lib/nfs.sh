@@ -176,7 +176,9 @@ nfs_generate_pvc_manifest() {
     if on_backup_host; then
         sudo cp "$stage" /tmp/openg2p-pv.json
     else
-        ssh_push "backup" "$stage" "/tmp/openg2p-pv.json"
+        # Single-file dest — push_file_as_root stages then installs to the
+        # exact path (a plain ssh_push would mkdir the file path as a dir).
+        push_file_as_root "backup" "$stage" "/tmp/openg2p-pv.json" 0644
     fi
     rm -f "$stage"
 

@@ -80,6 +80,44 @@ group_state_str() {
 STATUS_FILE_REMOTE_DEFAULT="/var/lib/openg2p-backup/.status.json"
 
 # ---------------------------------------------------------------------------
+# Safe push helpers — for root-owned and/or single-file destinations.
+# ---------------------------------------------------------------------------
+# The production ssh_push runs rsync + chmod AS THE LOGIN USER (no sudo) and
+# always `mkdir -p`s the destination as a directory. That's fine for pushing
+# a directory into a user-writable /tmp path, but it breaks when:
+#   • the destination is root-owned (/opt, /etc) → chmod "Operation not permitted"
+#   • the destination is a single file           → mkdir creates a dir with
+#                                                   the file's name; the file
+#                                                   then lands INSIDE it.
+# These helpers stage through a user-writable /tmp dir (where ssh_push works),
+# then sudo-install into the final (possibly root-owned) path.
+
+# push_dir_as_root <role> <local_src_dir/> <remote_dir> [mode]
+# Replaces remote_dir with the CONTENTS of local_src_dir (clean replace, so
+# files removed from the source don't linger across re-runs).
+push_dir_as_root() {
+    local role="$1" src="$2" dest="$3" mode="${4:-0755}"
+    local stage="/tmp/openg2p-push-$$-$(basename "$dest")"
+    ssh_push "$role" "$src" "${stage}/"
+    ssh_run "$role" "set -euo pipefail
+        rm -rf $(printf '%q' "$dest")
+        install -d -m ${mode} $(printf '%q' "$dest")
+        cp -a ${stage}/. $(printf '%q' "$dest")/
+        rm -rf ${stage}"
+}
+
+# push_file_as_root <role> <local_file> <remote_file> [mode]
+# Installs a single local file to remote_file (parent dirs created).
+push_file_as_root() {
+    local role="$1" src="$2" dest="$3" mode="${4:-0644}"
+    local stage="/tmp/openg2p-pushf-$$-$(basename "$dest")"
+    ssh_push "$role" "$src" "${stage}/"
+    ssh_run "$role" "set -euo pipefail
+        install -D -m ${mode} ${stage}/$(basename "$src") $(printf '%q' "$dest")
+        rm -rf ${stage}"
+}
+
+# ---------------------------------------------------------------------------
 # Passphrase / keystore handling
 # ---------------------------------------------------------------------------
 # Resolves a passphrase file path from config (with ~ expansion). If the

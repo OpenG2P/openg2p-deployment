@@ -503,14 +503,15 @@ bootstrap_backup_host() {
     local pgbr_pass_file="$2"
     local repo_root="$(cfg backup_repo_root /var/lib/openg2p-backup)"
 
-    log_info "Pushing lib/ + manifests/ + config to backup host..."
-    ssh_run "backup" "install -d -m 0755 /opt/openg2p-backup/lib /opt/openg2p-backup/manifests /opt/openg2p-backup/roles"
-    ssh_push "backup" "${SCRIPT_DIR}/lib/"        "/opt/openg2p-backup/lib/"
-    ssh_push "backup" "${SCRIPT_DIR}/manifests/"  "/opt/openg2p-backup/manifests/"
-    ssh_push "backup" "${SCRIPT_DIR}/roles/"      "/opt/openg2p-backup/roles/"
+    log_info "Pushing lib/ + manifests/ + roles/ + production-lib/ to backup host..."
+    # Use push_dir_as_root — /opt/openg2p-backup is root-owned, so a plain
+    # ssh_push (rsync+chmod as the login user) fails with "Operation not
+    # permitted". These stage through /tmp then sudo-install.
+    push_dir_as_root "backup" "${SCRIPT_DIR}/lib/"                "/opt/openg2p-backup/lib"
+    push_dir_as_root "backup" "${SCRIPT_DIR}/manifests/"         "/opt/openg2p-backup/manifests"
+    push_dir_as_root "backup" "${SCRIPT_DIR}/roles/"             "/opt/openg2p-backup/roles"
     # Production lib has to be reachable too, since lib/utils.sh sources it.
-    ssh_run "backup" "install -d -m 0755 /opt/openg2p-backup/production-lib"
-    ssh_push "backup" "${SCRIPT_DIR}/../production/lib/" "/opt/openg2p-backup/production-lib/"
+    push_dir_as_root "backup" "${SCRIPT_DIR}/../production/lib/" "/opt/openg2p-backup/production-lib"
 
     # Push merged config — backup-config.yaml + prod-config.yaml stitched
     # together so the backup host can ssh_resolve_role for every role.
@@ -532,7 +533,9 @@ bootstrap_backup_host() {
         fi
     } >> "$stage/backup-config.yaml"
 
-    ssh_push "backup" "${stage}/backup-config.yaml" "/etc/openg2p-backup/config.yaml"
+    # /etc/openg2p-backup is root-owned and config.yaml is a single file —
+    # push_file_as_root handles both.
+    push_file_as_root "backup" "${stage}/backup-config.yaml" "/etc/openg2p-backup/config.yaml" 0640
     rm -rf "$stage"
 
     # Run roles/backup-host/install.sh on the backup host with passphrases.
@@ -601,12 +604,17 @@ cat > /usr/local/bin/openg2p-backup-run <<'EOC'
 #!/usr/bin/env bash
 # Invoked by cron: openg2p-backup-run <group>
 # Sets OPENG2P_ON_BACKUP_HOST=1 so lib functions short-circuit ssh-to-self.
+# PROD_SHARED_LIB/PROD_SSH_LIB point lib/utils.sh at the production lib we
+# laid down under /opt/openg2p-backup/production-lib (no repo-relative path
+# exists on the backup host).
 # /etc/openg2p-backup/config.yaml is the pre-merged backup+prod config
 # (stitched together at install time on the laptop, then pushed here),
 # so a single load_config call gives us every key we need — no separate
 # load_cluster_config step like the laptop orchestrator does.
 set -euo pipefail
 export OPENG2P_ON_BACKUP_HOST=1
+export PROD_SHARED_LIB=/opt/openg2p-backup/production-lib/shared/utils.sh
+export PROD_SSH_LIB=/opt/openg2p-backup/production-lib/ssh-utils.sh
 group=\"\${1:-}\"
 [[ -z \"\$group\" ]] && { echo 'usage: openg2p-backup-run <group>'; exit 1; }
 source /opt/openg2p-backup/lib/utils.sh
@@ -622,16 +630,15 @@ chmod +x /usr/local/bin/openg2p-backup-run
 cat > /usr/local/bin/openg2p-backup-drill <<'EOC'
 #!/usr/bin/env bash
 # Invoked by cron: weekly drill across all enabled groups.
-# Sets OPENG2P_ON_BACKUP_HOST=1 so lib functions short-circuit ssh-to-self.
-# See openg2p-backup-run for the load_config-without-load_cluster_config
-# rationale.
+# See openg2p-backup-run for the env-var rationale.
 set -euo pipefail
 export OPENG2P_ON_BACKUP_HOST=1
+export PROD_SHARED_LIB=/opt/openg2p-backup/production-lib/shared/utils.sh
+export PROD_SSH_LIB=/opt/openg2p-backup/production-lib/ssh-utils.sh
 source /opt/openg2p-backup/lib/utils.sh
 load_config /etc/openg2p-backup/config.yaml
-# drills_run_all calls load_group_module per group — but that's the
-# laptop-side path resolver. Source each group lib manually here so
-# <group>_drill is in scope.
+# drills_run_all calls load_group_module per group — source each group lib
+# manually here so <group>_drill is in scope.
 for g in pg etcd rancher nfs configs; do
     case \"\$g\" in
         pg) lib_file=pgbackrest.sh ;;
@@ -649,14 +656,6 @@ cat > /usr/local/bin/openg2p-backup-status <<'EOC'
 jq . /var/lib/openg2p-backup/.status.json
 EOC
 chmod +x /usr/local/bin/openg2p-backup-status
-
-# Compatibility shim — backup host's lib/utils.sh expects production lib at
-# ../../production/lib/shared/utils.sh relative to BACKUPS_ROOT_DIR. We
-# laid them down at /opt/openg2p-backup/{lib,production-lib}; symlink to
-# the path utils.sh hardcodes.
-mkdir -p /opt/openg2p-backup/../production/lib
-ln -sfn /opt/openg2p-backup/production-lib/shared /opt/openg2p-backup/../production/lib/shared
-ln -sfn /opt/openg2p-backup/production-lib/ssh-utils.sh /opt/openg2p-backup/../production/lib/ssh-utils.sh
 "
 
     log_success "Backup host bootstrapped."
@@ -683,8 +682,11 @@ deploy_cron() {
         -e "s|__DRILL_CRON__|$(cfg schedules.drill '0 5 * * 0')|g" \
         "$cron_src" > "$stage"
 
-    ssh_push "backup" "$stage" "/etc/cron.d/openg2p-backup"
-    ssh_run "backup" "chmod 0644 /etc/cron.d/openg2p-backup && systemctl reload cron"
+    # /etc/cron.d is root-owned and this is a single file — push_file_as_root
+    # stages through /tmp then sudo-installs at mode 0644 (cron.d requires
+    # files be root-owned and NOT executable).
+    push_file_as_root "backup" "$stage" "/etc/cron.d/openg2p-backup" 0644
+    ssh_run "backup" "systemctl reload cron 2>/dev/null || service cron reload 2>/dev/null || systemctl restart cron"
     log_success "Cron deployed on backup host."
 }
 

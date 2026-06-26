@@ -107,8 +107,10 @@ EOF
     # 2. Install pgBackRest on storage node + configure pgbackrest.conf +
     #    edit postgresql.conf + restart Postgres + create stanza.
     log_info "Configuring storage node as pgBackRest client..."
+    # Push to a DIRECTORY (trailing slash) — ssh_push mkdir -p's its dest and
+    # rsyncs INTO it, so a file-named dest would land as <dir>/<file>/<file>.
     ssh_push "storage" "${SCRIPT_DIR:-${BACKUPS_ROOT_DIR}}/roles/storage/configure-pg.sh" \
-        "/tmp/openg2p-backup/storage/configure-pg.sh"
+        "/tmp/openg2p-backup/storage/"
     ssh_run "storage" "PGBR_STANZA='${stanza}' \
                        PGBR_PG_VERSION='${pg_version}' \
                        PGBR_PG_PORT='${pg_port}' \

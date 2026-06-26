@@ -106,7 +106,9 @@ metadata:
 EOF
 
     log_info "Pushing manifests to compute node..."
-    ssh_run "compute" "install -d -m 0750 /tmp/openg2p-rancher-backup"
+    # Don't pre-create the dir via sudo — ssh_push makes it as the login user
+    # and then chmods it; a root-owned dir would make that chmod fail. kubectl
+    # apply (run via sudo below) can still read login-user-owned files.
     ssh_push "compute" "${stage}/" "/tmp/openg2p-rancher-backup/"
 
     log_info "Installing rancher-backup operator (chart ${chart_version}) on compute..."
