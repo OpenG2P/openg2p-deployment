@@ -1,15 +1,20 @@
 # Storage Estimator — production infrastructure, **before Commons**
 
 This estimates the disk consumed **per node** for a fresh three-node production
-install **after** the base infrastructure is up — Ubuntu + packages + the RKE2
-cluster with all the infra deployments/statefulsets (Rancher, Istio, monitoring,
-logging) — but **before** the environment stage installs Commons and before any
-application data lands in PostgreSQL.
+install, in **two layers**:
 
-> **Scope.** This is the "Stage 3 complete, Stage 4 not yet started" snapshot:
-> `openg2p-prod.sh` has finished the compute platform (helmfile sync), but
-> `--stage environment` (Commons) has **not** run. PostgreSQL on the Storage
-> node is an empty cluster (initdb only, no app databases).
+1. **Infra baseline** — Ubuntu + packages + the RKE2 cluster with all the infra
+   deployments/statefulsets (Rancher, Istio, monitoring, logging), **before**
+   Commons and before any application data.
+2. **+ Commons layer** — `openg2p-commons-base` + `openg2p-commons-services`
+   installed and running for **~7 days of logs**, with **light / no application
+   data** (no large beneficiary datasets or traffic yet). See
+   [Commons layer](#commons-layer--laid-on-top-of-the-infra-baseline).
+
+> **Scope.** Layer 1 is the "Stage 3 done, Stage 4 not started" snapshot (empty
+> host PostgreSQL). Layer 2 is "Stage 4 done + idling a week." Neither models
+> **production-scale application data** (beneficiaries, transactions, documents)
+> — that is usage-driven and sized separately.
 
 Run `./storage-estimate.sh` to print the model below, or
 `./storage-estimate.sh --measure --role <compute|storage|reverse-proxy>` **on a
@@ -67,6 +72,108 @@ details every line. The gap between (A) ~4–12 GB used and (B) 25 GB+ budgeted 
   disk is for **post-Commons application data**.
 - **OS growth is real and easy to forget** — kernels, logs, and apt cache
   accumulate on *every* node, which is exactly why the 25 GB OS budget exists.
+
+---
+
+## Commons layer — laid on top of the infra baseline
+
+This is the **infra baseline + Commons installed + ~7 days of logs**, with
+**light / no application data** (no large beneficiary datasets, no traffic
+load yet). Commons = `openg2p-commons-base` + `openg2p-commons-services`. It
+touches **Compute** (container images + ephemeral volumes) and **Storage**
+(PostgreSQL databases + NFS PVCs + more logs). It does **not** touch the Reverse
+Proxy. In-cluster PostgreSQL is **disabled** (host PG on Storage), so there is no
+in-cluster PG PVC.
+
+### Where each Commons piece lands
+
+| Commons component | Image → **Compute** | DB → **Storage / host PG** | Persistent vol | Notes |
+|---|---|---|---|---|
+| keycloak (+ keycloak-init job) | ~0.6 + 0.3 GB | `keycloak` | — (DB-backed) | |
+| postgres-init (job) | ~0.3 GB | creates the 9 DBs | — | |
+| minio | ~0.3 GB | — | **16 Gi PVC → NFS** | the one big provisioned PVC; fills with keys/objects |
+| kafka | ~0.7 GB | — | **emptyDir → Compute** | `persistence.enabled: false` — ephemeral, *not* NFS |
+| kafka-ui | ~0.35 GB | — | — | |
+| redis + redis-auth (×2) | ~0.15 GB (shared image) | — | **emptyDir → Compute** | both `persistence: false` |
+| softhsm | ~0.3 GB | — | small PVC → NFS | HSM key store (a few MB used) |
+| mail | ~0.15 GB | — | — | |
+| master-data | ~0.5 GB | `master_data` | — | |
+| keymanager | ~0.6 GB | `mosip_keymgr` | — | uses softhsm |
+| superset | ~1.2 GB | `superset` | — | uses redis |
+| esignet | ~0.6 GB | `mosip_esignet` | — | embeds keymanager |
+| mock-identity-system | ~0.5 GB | `mosip_mockidentitysystem` | — | |
+| odk-central (multi-container) | ~1.5 GB | `odkdb` | small enketo vol | nginx + service + enketo + pyxform |
+| iam-service (+ staff-portal-api) | ~0.8 GB | `iam` | — | |
+| audit-manager | ~0.5 GB | `audit_manager` | — | |
+| staff-portal-ui | ~0.1 GB | — | — | static nginx |
+| artifactory | ~0.1 GB | — | — | small nginx (despite the name) |
+
+### Commons increment — Compute node
+
+| Item | Low | Typ | High |
+|------|----:|----:|-----:|
+| **Container images** (the ~19 components above; shared base layers discounted, containerd extraction added) | 6.0 | 9.0 | 14.0 |
+| **emptyDir ephemeral** — Kafka + Redis×2 (`persistence: false`), on the Compute root disk; grows with topic/cache data | 0.1 | 0.5 | 1.5 |
+| Extra container logs (capped 50 MiB × 5 per container × ~20 new containers) | 0.2 | 0.5 | 1.0 |
+| **Compute Commons increment** | **6.3** | **10.0** | **16.5** |
+
+> **Docker on disk is the dominant Commons cost on Compute (~6–14 GB).** It
+> roughly *doubles* the image store vs infra-only. Image-size rows are
+> **category estimates** — validate with `crictl images` /
+> `--measure --role compute` after install (the biggest line is Superset + ODK +
+> the Java services).
+
+### Commons increment — Storage node
+
+| Item | Low | Typ | High |
+|------|----:|----:|-----:|
+| **PostgreSQL inflation** — 9 commons DBs: schema/migrations + ~7 days of light operation (sessions, audit) | 0.2 | 0.5 | 1.5 |
+| **NFS inflation** — MinIO objects (16 Gi PVC, fills with eSignet keys / ODK submissions / certs), SoftHSM, ODK enketo. *Actual* data at install is small; the **16 Gi is provisioned-nominal** | 0.3 | 1.0 | 4.0 |
+| **7-day log store growth** — ~20 Commons pods added to Loki/MinIO (see below) | 1.0 | 2.5 | 4.0 |
+| **Storage Commons increment** | **1.5** | **4.0** | **9.5** |
+
+> **PostgreSQL and NFS *software* were already in the 25 GB OS budget** — this
+> increment is the **data** they now hold. At install it's small; it grows with
+> real usage (beneficiaries, transactions, documents, keys), which is
+> **usage-driven and sized separately** from this "installed + idle" snapshot.
+
+### 7-day logs, per Commons component (the log layer grows)
+
+Adding ~20 Commons pods raises the daily log volume. Rough **idle** per-component
+rates (raw, no traffic):
+
+| Component group | Raw/day (each) |
+|---|---|
+| Java/Spring services (keymanager, esignet, mock-identity, master-data, iam, audit) | ~0.1–0.3 GB |
+| Superset, ODK-central | ~0.1–0.2 GB |
+| Keycloak, Kafka | ~0.05–0.2 GB |
+| MinIO, Redis×2, SoftHSM, mail, UIs, init jobs | ~0.02–0.1 GB |
+
+| | Low | Typical | High |
+|---|----:|--------:|-----:|
+| Commons daily raw logs (sum of the above) | ~1 GB/day | ~2 GB/day | ~3 GB/day |
+| × 7 days, ÷ ~8 compression | ~0.9 GB | ~1.8 GB | ~2.6 GB |
+| **+ infra logs (already counted)** | +0.4 | +1.8 | +7.0 |
+| **= total 7-day Loki/MinIO store (Storage)** | **~1.3 GB** | **~3.6 GB** | **~9.6 GB** |
+
+Still inside the 50 Gi Loki-MinIO PVC. Once **citizen traffic** flows (post-go-
+live), per-request logs (eSignet, Keycloak, Istio access logs if enabled)
+dominate — size for that separately.
+
+### Combined: infra **+** Commons (installed + 7-day logs, light app data)
+
+| Node | Used (Low) | **Used (Typical)** | Used (High) | Budget (root) | Procured |
+|------|-----------:|-------------------:|------------:|--------------:|---------:|
+| Reverse Proxy | 2.6 | **3.8 GB** | 5.9 | ~30 GB | 64 GB |
+| Compute (K8s) | 14.6 | **22.0 GB** | 34.1 | **~60–70 GB** | 128 GB |
+| Storage (PG + NFS) | 4.4 | **8.5 GB** | 17.0 | **25 GB + data** | 256 GB |
+| **3-node total** | **21.6** | **~34.3 GB** | **57.0** | | |
+
+- **Compute** budget rises to ~60–70 GB (OS 25 + infra images ~12 + Commons
+  images ~10 + churn/ephemeral/log headroom). Still ~half of the 128 GB disk.
+- **Storage** used is still small (~8.5 GB) at install, but its **budget is
+  data-driven** — the 256 GB disk is for production PostgreSQL + MinIO + the
+  observability retention, sized from the module/usage estimate (next exercise).
 
 ---
 
@@ -281,7 +388,11 @@ so you can compare actual usage to the **Typical** column and adjust the model.
 
 ## What this does *not* cover
 
-- **Commons + application data** — the dominant long-term consumer (PostgreSQL
-  databases, MinIO objects, Kafka logs, SoftHSM, Superset).
-- **Observability growth** — Prometheus/Loki data grows with retention/activity.
+- **Production-scale application data** — the dominant long-term consumer. The
+  Commons layer here is "installed + idle for a week"; it does **not** model
+  beneficiary/transaction/document volume, which drives PostgreSQL DB growth,
+  MinIO object growth, and Kafka topic retention. Size that from a usage model
+  (e.g. *rows/objects per beneficiary × beneficiaries*).
+- **Traffic-driven logs** — once citizen services flow, per-request logs
+  (eSignet, Keycloak, Istio access logs) dominate the Loki store.
 - **Backup repository growth** — sized from the PG/NFS data volume + retention.

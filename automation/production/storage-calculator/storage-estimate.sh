@@ -46,8 +46,9 @@ declare -A TYP=( [reverse-proxy]=3.8 [compute]=12.0 [storage]=4.5 [backup]=3.9 )
 # ─────────────────────────────────────────────────────────────────────────
 print_estimate() {
     cat <<'EOF'
-OpenG2P production — disk per node, BEFORE Commons
-(base OS + packages + RKE2 + Rancher/Istio/monitoring/logging; empty PostgreSQL)
+OpenG2P production — disk per node: infra baseline + Commons layer
+(OS + RKE2 + Rancher/Istio/monitoring/logging, THEN commons-base + commons-services
+ installed with ~7 days of logs and light/no application data)
 
 === B. PROVISIONING BUDGET — what to allocate (use THIS for sizing/future) ===
 
@@ -76,6 +77,23 @@ OpenG2P production — disk per node, BEFORE Commons
   Note: `apt-get update` refreshes the index only (~100-200 MB); it installs no
   libraries. An "8-10 GB base Ubuntu" figure = Desktop, or RKE2/image store
   counted as OS.
+
+=== C. + COMMONS LAYER (installed + 7-day logs, light app data) ===
+
+  Added on top of the infra baseline (Low / Typical / High):
+    Compute:  +6.3 / +10.0 / +16.5 GB   mostly Docker images (~19 components);
+                                         + Kafka/Redis emptyDir on Compute disk
+    Storage:  +1.5 / +4.0 / +9.5 GB     9 Postgres DBs (schema) + MinIO 16Gi PVC
+                                         + 7-day Loki log growth
+    Reverse Proxy / Backup:  no change at install
+
+  Combined USED (infra + commons): RP ~3.8   Compute ~22   Storage ~8.5 GB
+  Combined BUDGET (root):          RP ~30    Compute ~60-70   Storage 25 + data
+
+  Postgres + NFS *software* is already inside the 25 GB OS budget — the commons
+  increment is their *DATA*. Production-scale data (beneficiaries, transactions,
+  documents, keys) is USAGE-DRIVEN — size the Storage 256 GB disk from the
+  module/usage estimate, not this "installed + idle" snapshot.
 
 Key points:
   • Day 1 uses only ~4-12 GB/node; the 25 GB OS budget + platform/data headroom
