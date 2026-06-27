@@ -124,6 +124,11 @@ push_file_as_root() {
 # file is empty or missing AND we're at install time, generates a random
 # passphrase and writes it back. The orchestrator then ships the file to
 # the backup host at install/<group>.pass.
+#
+# CONTRACT: this function returns the resolved PATH on stdout and NOTHING
+# else — callers capture it with $(...). Every diagnostic (log_*) MUST go to
+# stderr (>&2), otherwise the captured value is polluted with log text and
+# downstream `$(< "$path")` reads fail with "No such file or directory".
 ensure_passphrase_file() {
     local key="$1"               # config key, e.g. "restic_passphrase_file"
     local label="$2"             # human-readable label for prompts
@@ -136,13 +141,13 @@ ensure_passphrase_file() {
                   "Every backup group needs a passphrase file in your keystore" \
                   "Set '${key}' to a path under your p12 keystore directory" \
                   "" \
-                  "operations/deployment/automation/backups/configuration.md"
+                  "operations/deployment/automation/backups/configuration.md" >&2
         return 1
     fi
     path="${path/#\~/$HOME}"
 
     if [[ -f "$path" ]] && [[ -s "$path" ]]; then
-        log_success "${label} passphrase: present at ${path}"
+        log_success "${label} passphrase: present at ${path}" >&2
         echo "$path"
         return 0
     fi
@@ -151,12 +156,12 @@ ensure_passphrase_file() {
         log_error "${label} passphrase file missing: ${path}" \
                   "The file does not exist or is empty" \
                   "Place the passphrase (single line) at ${path} mode 0600" \
-                  "ls -l ${path}"
+                  "ls -l ${path}" >&2
         return 1
     fi
 
-    log_warn "${label} passphrase missing — generating a random 32-byte passphrase at ${path}"
-    log_warn "MOVE THIS FILE INTO YOUR P12 KEYSTORE AFTER INSTALL — it is not committed."
+    log_warn "${label} passphrase missing — generating a random 32-byte passphrase at ${path}" >&2
+    log_warn "MOVE THIS FILE INTO YOUR P12 KEYSTORE AFTER INSTALL — it is not committed." >&2
 
     mkdir -p "$(dirname "$path")"
     head -c 32 /dev/urandom | base64 | tr -d '\n=' | head -c 40 > "$path"
@@ -216,9 +221,10 @@ if declare -f ssh_resolve_role > /dev/null; then
             if [[ -z "$host" ]]; then host=$(cfg "backup_private_ip"); fi
             key=$(cfg "backup_ssh_key" "~/.ssh/id_rsa")
             if [[ -z "$host" ]]; then
+                # stderr — this function's stdout is captured by callers.
                 log_error "No SSH host resolved for role 'backup'" \
                           "backup_ssh_host and backup_private_ip both blank in backup-config.yaml" \
-                          "Either run aws-provision with backup_node.enabled=true, or fill them in"
+                          "Either run aws-provision with backup_node.enabled=true, or fill them in" >&2
                 return 1
             fi
             key="${key/#\~/$HOME}"
