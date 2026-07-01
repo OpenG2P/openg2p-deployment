@@ -48,8 +48,18 @@ else
     echo "[storage/pg] Backup-host pubkey already trusted."
 fi
 
-# Trust the backup host's host key (will be needed when archive_command pushes
-# WAL via SSH to the repo host).
+# Generate the postgres user's OWN keypair. pgBackRest's archive_command runs
+# as postgres and SSHes storage → pgbackrest@backup to push WAL; that needs a
+# postgres keypair whose pubkey is authorized on the backup host. pg_install
+# reads this pubkey afterward (it's the sole line on stdout tagged below).
+if [[ ! -f "${POSTGRES_HOME}/.ssh/id_ed25519" ]]; then
+    sudo -u postgres ssh-keygen -t ed25519 -N '' \
+        -f "${POSTGRES_HOME}/.ssh/id_ed25519" -C "postgres@openg2p-storage"
+fi
+chmod 0600 "${POSTGRES_HOME}/.ssh/id_ed25519"
+
+# Trust the backup host's host key (needed when archive_command pushes WAL via
+# SSH to the repo host).
 sudo -u postgres ssh-keyscan -H "${PGBR_BACKUP_HOST_IP}" 2>/dev/null \
     >> "${POSTGRES_HOME}/.ssh/known_hosts" || true
 chmod 0600 "${POSTGRES_HOME}/.ssh/known_hosts" 2>/dev/null || true

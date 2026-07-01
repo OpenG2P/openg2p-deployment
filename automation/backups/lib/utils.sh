@@ -134,6 +134,22 @@ ensure_passphrase_file() {
     local label="$2"             # human-readable label for prompts
     local generate="${3:-true}"  # generate if missing?
 
+    # On the backup host, the passphrases live at /etc/openg2p-backup/*.pass
+    # (written by roles/backup-host/install.sh), NOT at the operator's laptop
+    # keystore path stored in config (which resolves to /root/... under cron
+    # and doesn't exist). Short-circuit to the on-host copy.
+    if on_backup_host; then
+        local hostfile=""
+        case "$key" in
+            restic_passphrase_file)     hostfile=/etc/openg2p-backup/restic.pass ;;
+            pgbackrest_passphrase_file) hostfile=/etc/openg2p-backup/pgbackrest.pass ;;
+        esac
+        if [[ -n "$hostfile" && -f "$hostfile" ]]; then
+            echo "$hostfile"
+            return 0
+        fi
+    fi
+
     local path
     path="$(cfg "$key")"
     if [[ -z "$path" ]]; then
@@ -229,6 +245,25 @@ if declare -f ssh_resolve_role > /dev/null; then
             fi
             key="${key/#\~/$HOME}"
             echo "${user}|${host}|${key}"
+        elif on_backup_host; then
+            # Reaching rp/compute/storage FROM the backup host (cron): the
+            # laptop's *_ssh_key path doesn't exist here. Use the dedicated
+            # orchestration key set up by bootstrap_backup_host, authorized on
+            # all three nodes, and dial the private IP directly.
+            local user host
+            case "$role" in
+                rp)      user=$(cfg rp_ssh_user ubuntu);      host=$(cfg rp_private_ip) ;;
+                compute) user=$(cfg compute_ssh_user ubuntu); host=$(cfg compute_private_ip) ;;
+                storage) user=$(cfg storage_ssh_user ubuntu); host=$(cfg storage_private_ip) ;;
+                *)       _prod_ssh_resolve_role "$role"; return ;;
+            esac
+            if [[ -z "$host" ]]; then
+                log_error "No private IP for role '${role}' in config" \
+                          "${role}_private_ip is blank" \
+                          "Ensure prod-config/provision-output has it" >&2
+                return 1
+            fi
+            echo "${user}|${host}|/root/.ssh/openg2p-backup-orch"
         else
             _prod_ssh_resolve_role "$role"
         fi
@@ -449,17 +484,24 @@ ts_utc() {
 # Args: <component> <event=last_run|last_drill> <ts> <result=ok|fail> <details>
 _status_write_component() {
     local component="$1" event="$2" ts="$3" result="$4" details="$5"
-    local file="/var/lib/openg2p-backup/.status.json"
-    local d_esc; d_esc="$(json_escape "$details")"
+    # Honor a non-default backup_repo_root (installer seeds the file there).
+    local file="$(cfg backup_repo_root /var/lib/openg2p-backup)/.status.json"
+    # 'details' is the only field that can carry arbitrary text. Transport it
+    # as base64 (shell-safe: no quotes/spaces/globs) and decode on the remote,
+    # then let jq --arg do the JSON encoding. Avoids all quote-escaping hazards
+    # in the single-quoted shell literals below. component/event/ts/result are
+    # controlled values (no quotes).
+    local d_b64; d_b64="$(printf '%s' "$details" | base64 | tr -d '\n')"
     run_on_backup "set -euo pipefail
         f='${file}'
         [[ -f \$f ]] || echo '{\"components\":{}}' > \$f
         tmp=\$(mktemp)
+        d=\$(echo '${d_b64}' | base64 -d)
         jq --arg c '${component}' \
            --arg ev '${event}' \
            --arg ts '${ts}' \
            --arg r '${result}' \
-           --arg d '${d_esc}' \
+           --arg d \"\$d\" \
            '.components[\$c] = (.components[\$c] // {}) +
             { (\$ev): \$ts, (\$ev + \"_result\"): \$r, (\$ev + \"_details\"): \$d }' \
            \$f > \$tmp && mv \$tmp \$f"

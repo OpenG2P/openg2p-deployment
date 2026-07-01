@@ -24,8 +24,12 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
     pgbackrest restic rsync nfs-common jq curl etcd-client
 
 echo "[backup-host] creating repo layout under ${BACKUP_REPO_ROOT}"
+# The repo ROOT is 0755 (traversable by all) so non-root service users — the
+# 'pgbackrest' user that owns ${BACKUP_REPO_ROOT}/pg — can reach their subdir.
+# Sensitive content stays protected by the subdirs' own perms (restic dirs are
+# root-only; pg is owned by the pgbackrest user).
+install -d -o root -g root -m 0755 "${BACKUP_REPO_ROOT}"
 install -d -o root -g root -m 0750 \
-    "${BACKUP_REPO_ROOT}" \
     "${BACKUP_REPO_ROOT}/pg" \
     "${BACKUP_REPO_ROOT}/etcd" \
     "${BACKUP_REPO_ROOT}/restic" \

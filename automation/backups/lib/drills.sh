@@ -33,7 +33,7 @@ drills_run_all() {
     echo "Drill summary: ${total_pass} passed, ${total_fail} failed"
     if (( total_fail > 0 )); then
         echo "Failed components: ${fails[*]}"
-        echo "Status: ./openg2p-backup.sh status --config ${CONFIG_FILE}"
+        echo "Status: ./openg2p-backup.sh status --config ${CONFIG_FILE:-backup-config.yaml}"
         echo "============================================================"
         return 1
     fi

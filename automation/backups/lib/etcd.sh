@@ -62,12 +62,18 @@ EOC
         fi
         cat /root/.ssh/openg2p-etcd-pull.pub" | tail -1)
 
+    # Authorize the backup host's pull key on compute's root. We intentionally
+    # do NOT use a forced command="rsync ..." restriction: the exact rsync
+    # --server flags vary by version so a hardcoded match breaks the pull, and
+    # the etcd_restore path also needs scp TO compute (a forced rsync command
+    # would block it). Keep the milder no-forwarding restrictions. The key is
+    # dedicated and only reachable from within the private VPC.
     ssh_run "compute" "set -euo pipefail
         install -d -o root -g root -m 0700 /root/.ssh
         touch /root/.ssh/authorized_keys
         chmod 0600 /root/.ssh/authorized_keys
         grep -qF '${backup_pubkey}' /root/.ssh/authorized_keys || \
-            echo 'command=\"rsync --server --sender -logDtprze.iLsfxC . /var/lib/rancher/rke2/server/db/snapshots/\",no-port-forwarding,no-X11-forwarding ${backup_pubkey}' \
+            echo 'no-port-forwarding,no-X11-forwarding,no-agent-forwarding ${backup_pubkey}' \
             >> /root/.ssh/authorized_keys"
 
     # Save compute IP for the rsync command at run time.

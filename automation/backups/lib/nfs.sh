@@ -20,10 +20,27 @@ NFS_MOUNT_POINT="/mnt/openg2p-nfs-ro"
 nfs_install() {
     local export_root="$(cfg nfs.export_root /srv/nfs/openg2p)"
     local storage_ip="$(cfg storage_private_ip)"
+    local backup_ip="$(cfg backup_private_ip)"
     local repo_root="$(cfg backup_repo_root /var/lib/openg2p-backup)"
     local restic_pass_file
     restic_pass_file="$(ensure_passphrase_file restic_passphrase_file restic false)"
     local restic_pass; restic_pass="$(< "$restic_pass_file")"
+
+    # Ensure the storage node exports ${export_root} to the backup host,
+    # read-only, with no_root_squash so root on the backup host can read
+    # root-owned files (restic runs as root and must see everything). The
+    # production install typically exports only to the compute node — without
+    # this the mount below hangs/fails.
+    log_info "Ensuring storage node exports ${export_root} to backup host ${backup_ip} (ro)..."
+    ssh_run "storage" "set -euo pipefail
+        line='${export_root} ${backup_ip}(ro,sync,no_subtree_check,no_root_squash)'
+        touch /etc/exports
+        if ! grep -qF '${backup_ip}' /etc/exports; then
+            echo \"\$line\" >> /etc/exports
+        fi
+        exportfs -ra
+        # Make sure the export path is actually served.
+        exportfs -v | grep -q '${export_root}' || { echo 'export not active'; exit 1; }"
 
     log_info "Mounting NFS export ${storage_ip}:${export_root} read-only on backup host..."
     ssh_run "backup" "set -euo pipefail
@@ -82,6 +99,9 @@ nfs_run() {
     run_on_backup "set -euo pipefail
         export RESTIC_REPOSITORY=${repo_root}/restic/nfs
         export RESTIC_PASSWORD='$(printf '%q' "$restic_pass")'
+        # The fstab entry is noauto,x-systemd.automount — trigger the mount
+        # before cd, or the first cron run after a reboot fails on 'cd'.
+        mountpoint -q ${NFS_MOUNT_POINT} || mount ${NFS_MOUNT_POINT}
         cd ${NFS_MOUNT_POINT}
         restic backup ${include_paths} ${exclude_args} \
             --tag openg2p --tag nfs --tag \$(date -u +%Y-%m-%d)
@@ -101,12 +121,17 @@ nfs_run() {
 }
 
 # Helpers — render restic include and exclude args from config.
+# NOTE: paths and exclude patterns are single-quoted so restic receives them
+# LITERALLY. Without quotes, glob patterns like **/logs/** expand against the
+# CWD when the command runs via `bash -lc` on the backup host (the cron path;
+# the laptop path is protected by ssh_run's %q, but the backup-host path is
+# not — keep them consistent).
 _nfs_render_include_paths() {
     local p
     local out=""
     while read -r p; do
         [[ -z "$p" ]] && continue
-        out="${out} ${p}"
+        out="${out} '${p}'"
     done < <(_nfs_config_paths)
     echo "$out"
 }
@@ -116,7 +141,7 @@ _nfs_render_exclude_args() {
     local out=""
     while read -r p; do
         [[ -z "$p" ]] && continue
-        out="${out} --exclude ${p}"
+        out="${out} --exclude '${p}'"
     done < <(_nfs_config_excludes)
     echo "$out"
 }
@@ -192,7 +217,7 @@ nfs_generate_pvc_manifest() {
         install -d -m 0750 ${repo_root}/nfs
         nfs_listing=\$(ls -1 ${NFS_MOUNT_POINT} 2>/dev/null | jq -R . | jq -s .)
         jq -n \
-            --argjson pvs \"\$(jq '.items' /tmp/openg2p-pv.json)\" \
+            --argjson pvs \"\$(jq '.items // []' /tmp/openg2p-pv.json)\" \
             --argjson dirs \"\$nfs_listing\" '
             \$dirs
             | map(. as \$d | {
@@ -291,8 +316,8 @@ nfs_restore() {
     run_on_backup "set -euo pipefail
         export RESTIC_REPOSITORY=${repo_root}/restic/nfs
         export RESTIC_PASSWORD='$(printf '%q' "$restic_pass")'
-        install -d -m 0700 ${stage_dir}
-        restic restore latest --target ${stage_dir} --include /${nfs_path}"
+        install -d -m 0700 '${stage_dir}'
+        restic restore latest --target '${stage_dir}' --include '/${nfs_path}'"
 
     log_success "Restored to ${stage_dir} on backup host."
     log_warn "Now follow operations/deployment/automation/backups/restoration/single-pvc.md"

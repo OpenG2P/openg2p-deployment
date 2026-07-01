@@ -480,9 +480,10 @@ do_status() {
             printf "%-10s %-10s %-22s %-10s %-22s %-8s\n" "$g" "$state" "-" "-" "-" "-"
             continue
         fi
-        # Read the JSON status file from the backup host.
+        # Read the JSON status file from the backup host (honor repo root).
+        local status_file="$(cfg backup_repo_root /var/lib/openg2p-backup)/.status.json"
         local snippet
-        snippet=$(ssh_run "backup" "jq -r --arg g \"$g\" '.components[\$g] // {} | [(.last_run//\"-\"),(.last_run_result//\"-\"),(.last_drill//\"-\"),(.last_drill_result//\"-\")] | @tsv' < /var/lib/openg2p-backup/.status.json 2>/dev/null || echo '-\\t-\\t-\\t-'") || snippet=$'-\t-\t-\t-'
+        snippet=$(ssh_run "backup" "jq -r --arg g \"$g\" '.components[\$g] // {} | [(.last_run//\"-\"),(.last_run_result//\"-\"),(.last_drill//\"-\"),(.last_drill_result//\"-\")] | @tsv' < ${status_file} 2>/dev/null || echo '-\\t-\\t-\\t-'") || snippet=$'-\t-\t-\t-'
         local last_run last_run_r last_drill last_drill_r
         IFS=$'\t' read -r last_run last_run_r last_drill last_drill_r <<<"$snippet"
         printf "%-10s %-10s %-22s %-10s %-22s %-8s\n" \
@@ -619,6 +620,7 @@ group=\"\${1:-}\"
 [[ -z \"\$group\" ]] && { echo 'usage: openg2p-backup-run <group>'; exit 1; }
 source /opt/openg2p-backup/lib/utils.sh
 load_config /etc/openg2p-backup/config.yaml
+ssh_init   # create SSH ControlMaster dir so backup-host → rp/compute SSH works
 case \"\$group\" in
     pg)      source /opt/openg2p-backup/lib/pgbackrest.sh ;;
     *)       source /opt/openg2p-backup/lib/\${group}.sh ;;
@@ -637,6 +639,7 @@ export PROD_SHARED_LIB=/opt/openg2p-backup/production-lib/shared/utils.sh
 export PROD_SSH_LIB=/opt/openg2p-backup/production-lib/ssh-utils.sh
 source /opt/openg2p-backup/lib/utils.sh
 load_config /etc/openg2p-backup/config.yaml
+ssh_init   # create SSH ControlMaster dir so backup-host → rp/compute SSH works
 # drills_run_all calls load_group_module per group — source each group lib
 # manually here so <group>_drill is in scope.
 for g in pg etcd rancher nfs configs; do
