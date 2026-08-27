@@ -7,10 +7,9 @@
 # via kubectl + helm. The orchestrator dispatches it locally — not via SSH.
 #
 # Phases:
-#   1 — scaffolding: kubeconfig fetch, Rancher ClusterRepo, namespace,
+#   1 — scaffolding: kubeconfig fetch, Rancher ClusterRepos, namespace,
 #                    Rancher Project, Istio Gateway, external-PG secret
-#   2 — commons install: openg2p-commons-base + openg2p-commons-services
-#                        (gated by environment.install_commons in config)
+#                    (gated by install_environment in prod-config)
 # =============================================================================
 
 set -euo pipefail
@@ -23,18 +22,13 @@ RUN_PHASE=""
 FORCE_MODE=false
 
 source "${WORK_DIR}/lib/shared/utils.sh"
-# Laptop-side state — same convention as the orchestrator.
 STATE_DIR="${WORK_DIR}/.state"
-# SSH helpers — phases fetch kubeconfig from compute + PG superuser password
-# from storage. ssh-utils provides ssh_run / ssh_pull driven by prod-config keys.
 source "${WORK_DIR}/lib/ssh-utils.sh"
 
-# Load phase scripts on demand.
 load_phase() {
     case "$1" in
         1) source "${SCRIPT_DIR}/phase1.sh" ;;
-        2) source "${SCRIPT_DIR}/phase2.sh" ;;
-        *) log_error "Unknown phase: $1" "Valid phases are 1 and 2"; exit 1 ;;
+        *) log_error "Unknown phase: $1" "Valid phases: 1"; exit 1 ;;
     esac
 }
 
@@ -51,7 +45,7 @@ parse_args() {
     [[ "$CONFIG_FILE" = /* ]] || CONFIG_FILE="${WORK_DIR}/${CONFIG_FILE}"
 
     if [[ -z "$RUN_PHASE" ]]; then
-        log_error "environment role requires --phase <1|2>"
+        log_error "environment role requires --phase <1>"
         exit 1
     fi
 }
@@ -59,10 +53,11 @@ parse_args() {
 main() {
     parse_args "$@"
     load_config "$CONFIG_FILE"
-    # Provision-output overlay (private IPs, SSH paths) — same precedence as
-    # the orchestrator: overlay wins for AWS-derived keys.
     if [[ -n "$PROVISION_OUTPUT" && -f "$PROVISION_OUTPUT" ]]; then
         load_config "$PROVISION_OUTPUT"
+    elif [[ -z "$PROVISION_OUTPUT" ]]; then
+        local auto="$(dirname "$CONFIG_FILE")/provision-output.yaml"
+        [[ -f "$auto" ]] && load_config "$auto"
     fi
 
     mkdir -p "${STATE_DIR}/environment"

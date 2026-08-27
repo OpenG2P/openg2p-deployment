@@ -6,6 +6,13 @@
 #
 # Used by: env-cluster.sh (run from your workstation with kubectl access)
 #
+# For 3-node production: prefer scaffolding via automation/production
+# (openg2p-prod.sh --stage environment), then install Commons from Rancher UI.
+# This config/folder is the optional scripted Commons path. See README.md.
+#
+# Pick a Commons chart version from:
+#   https://openg2p.gitlab.io/versions/commons/CHANGELOG.html
+#
 # PREREQUISITES — must already be in place before env-cluster.sh runs:
 #   1. DNS A records (apex + wildcard) pointing to the Nginx node
 #   2. Wildcard TLS cert for *.<base_domain> on the Nginx node at

@@ -24,7 +24,8 @@ Usage:
   ROLE = compute | storage | reverse-proxy | backup
 
 Run --measure with sudo (du needs to read /var/lib/rancher, /var/lib/postgresql, …).
-Measure AFTER infrastructure is up but BEFORE the environment stage (Commons).
+Measure AFTER infrastructure is up but BEFORE Commons is installed
+(environment scaffolding alone does not install Commons).
 EOF
 }
 

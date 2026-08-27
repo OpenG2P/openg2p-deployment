@@ -374,7 +374,8 @@ are **not** included in the figures above.
 
 ## How to validate against a live node
 
-On each node, after infra and **before** the environment stage:
+On each node, after infra is up and **before Commons** is installed
+(environment scaffolding does not install Commons):
 
 ```bash
 sudo ./storage-estimate.sh --measure --role compute

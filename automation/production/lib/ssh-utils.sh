@@ -119,6 +119,7 @@ ssh_init() {
 }
 
 ssh_cleanup() {
+    ssh_k8s_tunnel_close 2>/dev/null || true
     # Close all ControlMaster sockets cleanly.
     for sock in "${SSH_CTRL_DIR}"/*; do
         [[ -S "$sock" ]] || continue
@@ -126,6 +127,153 @@ ssh_cleanup() {
         target=$(basename "$sock")
         ssh -o "ControlPath=${sock}" -O exit "${target}" 2>/dev/null || true
     done
+    for sock in "${SSH_CTRL_DIR}/k8s-tunnel/"*; do
+        [[ -e "$sock" ]] || continue
+        [[ -S "$sock" ]] || continue
+        ssh -o "ControlPath=${sock}" -O exit unused 2>/dev/null || true
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Kubernetes API access via SSH tunnel (no Wireguard required)
+# ---------------------------------------------------------------------------
+# The RKE2 API listens on compute's loopback (127.0.0.1:6443). The laptop
+# already has SSH to compute's public IP (same path as infra install). Open a
+# LocalForward and rewrite kubeconfig to https://127.0.0.1:<local_port> so
+# kubectl/helm work during environment install without Wireguard.
+#
+# Globals set: K8S_TUNNEL_PORT, K8S_TUNNEL_PID, K8S_TUNNEL_CTRL
+K8S_TUNNEL_PORT=""
+K8S_TUNNEL_PID=""
+K8S_TUNNEL_CTRL=""
+
+ssh_k8s_tunnel_pick_port() {
+    local port
+    for port in $(seq 16443 16543); do
+        if ! (echo >/dev/tcp/127.0.0.1/"$port") >/dev/null 2>&1; then
+            echo "$port"
+            return 0
+        fi
+    done
+    # Fallback — OS may still bind successfully.
+    echo "16443"
+}
+
+# ssh_k8s_tunnel_open <kubeconfig_path>
+# Pulls /etc/rancher/rke2/rke2.yaml, opens SSH -L to compute:6443, rewrites
+# the kubeconfig server URL to the local tunnel port, exports KUBECONFIG.
+# Safe to call again (closes any prior tunnel first). No Wireguard needed.
+ssh_k8s_tunnel_open() {
+    local kubeconfig="${1:?kubeconfig path required}"
+    local resolved user host key
+    local ctrl_path local_port
+
+    ssh_k8s_tunnel_close 2>/dev/null || true
+
+    resolved=$(ssh_resolve_role "compute") || return 1
+    user="${resolved%%|*}"
+    local rest="${resolved#*|}"
+    host="${rest%%|*}"
+    key="${rest##*|}"
+
+    # Dedicated options — do NOT reuse ssh_options_for ControlMaster path, or
+    # LocalForward would share a socket with unrelated ssh_run sessions.
+    local -a tun_opts=(
+        -o "StrictHostKeyChecking=no"
+        -o "UserKnownHostsFile=/dev/null"
+        -o "LogLevel=ERROR"
+        -o "ServerAliveInterval=30"
+        -o "ServerAliveCountMax=3"
+        -o "ExitOnForwardFailure=yes"
+    )
+    if cfg_bool "ssh_jump_via_rp"; then
+        local rp_resolved rp_user rp_host rp_key rp_rest
+        rp_resolved=$(ssh_resolve_role "rp") || return 1
+        rp_user="${rp_resolved%%|*}"
+        rp_rest="${rp_resolved#*|}"
+        rp_host="${rp_rest%%|*}"
+        rp_key="${rp_rest##*|}"
+        tun_opts+=(-o "ProxyJump=${rp_user}@${rp_host}" -o "IdentityFile=${rp_key}")
+    fi
+
+    mkdir -p "$(dirname "$kubeconfig")"
+    log_info "Fetching RKE2 kubeconfig from compute via SSH..."
+    local raw
+    raw=$(ssh_run compute "sudo cat /etc/rancher/rke2/rke2.yaml" 2>/dev/null) || {
+        log_error "Could not read /etc/rancher/rke2/rke2.yaml from compute" \
+                  "SSH to compute succeeded earlier but kubeconfig is missing" \
+                  "Check that RKE2 is installed: ssh compute 'sudo ls /etc/rancher/rke2/'"
+        return 1
+    }
+    printf '%s\n' "$raw" > "$kubeconfig"
+    chmod 0600 "$kubeconfig"
+
+    local_port=$(ssh_k8s_tunnel_pick_port)
+    mkdir -p "${SSH_CTRL_DIR}/k8s-tunnel"
+    chmod 700 "${SSH_CTRL_DIR}/k8s-tunnel"
+    ctrl_path="${SSH_CTRL_DIR}/k8s-tunnel/${user}@${host}:22"
+
+    log_info "Opening SSH tunnel to Kubernetes API: localhost:${local_port} → compute:127.0.0.1:6443"
+
+    ssh -f -N \
+        -i "$key" \
+        "${tun_opts[@]}" \
+        -o "ControlMaster=yes" \
+        -o "ControlPath=${ctrl_path}" \
+        -o "ControlPersist=yes" \
+        -L "${local_port}:127.0.0.1:6443" \
+        "${user}@${host}" || {
+        log_error "Failed to open SSH tunnel to the Kubernetes API on compute" \
+                  "Could not bind LocalForward ${local_port} → 127.0.0.1:6443" \
+                  "Check SSH to compute and that nothing blocks the forward"
+        return 1
+    }
+
+    sed -E -i \
+        "s#server: https://127\\.0\\.0\\.1:6443#server: https://127.0.0.1:${local_port}#g" \
+        "$kubeconfig"
+    local compute_priv
+    compute_priv=$(cfg compute_private_ip 2>/dev/null || true)
+    if [[ -n "$compute_priv" ]]; then
+        sed -E -i \
+            "s#server: https://${compute_priv}:6443#server: https://127.0.0.1:${local_port}#g" \
+            "$kubeconfig"
+    fi
+
+    K8S_TUNNEL_PORT="$local_port"
+    K8S_TUNNEL_CTRL="$ctrl_path"
+    export KUBECONFIG="$kubeconfig"
+
+    local waited=0
+    while (( waited < 30 )); do
+        if kubectl --kubeconfig "$kubeconfig" cluster-info >/dev/null 2>&1; then
+            log_success "Kubernetes API reachable via SSH tunnel (localhost:${local_port})."
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    log_error "Kubernetes API not reachable through the SSH tunnel" \
+              "Tunnel opened on localhost:${local_port} but kubectl cluster-info still fails" \
+              "Check RKE2 is running on compute: ssh compute 'sudo systemctl status rke2-server'"
+    ssh_k8s_tunnel_close 2>/dev/null || true
+    return 1
+}
+
+ssh_k8s_tunnel_close() {
+    if [[ -n "${K8S_TUNNEL_CTRL:-}" && -S "${K8S_TUNNEL_CTRL}" ]]; then
+        ssh -o "ControlPath=${K8S_TUNNEL_CTRL}" -O exit unused 2>/dev/null || true
+    fi
+    local sock
+    for sock in "${SSH_CTRL_DIR}/k8s-tunnel/"*; do
+        [[ -e "$sock" ]] || continue
+        [[ -S "$sock" ]] || continue
+        ssh -o "ControlPath=${sock}" -O exit unused 2>/dev/null || true
+    done
+    K8S_TUNNEL_PORT=""
+    K8S_TUNNEL_PID=""
+    K8S_TUNNEL_CTRL=""
 }
 
 # ---------------------------------------------------------------------------
@@ -260,6 +408,37 @@ ssh_push() {
         "${user}@${host}:${dest}"
 }
 
+# ssh_push_file <role> <local_file> <remote_file>
+# Upload a single file to an absolute path on the remote node.
+# (ssh_run deliberately ignores stdin — use this instead of piping into ssh_run.)
+ssh_push_file() {
+    local role="$1" local_file="$2" remote_file="$3"
+    local resolved
+    resolved=$(ssh_resolve_role "$role") || return 1
+    local user="${resolved%%|*}"
+    local rest="${resolved#*|}"
+    local host="${rest%%|*}"
+    local key="${rest##*|}"
+
+    local opts
+    mapfile -t opts < <(ssh_options_for "$role")
+
+    local remote_dir
+    remote_dir="$(dirname "$remote_file")"
+    ssh -i "$key" "${opts[@]}" "${user}@${host}" \
+        "mkdir -p $(printf '%q' "$remote_dir")" >/dev/null
+
+    local rsync_ssh="ssh -i ${key}"
+    for o in "${opts[@]}"; do
+        rsync_ssh="${rsync_ssh} ${o}"
+    done
+
+    rsync -az \
+        -e "$rsync_ssh" \
+        "$local_file" \
+        "${user}@${host}:${remote_file}"
+}
+
 # ---------------------------------------------------------------------------
 # File pull — copy a remote file to a laptop artifact path.
 # ---------------------------------------------------------------------------
@@ -281,6 +460,57 @@ ssh_pull() {
 
     ssh -i "$key" "${opts[@]}" "${user}@${host}" \
         "sudo cat $(printf '%q' "$src")" > "$dest"
+}
+
+# ---------------------------------------------------------------------------
+# Merge prod-config + provision-output (+ laptop-resolved overrides) for remote.
+# ---------------------------------------------------------------------------
+# Remote nodes (preflight + role scripts) only see prod-config.yaml — they do
+# NOT load provision-output.yaml separately. This helper builds the same
+# effective config the laptop orchestrator uses, including legacy-key
+# promotion (rp_internal_ip → rp_private_ip) already applied to CONFIG.
+write_merged_prod_config() {
+    local dest="$1"
+    local config_file="$2"
+    local provision_output="${3:-}"
+
+    if [[ -z "$provision_output" || ! -f "$provision_output" ]]; then
+        provision_output="$(dirname "$config_file")/provision-output.yaml"
+    fi
+
+    cat "$config_file" > "$dest"
+
+    if [[ -f "$provision_output" ]]; then
+        {
+            echo ""
+            echo "# ─── merged from provision-output.yaml ───"
+            cat "$provision_output"
+        } >> "$dest"
+    fi
+
+    # Last-wins overlay: guarantees remote preflight/roles see the laptop's
+    # effective values even when prod-config placeholders (key: "") confused
+    # the parser or provision-output was not found on the first merge pass.
+    local -a overlay_keys=(
+        rp_public_ip rp_private_ip rp_internal_ip
+        rp_ssh_host rp_ssh_user rp_ssh_key
+        compute_private_ip compute_ssh_host compute_ssh_user compute_ssh_key
+        storage_private_ip storage_ssh_host storage_ssh_user storage_ssh_key
+        private_subnet admin_cidr wg_endpoint wg_port wg_peer_dns
+    )
+    local wrote_overlay=false key val
+    for key in "${overlay_keys[@]}"; do
+        val="$(cfg "$key" 2>/dev/null || true)"
+        [[ -z "$val" ]] && continue
+        if [[ "$wrote_overlay" == "false" ]]; then
+            {
+                echo ""
+                echo "# ─── orchestrator-resolved overrides (laptop effective config) ───"
+            } >> "$dest"
+            wrote_overlay=true
+        fi
+        printf '%s: "%s"\n' "$key" "$val" >> "$dest"
+    done
 }
 
 # ---------------------------------------------------------------------------
@@ -322,15 +552,8 @@ ssh_stage_role() {
         _stage_customer_certs "$config_file" "${stage}/certs"
     fi
 
-    # Merge prod-config + provision-output into a single staged config.
-    cat "$config_file" > "${stage}/prod-config.yaml"
-    if [[ -n "$provision_output" && -f "$provision_output" ]]; then
-        {
-            echo ""
-            echo "# ─── merged from provision-output.yaml at stage time ───"
-            cat "$provision_output"
-        } >> "${stage}/prod-config.yaml"
-    fi
+    # Merge prod-config + provision-output + laptop-resolved overrides.
+    write_merged_prod_config "${stage}/prod-config.yaml" "$config_file" "$provision_output"
 
     ssh_push "$role" "${stage}/" "${REMOTE_WORK_DIR}/"
 

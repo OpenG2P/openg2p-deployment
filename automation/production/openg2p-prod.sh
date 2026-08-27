@@ -155,13 +155,14 @@ Options:
   --stage environment        Run only the ENVIRONMENT stage (Stage 4) — this is
                              NOT a node; it runs from your laptop against the
                              cluster (kubectl/helm, no SSH-into-a-node) and
-                             installs the namespace, Rancher project, Istio
-                             gateway, external-PG secret, and (optionally)
-                             commons-base + commons-services Helm charts.
+                             scaffolds the namespace, Rancher project, Istio
+                             gateway, and external-PG secret. Commons is
+                             installed separately via the Rancher UI.
                              (--role environment / --role env are accepted too.)
 
   --phase <n>                Run only one phase within the role/stage:
-                               compute: 1|2   storage/rp: 1   environment: 1|2
+                               compute: 1|2   storage/rp: 1
+                               environment: 1 (only phase; kept for compat)
   --probe                    SSH-probe all 3 nodes and exit (no changes)
   --preflight                Run preflight on all 3 nodes and exit (no changes)
   --validate-certs           Validate customer TLS certs on your laptop and exit
@@ -558,24 +559,17 @@ preflight_all() {
         fi
     done
 
-    # Step 2 — ship the merged config (prod-config + provision-output overlay).
+    # Step 2 — ship the merged config (prod-config + provision-output overlay +
+    # laptop-resolved overrides so remote preflight matches the orchestrator).
     local merged="${tmp}/prod-config.yaml"
-    cat "$CONFIG_FILE" > "$merged"
-    if [[ -n "$PROVISION_OUTPUT" && -f "$PROVISION_OUTPUT" ]]; then
-        {
-            echo ""
-            echo "# ─── merged from provision-output.yaml at preflight time ───"
-            cat "$PROVISION_OUTPUT"
-        } >> "$merged"
-    fi
+    write_merged_prod_config "$merged" "$CONFIG_FILE" "$PROVISION_OUTPUT"
     log_info "Pushing merged config to all 3 nodes..."
     for role in storage compute rp; do
         log_info "  → ${role}"
-        if ! ssh_run "$role" \
-                "mkdir -p ${REMOTE_WORK_DIR} && cat > ${REMOTE_WORK_DIR}/prod-config.yaml" \
-                < "$merged" > "${tmp}/${role}.cfg" 2>&1; then
+        if ! ssh_push_file "$role" "$merged" "${REMOTE_WORK_DIR}/prod-config.yaml" \
+                > "${tmp}/${role}.cfg" 2>&1; then
             log_error "Failed to ship config to ${role}" \
-                      "ssh returned non-zero" \
+                      "rsync returned non-zero" \
                       "$(cat "${tmp}/${role}.cfg")" \
                       "" ""
             rm -rf "$tmp"
@@ -724,16 +718,15 @@ run_local_phase() {
     fi
     [[ "$FORCE_MODE" == "true" ]] && args+=(--force)
 
-    # Capture rc — exit 75 (EX_TEMPFAIL) means the role deferred itself (e.g.
-    # the environment stage when the Wireguard VPN isn't connected yet during
-    # an unattended `all` run). Deferred = non-fatal and NOT marked done, so a
-    # later `--role environment` run (with WG up) picks it up cleanly.
+    # Capture rc — exit 75 (EX_TEMPFAIL) means the role deferred itself.
+    # Kept for compatibility; environment install now uses an SSH tunnel and
+    # should not defer for Wireguard.
     local rc=0
     bash "${SCRIPT_DIR}/roles/${role}/run.sh" "${args[@]}" || rc=$?
 
     if [[ $rc -eq 75 ]]; then
         ENV_DEFERRED=true
-        log_warn "${role^^} phase ${phase} deferred (cluster not reachable — connect Wireguard, then re-run --role ${role})."
+        log_warn "${role^^} phase ${phase} deferred (temporary failure — re-run --stage ${role})."
         return 0
     elif [[ $rc -ne 0 ]]; then
         return "$rc"
@@ -846,19 +839,14 @@ main() {
             run_role_phase compute 1
             run_role_phase rp      1
             run_role_phase compute 2
-            # Environment stage — laptop-side, no SSH. Skipped entirely when
-            # install_environment is false in prod-config. Cluster access needs
-            # the Wireguard VPN, which the operator connects post-install, so on
-            # a first unattended run phase 1 typically DEFERS (sets ENV_DEFERRED)
-            # with a "connect WG then --role environment" message.
+            # Environment stage — laptop-side kubectl via SSH tunnel to compute
+            # (Wireguard not required for scaffolding). Skipped when
+            # install_environment is false in prod-config.
             if cfg_bool "install_environment" "true"; then
                 ENV_DEFERRED=false
                 run_local_phase environment 1
-                if [[ "$ENV_DEFERRED" != "true" ]]; then
-                    # Phase 2 (commons install) self-skips when install_commons=false.
-                    run_local_phase environment 2
-                else
-                    log_warn "Environment stage deferred — finish infra, connect Wireguard, then run:"
+                if [[ "$ENV_DEFERRED" == "true" ]]; then
+                    log_warn "Environment stage deferred — re-run when ready:"
                     log_warn "  ./openg2p-prod.sh --stage environment --config ${CONFIG_FILE##*/}"
                 fi
             else
@@ -885,22 +873,82 @@ main() {
             run_role_phase rp "${RUN_PHASE:-1}"
             ;;
         environment)
-            # Laptop-side role — no SSH probe needed. The env role's phase1
+            # Laptop-side role — no SSH probe needed. The env install script
             # auto-fetches the kubeconfig from compute, so as long as you're
             # on the WG VPN this just works.
-            if [[ -n "$RUN_PHASE" ]]; then
-                run_local_phase environment "$RUN_PHASE"
-            else
-                run_local_phase environment 1
-                run_local_phase environment 2
+            if [[ -n "$RUN_PHASE" && "$RUN_PHASE" != "1" ]]; then
+                log_warn "Environment install has a single phase; running it anyway."
             fi
+            run_local_phase environment 1
             ;;
     esac
 
     log_success "Orchestrator run complete."
 }
 
+# ---------------------------------------------------------------------------
+# Pull operator artifacts onto the laptop for future use (mode 0600).
+#   • artifacts/peer1.conf  — Wireguard peer config from the RP
+#   • artifacts/rke2.yaml   — kubeconfig (remote API URL, compute private IP)
+# Non-fatal: a miss logs a warning and the summary still prints manual steps.
+# ---------------------------------------------------------------------------
+pull_install_artifacts() {
+    local artifacts_dir="${SCRIPT_DIR}/artifacts"
+    mkdir -p "$artifacts_dir"
+    chmod 700 "$artifacts_dir" 2>/dev/null || true
+
+    log_step "ARTIFACTS" "Pulling peer1.conf and rke2.yaml into ${artifacts_dir}"
+
+    # peer1.conf — reachable over SSH to the RP public endpoint (no WG needed).
+    if ssh_pull rp "/etc/wireguard/peers/peer1/peer1.conf" \
+            "${artifacts_dir}/peer1.conf" 2>/dev/null \
+            && [[ -s "${artifacts_dir}/peer1.conf" ]]; then
+        chmod 0600 "${artifacts_dir}/peer1.conf"
+        log_success "Saved ${artifacts_dir}/peer1.conf"
+    else
+        rm -f "${artifacts_dir}/peer1.conf"
+        log_warn "Could not pull peer1.conf — RP Wireguard peers may not be ready yet."
+        log_warn "  Manual: ssh <rp> 'sudo cat /etc/wireguard/peers/peer1/peer1.conf' > ${artifacts_dir}/peer1.conf"
+    fi
+
+    # Prefer rke2-remote.yaml (server URL already rewritten to compute private IP).
+    # Fall back to rewriting rke2.yaml locally. Saved as artifacts/rke2.yaml.
+    local kube_dest="${artifacts_dir}/rke2.yaml"
+    local pulled=false
+    if ssh_run compute "sudo test -r /etc/rancher/rke2/rke2-remote.yaml" 2>/dev/null; then
+        if ssh_pull compute "/etc/rancher/rke2/rke2-remote.yaml" "$kube_dest" 2>/dev/null \
+                && [[ -s "$kube_dest" ]]; then
+            pulled=true
+        fi
+    fi
+    if [[ "$pulled" != "true" ]]; then
+        if ssh_pull compute "/etc/rancher/rke2/rke2.yaml" "$kube_dest" 2>/dev/null \
+                && [[ -s "$kube_dest" ]]; then
+            local compute_priv
+            compute_priv=$(cfg compute_private_ip)
+            if [[ -n "$compute_priv" ]]; then
+                sed -E -i "s#server: https://127\\.0\\.0\\.1:6443#server: https://${compute_priv}:6443#g" \
+                    "$kube_dest"
+            fi
+            pulled=true
+        fi
+    fi
+
+    if [[ "$pulled" == "true" ]]; then
+        chmod 0600 "$kube_dest"
+        log_success "Saved ${kube_dest}"
+    else
+        rm -f "$kube_dest"
+        log_warn "Could not pull rke2.yaml from compute."
+        log_warn "  Manual: ssh <compute> 'sudo cat /etc/rancher/rke2/rke2-remote.yaml' > ${kube_dest}"
+    fi
+
+    log_info "Keep ${artifacts_dir}/ secure — it contains VPN and cluster credentials."
+}
+
 show_summary() {
+    pull_install_artifacts
+
     local rancher_host=$(get_rancher_hostname 2>/dev/null)
     local rp_private=$(cfg rp_private_ip)
     [[ -z "$rp_private" ]] && rp_private=$(cfg rp_internal_ip)   # legacy alias
@@ -913,6 +961,7 @@ show_summary() {
     if [[ -z "$compute_host" ]]; then compute_host=$(cfg compute_private_ip); fi
     local wg_subnet=$(cfg wg_subnet "10.15.0.0/16")
     local wg_server_ip="${wg_subnet%.*.*/*}.0.1"
+    local artifacts_dir="${SCRIPT_DIR}/artifacts"
 
     # Live-fetch the local Rancher admin password from the cluster, so the
     # summary contains the exact ready-to-use credential. Non-fatal on error.
@@ -1002,15 +1051,26 @@ show_summary() {
 
 
 ══════════════════════════════════════════════════════════════════════════════
+  ARTIFACTS (already pulled — keep secure)
+══════════════════════════════════════════════════════════════════════════════
+
+  Folder mode 700; files mode 0600:
+
+    ${artifacts_dir}/peer1.conf   — Wireguard peer config
+    ${artifacts_dir}/rke2.yaml    — kubeconfig (API at compute private IP)
+
+  Also keep secure for future ops (see README.md):
+    provision-output.yaml, prod-config.yaml, aws/keys/*.pem,
+    certs/, setup-output/, .state/
+
+
+══════════════════════════════════════════════════════════════════════════════
   WHAT TO DO NEXT — on your laptop
 ══════════════════════════════════════════════════════════════════════════════
 
-  STEP 1.  Pull the Wireguard peer config and connect
+  STEP 1.  Connect Wireguard
 
-      ssh -i ${rp_key} ${rp_user}@${rp_host} \\
-          "sudo cat /etc/wireguard/peers/peer1/peer1.conf" > peer1.conf
-
-      Import peer1.conf into the Wireguard app and activate the tunnel.
+      Import ${artifacts_dir}/peer1.conf into the Wireguard app and activate.
       Verify: ping ${wg_server_ip}    (should respond)
 
   STEP 2.  (Skipped — no local CA)
@@ -1047,17 +1107,29 @@ show_summary() {
       admin users directly in Rancher: ☰ → Users & Authentication → Users.
       (There is no external SSO for Rancher — it uses local auth only.)
 
+  STEP 5.  Install Commons via Rancher UI (required)
+
+      Commons is installed from the Rancher UI only — not by these scripts.
+
+        1. Rancher → Apps → Charts → openg2p-commons-base
+        2. Then install openg2p-commons-services (same namespace)
+        3. Point PostgreSQL at the storage node using secret commons-postgresql
+        4. To pick the Commons version, check the changelog:
+           https://openg2p.gitlab.io/versions/commons/CHANGELOG.html
+
+      If install_environment was false or env was skipped:
+        ./openg2p-prod.sh --stage environment --config ${CONFIG_FILE##*/}
+
 
 ══════════════════════════════════════════════════════════════════════════════
   OPTIONAL — kubectl from your laptop (Wireguard must be active)
 ══════════════════════════════════════════════════════════════════════════════
 
-      mkdir -p ~/.kube
-      ssh -i ${rp_key} ${compute_user}@${compute_host} \\
-          "sudo cat /etc/rancher/rke2/rke2-remote.yaml" > ~/.kube/openg2p-prod
-      chmod 600 ~/.kube/openg2p-prod
-      export KUBECONFIG=~/.kube/openg2p-prod
+      export KUBECONFIG=${artifacts_dir}/rke2.yaml
       kubectl get nodes
+
+      # Or copy into ~/.kube if you prefer:
+      #   cp ${artifacts_dir}/rke2.yaml ~/.kube/openg2p-prod && chmod 600 ~/.kube/openg2p-prod
 
 
 ══════════════════════════════════════════════════════════════════════════════
@@ -1087,10 +1159,14 @@ EOF
     cat <<PTR
 
 ══════════════════════════════════════════════════════════════════════════════
-  📄 SAVED — the credentials + next steps above are written to:
+  📄 SAVED — credentials + next steps:
        ${summary_file}
-     (folder mode 700, file mode 600 — readable only by the install user)
-     Copy the credentials into your secrets vault, then delete this file.
+     Artifacts (VPN + kubeconfig):
+       ${artifacts_dir}/peer1.conf
+       ${artifacts_dir}/rke2.yaml
+     (folders mode 700, files mode 600 — readable only by the install user)
+     Copy secrets into your vault; keep provision-output.yaml and artifacts
+     for future operations — see README.md.
 ══════════════════════════════════════════════════════════════════════════════
 PTR
 }
