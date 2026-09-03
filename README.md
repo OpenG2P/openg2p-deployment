@@ -10,7 +10,7 @@ installation instructions.
 |------|---------|
 | [`automation/production/`](automation/production/) | 3-node production (RP + compute + storage). See its [README](automation/production/README.md). |
 | [`automation/environment/`](automation/environment/) | Standalone environment scaffolding (namespace / project / gateway). Commons is **Rancher UI only**. |
-| [`automation/single-node/`](automation/single-node/) | Single-node sandbox / PoC automation. |
+| [`automation/sandbox/`](automation/sandbox/) | Sandbox (single VM) / PoC automation. |
 
 Production scaffolding does **not** install Commons; install Commons from the
 **Rancher UI only** after the production environment stage.
