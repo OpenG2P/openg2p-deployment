@@ -1,5 +1,5 @@
 # =============================================================================
-# OpenG2P AWS Single-Node Provisioning Configuration
+# OpenG2P AWS Sandbox Provisioning Configuration
 # =============================================================================
 # Copy to aws-config.yaml and edit:
 #   cp aws-config.example.yaml aws-config.yaml
@@ -10,7 +10,7 @@
 # This creates: 1 key pair, 1 security group, 1 Elastic IP (preferred),
 # and 1 EC2 instance (Ubuntu 24.04 LTS, m5a.4xlarge by default).
 # It then writes ../provision-output.yaml so you can run from the laptop:
-#   cd .. && ./openg2p-single-node.sh --config single-node-config.yaml
+#   cd .. && ./openg2p-sandbox.sh --config sandbox-config.yaml
 #
 # All AWS resources are tagged with Project=<project> and
 # ManagedBy=openg2p-aws-single-node for later teardown by
@@ -62,7 +62,7 @@ admin_cidr: ""
 #   false (default) — PRIVATE. 80/443 only from the VPC CIDR. Reach the
 #                     sandbox over Wireguard or from inside the VPC.
 #   true            — PUBLIC. Opens 80/443 to 0.0.0.0/0. Pair with
-#                     public_access: true in single-node-config.yaml.
+#                     public_access: true in sandbox-config.yaml.
 #
 # Independent of admin_cidr (which only governs SSH/ICMP).
 public_web: false
@@ -94,7 +94,7 @@ key_path: ""
 ubuntu_ami: ""
 
 # ---------------------------------------------------------------------------
-# Instance sizing  (defaults match OpenG2P single-node resource minimums)
+# Instance sizing  (defaults match OpenG2P sandbox resource minimums)
 # ---------------------------------------------------------------------------
 # m5a.4xlarge = 16 vCPU / 64 GB — matches check_prerequisites in roles/infra/run.sh
 instance_type: "m5a.4xlarge"
@@ -106,15 +106,19 @@ disk_throughput: 125
 # Instance Name tag / security group name
 # ---------------------------------------------------------------------------
 # Leave blank to auto-derive from `project`:
-#   instance_name → <project>-single-node
-#   sg_name       → <project>-single-node
+#   instance_name → <project>
+#   sg_name       → <project>-sandbox
+#
+# NOTE: both resources are looked up BY NAME for idempotent re-runs. If you
+# change a name after provisioning, the existing instance / SG is no longer
+# found and a second one is created — set the old value here instead.
 instance_name: ""
 sg_name: ""
 
 # ---------------------------------------------------------------------------
 # Wireguard port
 # ---------------------------------------------------------------------------
-# Must match wireguard.port in single-node-config.yaml (default 51820).
+# Must match wireguard.port in sandbox-config.yaml (default 51820).
 # The security group opens this UDP port to 0.0.0.0/0 so VPN clients can connect.
 wg_port: 51820
 
@@ -122,6 +126,6 @@ wg_port: 51820
 # Output
 # ---------------------------------------------------------------------------
 # Path to the provision-output.yaml that this script writes.
-# Default ("../provision-output.yaml") puts the file next to single-node-config.yaml.
+# Default ("../provision-output.yaml") puts the file next to sandbox-config.yaml.
 # The install scripts auto-load it as an overlay when present.
 provision_output_file: "../provision-output.yaml"

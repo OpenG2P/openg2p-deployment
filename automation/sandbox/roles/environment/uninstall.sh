@@ -9,15 +9,17 @@
 # (databases, files, secrets) will be permanently deleted.
 #
 # Preferred — from your laptop (SSHes into the VM):
-#   ./openg2p-environment-uninstall.sh --config env-config.yaml
+#   ./roles/environment/uninstall.sh --config environment-config.yaml
 #
 # Advanced — run ON the Ubuntu VM as root:
-#   sudo ./openg2p-environment-uninstall.sh --config env-config.yaml
+#   sudo ./roles/environment/uninstall.sh --config environment-config.yaml
 # =============================================================================
 
 set -uo pipefail   # NOT -e — uninstall should continue when bits are missing
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Charts, helmfile, and lib/ live at the sandbox root (two levels up).
+SCRIPT_DIR="$(cd "${ROLE_DIR}/../.." && pwd)"
 CONFIG_FILE=""
 ASSUME_YES=false
 
@@ -45,7 +47,7 @@ parse_args() {
         log_error "No config file specified" \
                   "The --config flag is required" \
                   "Provide the same config used during environment setup" \
-                  "$0 --config env-config.yaml"
+                  "$0 --config environment-config.yaml"
         exit 1
     fi
 
@@ -58,10 +60,10 @@ OpenG2P Environment Uninstall
 ================================
 
 Preferred (from your laptop — SSHes into the VM):
-  ./openg2p-environment-uninstall.sh --config env-config.yaml
+  ./roles/environment/uninstall.sh --config environment-config.yaml
 
 Advanced (ON the Ubuntu VM, as root):
-  sudo ./openg2p-environment-uninstall.sh --config env-config.yaml
+  sudo ./roles/environment/uninstall.sh --config environment-config.yaml
 
 Options:
   --config <file>    Path to environment config file (required)
@@ -77,28 +79,28 @@ is_onbox_node() {
     [[ -f /etc/rancher/rke2/rke2.yaml ]] || [[ "${OPENG2P_ORCHESTRATED:-}" == "1" ]]
 }
 
-resolve_sn_config_path() {
-    local sn_config_path
-    sn_config_path=$(cfg "single_node_config" "")
-    if [[ -z "$sn_config_path" ]]; then
-        sn_config_path=$(cfg "infra_config" "single-node-config.yaml")
+resolve_sandbox_config_path() {
+    local sandbox_config_path
+    sandbox_config_path=$(cfg "sandbox_config" "")
+    if [[ -z "$sandbox_config_path" ]]; then
+        sandbox_config_path=$(cfg "infra_config" "sandbox-config.yaml")
     fi
-    [[ "$sn_config_path" = /* ]] || sn_config_path="${SCRIPT_DIR}/${sn_config_path}"
-    echo "$sn_config_path"
+    [[ "$sandbox_config_path" = /* ]] || sandbox_config_path="${SCRIPT_DIR}/${sandbox_config_path}"
+    echo "$sandbox_config_path"
 }
 
 load_sn_and_provision_overlays() {
     PROVISION_OUTPUT_RESOLVED=""
-    local sn_config_path
-    sn_config_path=$(resolve_sn_config_path)
-    if [[ -f "$sn_config_path" ]]; then
-        log_info "Loading single-node config from: ${sn_config_path}"
-        load_config "$sn_config_path"
+    local sandbox_config_path
+    sandbox_config_path=$(resolve_sandbox_config_path)
+    if [[ -f "$sandbox_config_path" ]]; then
+        log_info "Loading sandbox config from: ${sandbox_config_path}"
+        load_config "$sandbox_config_path"
         load_config "$CONFIG_FILE"
     fi
 
     local provision_output
-    provision_output="$(dirname "$sn_config_path")/provision-output.yaml"
+    provision_output="$(dirname "$sandbox_config_path")/provision-output.yaml"
     if [[ ! -f "$provision_output" ]]; then
         provision_output="$(dirname "$CONFIG_FILE")/provision-output.yaml"
     fi
@@ -163,7 +165,7 @@ run_from_laptop() {
 
     if [[ $EUID -eq 0 ]]; then
         log_warn "You are running this with sudo on the laptop — that is not needed."
-        log_warn "Prefer: ./openg2p-environment-uninstall.sh --config env-config.yaml"
+        log_warn "Prefer: ./roles/environment/uninstall.sh --config environment-config.yaml"
         echo ""
     fi
 
@@ -174,8 +176,8 @@ run_from_laptop() {
     local env_name
     env_name=$(cfg "environment")
 
-    local sn_config_path
-    sn_config_path=$(resolve_sn_config_path)
+    local sandbox_config_path
+    sandbox_config_path=$(resolve_sandbox_config_path)
     load_sn_and_provision_overlays
     local provision_output="${PROVISION_OUTPUT_RESOLVED:-}"
 
@@ -186,17 +188,17 @@ run_from_laptop() {
     fi
 
     if ! ssh_endpoint_available; then
-        log_error "Cannot reach the single-node VM from this laptop" \
+        log_error "Cannot reach the sandbox VM from this laptop" \
                   "Kubeconfig is not local (this is not the RKE2 node) and ssh_host/ssh_key are blank" \
-                  "Set ssh_* in provision-output.yaml or single-node-config.yaml, or run on the VM" \
-                  "./openg2p-environment-uninstall.sh --config env-config.yaml"
+                  "Set ssh_* in provision-output.yaml or sandbox-config.yaml, or run on the VM" \
+                  "./roles/environment/uninstall.sh --config environment-config.yaml"
         exit 1
     fi
 
-    if [[ ! -f "$sn_config_path" ]]; then
-        log_error "single-node-config.yaml not found: ${sn_config_path}" \
-                  "Environment uninstall from the laptop needs the single-node config for SSH" \
-                  "Set single_node_config in env-config.yaml"
+    if [[ ! -f "$sandbox_config_path" ]]; then
+        log_error "sandbox-config.yaml not found: ${sandbox_config_path}" \
+                  "Environment uninstall from the laptop needs the sandbox config for SSH" \
+                  "Set sandbox_config in environment-config.yaml"
         exit 1
     fi
 
@@ -206,9 +208,9 @@ run_from_laptop() {
     trap 'ssh_cleanup 2>/dev/null || true' EXIT
     ssh_probe "node" || exit 1
 
-    ssh_stage_single_node "$SCRIPT_DIR" "$sn_config_path" "$provision_output" "$CONFIG_FILE"
+    ssh_stage_sandbox "$SCRIPT_DIR" "$sandbox_config_path" "$provision_output" "$CONFIG_FILE"
 
-    local remote_cmd="cd ${REMOTE_WORK_DIR} && OPENG2P_ORCHESTRATED=1 bash openg2p-environment-uninstall.sh --config env-config.yaml --yes"
+    local remote_cmd="cd ${REMOTE_WORK_DIR} && OPENG2P_ORCHESTRATED=1 bash roles/environment/uninstall.sh --config environment-config.yaml --yes"
     log_info "Remote: ${remote_cmd}"
     if ssh_run "node" "$remote_cmd"; then
         log_success "Environment '${env_name}' removed on the remote node."
@@ -229,10 +231,10 @@ run_onbox() {
     local ENV_NAME
     ENV_NAME=$(cfg "environment")
 
-    local sn_config_path
-    sn_config_path=$(resolve_sn_config_path)
-    if [[ -f "$sn_config_path" ]]; then
-        load_config "$sn_config_path"
+    local sandbox_config_path
+    sandbox_config_path=$(resolve_sandbox_config_path)
+    if [[ -f "$sandbox_config_path" ]]; then
+        load_config "$sandbox_config_path"
         load_config "$CONFIG_FILE"
     fi
 
@@ -351,7 +353,17 @@ run_onbox() {
     if [[ -n "$base_domain" ]]; then
         log_info "Removing TLS certificate for *.${base_domain}..."
         rm -rf "/etc/openg2p/certs/${base_domain}" 2>/dev/null || true
-        log_success "TLS certificate removed."
+
+        # Also drop acme.sh's copy, otherwise its cron keeps renewing a
+        # certificate for an environment that no longer exists.
+        if [[ -x /opt/acme.sh/acme.sh ]]; then
+            /opt/acme.sh/acme.sh --remove -d "$base_domain" --ecc \
+                --home /opt/acme.sh --config-home /opt/acme.sh/data > /dev/null 2>&1 || true
+            rm -rf "/opt/acme.sh/certs/${base_domain}_ecc" 2>/dev/null || true
+        fi
+        log_success "TLS certificate removed (renewal stopped)."
+        log_warn "DNS records *.${base_domain} / ${base_domain} were NOT deleted —"
+        log_warn "  remove them in your DNS provider if this environment is gone for good."
     fi
 
     # ── Step 8: Remove Rancher Project ──────────────────────────────────

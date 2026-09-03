@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # =============================================================================
-# OpenG2P AWS Single-Node Provisioning — runs on your laptop
+# OpenG2P AWS Sandbox Provisioning — runs on your laptop
 # =============================================================================
 # Creates: 1 key pair, 1 security group, 1 Elastic IP (preferred), and
 # 1 EC2 instance (Ubuntu Server 24.04 LTS, m5a.4xlarge by default) for the
-# single-node sandbox deployment.
+# sandbox deployment.
 #
 # After provisioning:
 #   - The instance is 'running', status checks are 'ok', and SSH-reachable
 #   - ../provision-output.yaml is written with node_ip / wireguard.endpoint
 #
-# Then from your laptop run openg2p-single-node.sh (orchestrator SSHes in
-# and runs roles/infra/run.sh + openg2p-environment.sh on the VM).
+# Then from your laptop run openg2p-sandbox.sh (orchestrator SSHes in
+# and runs roles/infra/run.sh + roles/environment/run.sh on the VM).
 #
 # Usage:
 #   cp aws-config.example.yaml aws-config.yaml
@@ -42,9 +42,9 @@ SKIP_SSH_WAIT=false
 FORCE_MODE=false
 DRY_RUN=false
 SSH_WAIT_TIMEOUT=600
-LOG_FILE="${SCRIPT_DIR}/logs/aws-single-node-$(date '+%Y%m%d-%H%M%S').log"
+LOG_FILE="${SCRIPT_DIR}/logs/aws-sandbox-$(date '+%Y%m%d-%H%M%S').log"
 
-# Shared logging + cfg(); single-node AWS helpers wrap shared AWS utils.
+# Shared logging + cfg(); sandbox AWS helpers wrap shared AWS utils.
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/../../production/lib/shared/utils.sh"
 # shellcheck disable=SC1091
@@ -83,7 +83,7 @@ parse_args() {
 
 show_help() {
     cat <<'EOF'
-OpenG2P AWS Single-Node Provisioning
+OpenG2P AWS Sandbox Provisioning
 ====================================
 
 Usage:
@@ -95,14 +95,14 @@ Options:
   --skip-ssh-wait      Don't wait for SSH after the instance passes status checks
   --ssh-timeout <sec>  SSH wait timeout (default: 600)
   --force              If an instance with the same Name already exists, terminate
-                       it first and launch a fresh one (single-node ManagedBy only)
+                       it first and launch a fresh one (sandbox ManagedBy only)
   --dry-run            Resolve selection and print what would be created; do not
                        create, terminate, or write output
   --help, -h           Show this help
 
 What gets created (tagged ManagedBy=openg2p-aws-single-node):
   • 1 key pair        (or referenced existing)
-  • 1 security group  (single-node ports + Wireguard)
+  • 1 security group  (sandbox ports + Wireguard)
   • 1 Elastic IP      (preferred for Wireguard endpoint stability; soft-fallback)
   • 1 EC2 instance    (Ubuntu 24.04 LTS, default m5a.4xlarge / 128 GB gp3)
 
@@ -110,9 +110,9 @@ When values like vpc_id, subnet_id, or key_mode are blank in your config,
 the script queries AWS, presents a menu, and saves your selection back to
 aws-config.yaml so subsequent runs are stable.
 
-# After provisioning, provision-output.yaml is written next to single-node-config.yaml.
-# Then from the single-node directory on your laptop:
-#   cd .. && ./openg2p-single-node.sh --config single-node-config.yaml
+# After provisioning, provision-output.yaml is written next to sandbox-config.yaml.
+# Then from the sandbox directory on your laptop:
+#   cd .. && ./openg2p-sandbox.sh --config sandbox-config.yaml
 #
 # Teardown:
 #   ./openg2p-aws-destroy.sh --config aws-config.yaml
@@ -134,7 +134,7 @@ main() {
     mkdir -p "${SCRIPT_DIR}/logs" "${SCRIPT_DIR}/keys"
     exec > >(tee -a "$LOG_FILE") 2>&1
 
-    log_banner "OpenG2P AWS Single-Node" "Provision 1× Ubuntu EC2 (m5a.4xlarge)"
+    log_banner "OpenG2P AWS Sandbox" "Provision 1× Ubuntu EC2 (m5a.4xlarge)"
     log_info "Config: ${CONFIG_FILE}"
     log_info "Log:    ${LOG_FILE}"
     if [[ "$DRY_RUN" == "true" ]]; then
@@ -196,26 +196,26 @@ main() {
     local key_rest="${key_resolved#*|}"
     local key_name="${key_rest%%|*}"
     local key_path="${key_rest##*|}"
-    aws_ensure_key_pair_sn "$key_name" "$key_path" "$key_mode" "$project"
+    aws_ensure_key_pair_sandbox "$key_name" "$key_path" "$key_mode" "$project"
 
     # ── Security group ──────────────────────────────────────────────────
     log_step "4" "Create / reuse security group"
     local wg_port instance_name sg_name sg_id
     wg_port=$(cfg wg_port "51820")
-    instance_name=$(cfg instance_name "${project}-single-node")
-    sg_name=$(cfg sg_name "${project}-single-node")
+    instance_name=$(cfg instance_name "${project}")
+    sg_name=$(cfg sg_name "${project}-sandbox")
 
-    sg_id=$(aws_ensure_security_group_sn \
-        "$sg_name" "OpenG2P single-node sandbox - SSH, HTTPS, Wireguard, RKE2" \
-        "$vpc_id" "$project" "single-node")
+    sg_id=$(aws_ensure_security_group_sandbox \
+        "$sg_name" "OpenG2P sandbox - SSH, HTTPS, Wireguard, RKE2" \
+        "$vpc_id" "$project" "sandbox")
     aws_require_nonempty "Security group" "$sg_id"
-    aws_apply_sg_rules_single_node "$sg_id" "$admin_cidr" "$vpc_cidr" "$wg_port" "$public_web"
+    aws_apply_sg_rules_sandbox "$sg_id" "$admin_cidr" "$vpc_cidr" "$wg_port" "$public_web"
     log_success "SG: ${sg_name} (${sg_id})"
 
     # ── Elastic IP ──────────────────────────────────────────────────────
     log_step "5" "Allocate Elastic IP (Wireguard endpoint stability)"
     local eip_alloc="" eip_addr=""
-    eip_alloc=$(aws_ensure_eip_sn "$project" "single-node-eip")
+    eip_alloc=$(aws_ensure_eip_sandbox "$project" "sandbox-eip")
     if [[ -z "$eip_alloc" || "$eip_alloc" == "None" ]]; then
         eip_alloc=""
         log_warn "No Elastic IP available — instance will use its auto-assigned public IP."
@@ -240,7 +240,7 @@ main() {
     out_path=$(aws_sn_provision_output_path "$SCRIPT_DIR")
 
     local instance_id
-    instance_id=$(aws_find_single_node_instance "$instance_name" "$project")
+    instance_id=$(aws_find_sandbox_instance "$instance_name" "$project")
 
     if [[ "$DRY_RUN" == "true" ]]; then
         log_info "[dry-run] resolved selection — no AWS resources will be created or terminated"
@@ -270,7 +270,7 @@ main() {
 
     if [[ -n "$instance_id" && "$instance_id" != "None" ]]; then
         if [[ "$FORCE_MODE" == "true" ]]; then
-            log_warn "--force: terminating existing single-node instance ${instance_id} (${instance_name})"
+            log_warn "--force: terminating existing sandbox instance ${instance_id} (${instance_name})"
             aws_cli ec2 terminate-instances --instance-ids "$instance_id" >/dev/null
             aws_cli ec2 wait instance-terminated --instance-ids "$instance_id"
             instance_id=""
@@ -282,8 +282,8 @@ main() {
     fi
 
     if [[ -z "$instance_id" || "$instance_id" == "None" ]]; then
-        instance_id=$(aws_run_single_node_instance \
-            "$instance_name" "$project" "single-node" \
+        instance_id=$(aws_run_sandbox_instance \
+            "$instance_name" "$project" "sandbox" \
             "$ami" "$instance_type" "$subnet_id" "$sg_id" "$key_name" \
             "$disk_gb" "$disk_iops" "$disk_throughput")
         aws_require_nonempty "Instance ID" "$instance_id"
@@ -292,7 +292,7 @@ main() {
 
     # ── Wait running ────────────────────────────────────────────────────
     log_step "7" "Wait for instance readiness"
-    aws_wait_running "$instance_id" "single-node"
+    aws_wait_running "$instance_id" "sandbox"
 
     # Wireguard needs source/dest check disabled.
     aws_disable_source_dest_check "$instance_id"
@@ -302,7 +302,7 @@ main() {
         aws_associate_eip "$eip_alloc" "$instance_id"
     fi
 
-    aws_wait_status_ok "$instance_id" "single-node"
+    aws_wait_status_ok "$instance_id" "sandbox"
 
     # ── IPs ─────────────────────────────────────────────────────────────
     local ips public_ip private_ip
@@ -323,7 +323,7 @@ main() {
         log_step "8" "Skipping SSH wait (--skip-ssh-wait)"
     else
         log_step "8" "Wait for SSH"
-        aws_wait_ssh "$public_ip" "ubuntu" "$key_path" "$SSH_WAIT_TIMEOUT" "single-node" \
+        aws_wait_ssh "$public_ip" "ubuntu" "$key_path" "$SSH_WAIT_TIMEOUT" "sandbox" \
             || exit 1
     fi
 
@@ -354,7 +354,7 @@ write_provision_output() {
         cp "$out" "${out}.prev"
     fi
 
-    # Prefer paths relative to the single-node/ directory (sibling of aws/).
+    # Prefer paths relative to the sandbox/ directory (sibling of aws/).
     local key_for_infra="$key_path"
     local infra_dir
     infra_dir="$(dirname "$out")"
@@ -364,12 +364,12 @@ write_provision_output() {
 
     cat > "$out" <<EOF
 # =============================================================================
-# OpenG2P single-node provision-output — AWS-derived configuration
+# OpenG2P sandbox provision-output — AWS-derived configuration
 # =============================================================================
 # AUTO-GENERATED by aws/openg2p-aws-provision.sh — overwritten on every run.
 #
-# Loaded as an overlay by the laptop orchestrator (openg2p-single-node.sh) and
-# by the install scripts. Keys here win over single-node-config.yaml on conflict
+# Loaded as an overlay by the laptop orchestrator (openg2p-sandbox.sh) and
+# by the install scripts. Keys here win over sandbox-config.yaml on conflict
 # (node_ip, wireguard.endpoint, ssh_host, ssh_user, ssh_key, …).
 #
 # Generated:  $(date -u '+%Y-%m-%d %H:%M:%S UTC')
@@ -377,7 +377,7 @@ write_provision_output() {
 # Project:    $(cfg project)
 # =============================================================================
 
-# ─── Suggested single-node-config.yaml values (auto-loaded as overlay) ─────────
+# ─── Suggested sandbox-config.yaml values (auto-loaded as overlay) ─────────
 node_ip:   "${private_ip}"
 node_name: "${instance_name}"
 
@@ -420,7 +420,7 @@ show_summary() {
     cat <<EOF
 
 ╔════════════════════════════════════════════════════════════════════╗
-║  AWS single-node provisioning complete                             ║
+║  AWS sandbox provisioning complete                                 ║
 ╠════════════════════════════════════════════════════════════════════╣
 ║                                                                    ║
 ║  Instance ID:   ${instance_id}
@@ -434,16 +434,16 @@ show_summary() {
 ║                                                                    ║
 ║  Next — install from your laptop:                                  ║
 ║    cd ..                                                           ║
-║    cp single-node-config.example.yaml single-node-config.yaml      ║
-║    cp env-config.example.yaml   env-config.yaml                    ║
+║    cp sandbox-config.example.yaml sandbox-config.yaml              ║
+║    cp environment-config.example.yaml   environment-config.yaml    ║
 ║    # node_ip / wireguard.endpoint / ssh_* come from                ║
 ║    # provision-output.yaml (auto-loaded as an overlay)             ║
-║    ./openg2p-single-node.sh --config single-node-config.yaml \\    ║
+║    ./openg2p-sandbox.sh --config sandbox-config.yaml \\            ║
 ║      --probe                                                       ║
-║    ./openg2p-single-node.sh --config single-node-config.yaml       ║
+║    ./openg2p-sandbox.sh --config sandbox-config.yaml               ║
 ║                                                                    ║
 ║  (On-box scripts still run ON the VM — the orchestrator SSHes      ║
-║   in, stages automation/single-node/, and executes them for you.)  ║
+║   in, stages automation/sandbox/, and executes them for you.)      ║
 ║                                                                    ║
 ║  Log: ${LOG_FILE}
 ║                                                                    ║

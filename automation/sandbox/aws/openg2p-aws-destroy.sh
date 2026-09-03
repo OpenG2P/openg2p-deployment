@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# OpenG2P AWS Single-Node Teardown — runs on your laptop
+# OpenG2P AWS Sandbox Teardown — runs on your laptop
 # =============================================================================
 # Destroys resources created by openg2p-aws-provision.sh:
 #   instances, EIP, security groups, and (optionally) the key pair —
@@ -32,7 +32,7 @@ CONFIG_FILE=""
 KEEP_KEY=false
 ASSUME_YES=false
 DRY_RUN=false
-LOG_FILE="${SCRIPT_DIR}/logs/aws-single-node-destroy-$(date '+%Y%m%d-%H%M%S').log"
+LOG_FILE="${SCRIPT_DIR}/logs/aws-sandbox-destroy-$(date '+%Y%m%d-%H%M%S').log"
 
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/../../production/lib/shared/utils.sh"
@@ -48,7 +48,7 @@ parse_args() {
             --dry-run)   DRY_RUN=true;     shift ;;
             --help|-h)
                 cat <<'EOF'
-OpenG2P AWS Single-Node Teardown
+OpenG2P AWS Sandbox Teardown
 
 Usage:
   ./openg2p-aws-destroy.sh --config aws-config.yaml [options]
@@ -89,8 +89,8 @@ main() {
     mkdir -p "${SCRIPT_DIR}/logs"
     exec > >(tee -a "$LOG_FILE") 2>&1
 
-    log_banner "OpenG2P AWS Single-Node Teardown" \
-               "Destroys instance, EIP, SG, key (ManagedBy=${SN_MANAGED_BY})"
+    log_banner "OpenG2P AWS Sandbox Teardown" \
+               "Destroys instance, EIP, SG, key (ManagedBy=${SANDBOX_MANAGED_BY})"
     log_info "Config: ${CONFIG_FILE}"
     log_info "Log:    ${LOG_FILE}"
     if [[ "$DRY_RUN" == "true" ]]; then
@@ -107,31 +107,31 @@ main() {
     project=$(cfg project)
     log_info "Project: ${project}"
     log_info "Region:  ${AWS_REGION}"
-    log_info "Filter:  Project=${project} + ManagedBy=${SN_MANAGED_BY}"
+    log_info "Filter:  Project=${project} + ManagedBy=${SANDBOX_MANAGED_BY}"
 
     # Preview what would be deleted
     local ids eip_allocs sg_ids
     ids=$(aws_cli ec2 describe-instances \
         --filters "Name=tag:Project,Values=${project}" \
-                  "Name=tag:ManagedBy,Values=${SN_MANAGED_BY}" \
+                  "Name=tag:ManagedBy,Values=${SANDBOX_MANAGED_BY}" \
                   "Name=instance-state-name,Values=pending,running,stopping,stopped" \
         --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null || true)
     eip_allocs=$(aws_cli ec2 describe-addresses \
         --filters "Name=tag:Project,Values=${project}" \
-                  "Name=tag:ManagedBy,Values=${SN_MANAGED_BY}" \
+                  "Name=tag:ManagedBy,Values=${SANDBOX_MANAGED_BY}" \
         --query 'Addresses[].AllocationId' --output text 2>/dev/null || true)
     sg_ids=$(aws_cli ec2 describe-security-groups \
         --filters "Name=tag:Project,Values=${project}" \
-                  "Name=tag:ManagedBy,Values=${SN_MANAGED_BY}" \
+                  "Name=tag:ManagedBy,Values=${SANDBOX_MANAGED_BY}" \
         --query 'SecurityGroups[].GroupId' --output text 2>/dev/null || true)
 
     cat <<EOF
 
 ╔════════════════════════════════════════════════════════════════════╗
-║  About to DESTROY single-node AWS resources                        ║
+║  About to DESTROY sandbox AWS resources                            ║
 ╠════════════════════════════════════════════════════════════════════╣
 ║  Project:    ${project}
-║  ManagedBy:  ${SN_MANAGED_BY}
+║  ManagedBy:  ${SANDBOX_MANAGED_BY}
 ║  Instances:  ${ids:-<none>}
 ║  EIPs:       ${eip_allocs:-<none>}
 ║  SGs:        ${sg_ids:-<none>}
@@ -146,7 +146,7 @@ EOF
     fi
 
     if [[ "$ASSUME_YES" != "true" ]]; then
-        log_warn "This permanently destroys the single-node AWS resources listed above."
+        log_warn "This permanently destroys the sandbox AWS resources listed above."
         local typed
         read -rp "Type the project name '${project}' to confirm: " typed </dev/tty
         if [[ "$typed" != "$project" ]]; then
@@ -169,7 +169,7 @@ EOF
         aws_cli ec2 wait instance-terminated --instance-ids $ids
         log_success "  All instances terminated."
     else
-        log_info "  No active instances tagged Project=${project} ManagedBy=${SN_MANAGED_BY}"
+        log_info "  No active instances tagged Project=${project} ManagedBy=${SANDBOX_MANAGED_BY}"
     fi
 
     # ── 2. Release Elastic IPs ──────────────────────────────────────────
@@ -189,7 +189,7 @@ EOF
         done
         log_success "  Elastic IPs released."
     else
-        log_info "  No EIPs tagged Project=${project} ManagedBy=${SN_MANAGED_BY}"
+        log_info "  No EIPs tagged Project=${project} ManagedBy=${SANDBOX_MANAGED_BY}"
     fi
 
     # ── 3. Delete security groups ───────────────────────────────────────
@@ -206,7 +206,7 @@ EOF
         done
         log_success "  Security groups deleted."
     else
-        log_info "  No SGs tagged Project=${project} ManagedBy=${SN_MANAGED_BY}"
+        log_info "  No SGs tagged Project=${project} ManagedBy=${SANDBOX_MANAGED_BY}"
     fi
 
     # ── 4. Key pair — only if WE created it ─────────────────────────────
@@ -217,7 +217,7 @@ EOF
         local owned_keys
         owned_keys=$(aws_cli ec2 describe-key-pairs \
             --filters "Name=tag:Project,Values=${project}" \
-                      "Name=tag:ManagedBy,Values=${SN_MANAGED_BY}" \
+                      "Name=tag:ManagedBy,Values=${SANDBOX_MANAGED_BY}" \
             --query 'KeyPairs[].KeyName' --output text 2>/dev/null || true)
 
         if [[ -z "$owned_keys" ]]; then
@@ -226,7 +226,7 @@ EOF
             if [[ -n "$cfg_kn" ]] && \
                aws_cli ec2 describe-key-pairs --key-names "$cfg_kn" \
                    --query 'KeyPairs[0].KeyName' --output text >/dev/null 2>&1; then
-                log_warn "  Key pair '${cfg_kn}' is NOT tagged ManagedBy=${SN_MANAGED_BY}"
+                log_warn "  Key pair '${cfg_kn}' is NOT tagged ManagedBy=${SANDBOX_MANAGED_BY}"
                 log_warn "  → pre-existing / user-supplied; keeping it in AWS"
             else
                 log_info "  No script-created key pair found for Project=${project}"
@@ -255,7 +255,7 @@ EOF
     local stray_vols
     stray_vols=$(aws_cli ec2 describe-volumes \
         --filters "Name=tag:Project,Values=${project}" \
-                  "Name=tag:ManagedBy,Values=${SN_MANAGED_BY}" \
+                  "Name=tag:ManagedBy,Values=${SANDBOX_MANAGED_BY}" \
                   "Name=status,Values=available,creating,error" \
         --query 'Volumes[].VolumeId' --output text 2>/dev/null || true)
     if [[ -n "$stray_vols" ]]; then
@@ -272,7 +272,7 @@ EOF
     stray_snaps=$(aws_cli ec2 describe-snapshots \
         --owner-ids self \
         --filters "Name=tag:Project,Values=${project}" \
-                  "Name=tag:ManagedBy,Values=${SN_MANAGED_BY}" \
+                  "Name=tag:ManagedBy,Values=${SANDBOX_MANAGED_BY}" \
         --query 'Snapshots[].SnapshotId' --output text 2>/dev/null || true)
     if [[ -n "$stray_snaps" ]]; then
         log_info "  Deleting snapshots: ${stray_snaps}"
@@ -287,7 +287,7 @@ EOF
     local stray_enis
     stray_enis=$(aws_cli ec2 describe-network-interfaces \
         --filters "Name=tag:Project,Values=${project}" \
-                  "Name=tag:ManagedBy,Values=${SN_MANAGED_BY}" \
+                  "Name=tag:ManagedBy,Values=${SANDBOX_MANAGED_BY}" \
                   "Name=status,Values=available" \
         --query 'NetworkInterfaces[].NetworkInterfaceId' --output text 2>/dev/null || true)
     if [[ -n "$stray_enis" ]]; then
@@ -312,16 +312,16 @@ EOF
     fi
 
     # ── 7. Final sweep ──────────────────────────────────────────────────
-    log_step "7" "Sweep — anything still tagged Project=${project} ManagedBy=${SN_MANAGED_BY}"
+    log_step "7" "Sweep — anything still tagged Project=${project} ManagedBy=${SANDBOX_MANAGED_BY}"
     local leftover
     leftover=$(aws_cli resourcegroupstaggingapi get-resources \
-        --tag-filters "Key=Project,Values=${project}" "Key=ManagedBy,Values=${SN_MANAGED_BY}" \
+        --tag-filters "Key=Project,Values=${project}" "Key=ManagedBy,Values=${SANDBOX_MANAGED_BY}" \
         --query 'ResourceTagMappingList[].ResourceARN' --output text 2>/dev/null || true)
     if [[ -n "$leftover" ]]; then
         log_warn "Leftover resources (delete manually):"
         echo "$leftover" | tr '\t' '\n' | sed 's/^/    /'
     else
-        log_success "Nothing left tagged Project=${project} ManagedBy=${SN_MANAGED_BY}"
+        log_success "Nothing left tagged Project=${project} ManagedBy=${SANDBOX_MANAGED_BY}"
     fi
 
     cat <<EOF

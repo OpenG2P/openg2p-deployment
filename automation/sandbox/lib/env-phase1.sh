@@ -9,7 +9,7 @@
 #   - Rancher Project (for RBAC)
 #   - Istio Gateway
 #
-# Sourced by openg2p-environment.sh — do not run directly.
+# Sourced by roles/environment/run.sh — do not run directly.
 # =============================================================================
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -21,10 +21,24 @@ get_env_base_domain() {
         echo "$explicit"
         return
     fi
-    # Auto-derive: <environment>.<local_domain>
+    # Auto-derive: <environment>.<domain>
     local env_name=$(cfg "environment")
-    local local_domain=$(cfg "local_domain" "openg2p.test")
-    echo "${env_name}.${local_domain}"
+    local domain=$(cfg "domain" "")
+    echo "${env_name}.${domain}"
+}
+
+# The environment's label under the sandbox domain — used as the DNS subname
+# when publishing records (e.g. base "dev.mydept.dedyn.io" under domain
+# "mydept.dedyn.io" yields "dev"). Empty when base_domain was set explicitly
+# to something outside the sandbox domain.
+get_env_dns_subname() {
+    local base_domain=$(get_env_base_domain)
+    local domain=$(cfg "domain" "")
+    [[ -z "$domain" || "$base_domain" == "$domain" ]] && { echo ""; return; }
+    case "$base_domain" in
+        *".${domain}") echo "${base_domain%".${domain}"}" ;;
+        *)             echo "" ;;
+    esac
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -44,7 +58,7 @@ env_phase1_step1_validate() {
         log_error "Infrastructure setup not complete" \
                   "The infra script (roles/infra/run.sh) must finish all 3 phases first" \
                   "Run roles/infra/run.sh before creating environments" \
-                  "sudo bash roles/infra/run.sh --config single-node-config.yaml"
+                  "sudo bash roles/infra/run.sh --config sandbox-config.yaml"
         return 1
     fi
     log_success "Infrastructure setup confirmed."
@@ -53,8 +67,8 @@ env_phase1_step1_validate() {
     local base_domain=$(get_env_base_domain)
     if [[ -z "$base_domain" ]]; then
         log_error "Could not determine base_domain for this environment" \
-                  "It auto-derives as <environment>.<local_domain> — ensure both are set" \
-                  "Check 'environment' and 'local_domain' in your config (or set base_domain explicitly)"
+                  "It auto-derives as <environment>.<domain> — ensure both are set" \
+                  "Check 'environment' and 'domain' in your config (or set base_domain explicitly)"
         return 1
     fi
     log_info "Environment base domain: ${base_domain}"
@@ -74,74 +88,42 @@ env_phase1_step1_validate() {
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 1.2: TLS certificate for environment domain
 # ─────────────────────────────────────────────────────────────────────────────
+# Publishes the environment's wildcard A record and obtains a Let's Encrypt
+# wildcard certificate for *.<base_domain> via the ACME DNS-01 challenge.
+#
+# The cert is issued as a SAN covering BOTH the environment apex and the
+# wildcard. The apex is listed first deliberately: acme.sh names its internal
+# state directory after the first -d, and a literal '*' in a directory name is
+# a lasting nuisance.
 env_phase1_step2_certificates() {
     local env_name=$(cfg "environment")
     local step_id="env-${env_name}.phase1.certificates"
-    skip_if_done "$step_id" "TLS certificates for ${env_name}" && return 0
+    skip_if_done "$step_id" "TLS certificate for ${env_name}" && return 0
 
     local base_domain=$(get_env_base_domain)
+    local node_ip=$(cfg "node_ip")
+    local subname=$(get_env_dns_subname)
 
-    env_phase1_step2_certificates_local "$base_domain"
+    log_step "E1.2" "Publishing DNS records and obtaining the TLS certificate for *.${base_domain}"
+
+    acme_preflight || return 1
+    acme_install_client || return 1
+
+    # Wildcard A record so every service hostname in this environment resolves
+    # (e.g. keycloak.dev.<domain>, superset.dev.<domain>) with no local DNS.
+    if [[ -n "$subname" ]]; then
+        acme_publish_a_record "*.${subname}" "$node_ip" || return 1
+        acme_publish_a_record "$subname"     "$node_ip" || return 1
+    else
+        log_warn "base_domain '${base_domain}' is not under domain '$(cfg 'domain' '')'."
+        log_warn "  Skipping automatic A records — create them yourself:"
+        log_warn "      *.${base_domain}   A   ${node_ip}"
+        log_warn "      ${base_domain}     A   ${node_ip}"
+    fi
+
+    acme_issue_cert "$base_domain" "$base_domain" "*.${base_domain}" || return 1
+
     mark_step_done "$step_id"
-}
-
-env_phase1_step2_certificates_local() {
-    local base_domain="$1"
-    log_step "E1.2" "Generating TLS certificate for *.${base_domain}"
-
-    local ca_dir="/etc/openg2p/ca"
-    local certs_dir="/etc/openg2p/certs"
-    local cert_path="${certs_dir}/${base_domain}"
-
-    # CA must already exist from infra setup
-    if [[ ! -f "${ca_dir}/ca.key" || ! -f "${ca_dir}/ca.crt" ]]; then
-        log_error "Local CA not found at ${ca_dir}" \
-                  "The infra script should have created the CA" \
-                  "Re-run roles/infra/run.sh phase 1" \
-                  "ls -la ${ca_dir}"
-        return 1
-    fi
-
-    if [[ -f "${cert_path}/fullchain.pem" && -f "${cert_path}/privkey.pem" ]]; then
-        log_success "Certificate for *.${base_domain} already exists."
-        return 0
-    fi
-
-    log_info "Generating wildcard certificate for *.${base_domain}..."
-    mkdir -p "$cert_path"
-
-    cat > "${cert_path}/openssl.cnf" <<EOF
-[req]
-distinguished_name = req_distinguished_name
-req_extensions = v3_req
-prompt = no
-[req_distinguished_name]
-C = XX
-ST = OpenG2P
-L = OpenG2P
-O = OpenG2P
-CN = *.${base_domain}
-[v3_req]
-basicConstraints = CA:FALSE
-keyUsage = digitalSignature, keyEncipherment
-subjectAltName = @alt_names
-[alt_names]
-DNS.1 = *.${base_domain}
-DNS.2 = ${base_domain}
-EOF
-
-    openssl genrsa -out "${cert_path}/privkey.pem" 2048 2>/dev/null
-    openssl req -new -key "${cert_path}/privkey.pem" \
-        -config "${cert_path}/openssl.cnf" -out "${cert_path}/cert.csr" 2>/dev/null
-    openssl x509 -req -in "${cert_path}/cert.csr" \
-        -CA "${ca_dir}/ca.crt" -CAkey "${ca_dir}/ca.key" -CAcreateserial \
-        -out "${cert_path}/cert.pem" -days 825 -sha256 \
-        -extensions v3_req -extfile "${cert_path}/openssl.cnf" 2>/dev/null
-    cat "${cert_path}/cert.pem" "${ca_dir}/ca.crt" > "${cert_path}/fullchain.pem"
-    rm -f "${cert_path}/cert.csr" "${cert_path}/openssl.cnf" "${cert_path}/cert.pem"
-    chmod 600 "${cert_path}/privkey.pem"
-
-    log_success "Wildcard certificate generated for *.${base_domain}."
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -177,7 +159,7 @@ env_phase1_step3_nginx() {
     cat > "$nginx_conf" <<EOF
 # OpenG2P environment: ${env_name}
 # Domain: *.${base_domain}
-# Generated by openg2p-environment.sh — do not edit manually.
+# Generated by roles/environment/run.sh — do not edit manually.
 
 server {
     listen 80;
@@ -366,45 +348,11 @@ GWEOF
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 1.8: CA certificate ConfigMap
-# ─────────────────────────────────────────────────────────────────────────────
-# Services inside pods need to trust our self-signed CA when talking to
-# https://keycloak.<env>.<local_domain>. We create a ConfigMap with the CA
-# cert so it can be mounted into pods and added to trust stores.
-env_phase1_step8_ca_configmap() {
-    local env_name=$(cfg "environment")
-    log_step "E1.8" "Creating CA certificate ConfigMap in namespace '${env_name}'"
-
-    ensure_kubeconfig || return 1
-
-    local ca_cert="/etc/openg2p/ca/ca.crt"
-    if [[ ! -f "$ca_cert" ]]; then
-        log_error "CA certificate not found at ${ca_cert}" \
-                  "The infra script should have created the CA" \
-                  "Re-run roles/infra/run.sh phase 1"
-        return 1
-    fi
-
-    if kubectl -n "$env_name" get configmap openg2p-ca-cert &>/dev/null; then
-        log_info "ConfigMap 'openg2p-ca-cert' already exists — updating..."
-        kubectl -n "$env_name" create configmap openg2p-ca-cert \
-            --from-file=ca.crt="$ca_cert" --dry-run=client -o yaml | \
-            kubectl apply -f - > /dev/null 2>&1
-    else
-        kubectl -n "$env_name" create configmap openg2p-ca-cert \
-            --from-file=ca.crt="$ca_cert" || {
-            log_error "Failed to create CA cert ConfigMap" \
-                      "kubectl create configmap failed"
-            return 1
-        }
-    fi
-
-    log_success "ConfigMap 'openg2p-ca-cert' created with CA certificate."
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Run all Phase 1 steps
 # ─────────────────────────────────────────────────────────────────────────────
+# Note: there is no CA-distribution step. Certificates are issued by Let's
+# Encrypt, whose root is already in every container image's trust store, so
+# in-cluster services trust the environment's HTTPS endpoints out of the box.
 run_env_phase1() {
     local env_name=$(cfg "environment")
 
@@ -416,7 +364,6 @@ run_env_phase1() {
     env_phase1_step4_namespace
     env_phase1_step5_rancher_project
     env_phase1_step6_istio_gateway
-    env_phase1_step8_ca_configmap
 
     log_success "Phase 1 complete — environment infrastructure for '${env_name}' is ready."
 }

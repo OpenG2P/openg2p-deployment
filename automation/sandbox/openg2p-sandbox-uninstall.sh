@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# OpenG2P Single-Node — Infrastructure Uninstall (laptop orchestrator)
+# OpenG2P Sandbox — Infrastructure Uninstall (laptop orchestrator)
 # =============================================================================
 # Wipes the OpenG2P installation off the single VM WITHOUT destroying the VM
 # itself. Use after a failed install when you want to start over without
@@ -9,7 +9,7 @@
 # What it removes (on the VM via roles/infra/uninstall.sh):
 #   • RKE2 + all in-cluster workloads (Istio, Rancher, monitoring, logging)
 #   • All environments and their data
-#   • Wireguard VPN, dnsmasq, Nginx, NFS exports, local CA / TLS certs
+#   • Wireguard VPN, Nginx, NFS exports, TLS certs + acme.sh renewal cron
 #   • On-box deployment state markers
 #   • Laptop .state/ markers and ./artifacts/
 #
@@ -17,7 +17,7 @@
 #   • The VM itself and AWS resources (use aws/openg2p-aws-destroy.sh for those)
 #
 # Usage (from your laptop):
-#   ./openg2p-single-node-uninstall.sh --config single-node-config.yaml
+#   ./openg2p-sandbox-uninstall.sh --config sandbox-config.yaml
 #
 # Advanced — run on-box directly:
 #   sudo bash roles/infra/uninstall.sh
@@ -29,7 +29,7 @@ trap '
     rc=$?
     if [[ $rc -ne 0 ]]; then
         echo "" >&2
-        echo "[FATAL] openg2p-single-node-uninstall.sh exited with status ${rc} at line ${LINENO} (${BASH_COMMAND})" >&2
+        echo "[FATAL] openg2p-sandbox-uninstall.sh exited with status ${rc} at line ${LINENO} (${BASH_COMMAND})" >&2
         echo "[FATAL] log: ${LOG_FILE:-<not set>}" >&2
     fi
     ssh_cleanup 2>/dev/null || true
@@ -45,7 +45,7 @@ CONFIG_FILE=""
 PROVISION_OUTPUT=""
 ASSUME_YES=false
 SKIP_SSH=false
-LOG_FILE="${SCRIPT_DIR}/logs/openg2p-single-node-uninstall-$(date '+%Y%m%d-%H%M%S').log"
+LOG_FILE="${SCRIPT_DIR}/logs/openg2p-sandbox-uninstall-$(date '+%Y%m%d-%H%M%S').log"
 
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/../production/lib/shared/utils.sh"
@@ -76,8 +76,8 @@ parse_args() {
     if [[ -z "$CONFIG_FILE" ]]; then
         log_error "No config file specified" \
                   "The --config flag is required" \
-                  "Copy single-node-config.example.yaml and provide it" \
-                  "$0 --config single-node-config.yaml"
+                  "Copy sandbox-config.example.yaml and provide it" \
+                  "$0 --config sandbox-config.yaml"
         exit 1
     fi
     [[ "$CONFIG_FILE" = /* ]] || CONFIG_FILE="${SCRIPT_DIR}/${CONFIG_FILE}"
@@ -89,24 +89,24 @@ parse_args() {
 
 show_help() {
     cat <<'EOF'
-OpenG2P Single-Node — Infrastructure Uninstall
+OpenG2P Sandbox — Infrastructure Uninstall
 ==============================================
 
 Runs on your laptop. SSHes into the VM and runs roles/infra/uninstall.sh.
 Does NOT destroy the VM (use aws/openg2p-aws-destroy.sh for AWS resources).
 
 Usage:
-  ./openg2p-single-node-uninstall.sh --config single-node-config.yaml [options]
+  ./openg2p-sandbox-uninstall.sh --config sandbox-config.yaml [options]
 
 Options:
-  --config <file>            Path to single-node-config.yaml (required)
+  --config <file>            Path to sandbox-config.yaml (required)
   --provision-output <file>  Path to provision-output.yaml (auto-detect if blank)
   --yes / -y                 Skip the typed confirmation prompt
   --skip-ssh                 Skip remote teardown (laptop-side cleanup only)
   --help                     Show this help
 
 After uninstall, reinstall with:
-  ./openg2p-single-node.sh --config single-node-config.yaml
+  ./openg2p-sandbox.sh --config sandbox-config.yaml
 EOF
 }
 
@@ -153,7 +153,7 @@ uninstall_remote() {
         return 0
     fi
 
-    ssh_stage_single_node "$SCRIPT_DIR" "$CONFIG_FILE" "$PROVISION_OUTPUT" ""
+    ssh_stage_sandbox "$SCRIPT_DIR" "$CONFIG_FILE" "$PROVISION_OUTPUT" ""
 
     local remote_cmd="cd ${REMOTE_WORK_DIR} && bash roles/infra/uninstall.sh --yes"
     log_info "Remote: ${remote_cmd}"
@@ -193,7 +193,7 @@ main() {
 
     mkdir -p "${SCRIPT_DIR}/logs"
 
-    log_banner "OpenG2P Single-Node — Infrastructure Uninstall" "In-place teardown · keeps VM"
+    log_banner "OpenG2P Sandbox — Infrastructure Uninstall" "In-place teardown · keeps VM"
 
     log_info "Config: ${CONFIG_FILE}"
     log_info "Log:    ${LOG_FILE}"
@@ -209,7 +209,7 @@ main() {
         load_config "$PROVISION_OUTPUT"
     else
         PROVISION_OUTPUT=""
-        log_info "No provision-output.yaml found — using single-node-config.yaml only"
+        log_info "No provision-output.yaml found — using sandbox-config.yaml only"
     fi
 
     confirm
@@ -218,7 +218,7 @@ main() {
         if [[ -z "$(cfg ssh_key)" ]]; then
             log_error "ssh_key is blank" \
                       "Cannot SSH without a key path" \
-                      "Set ssh_key in provision-output.yaml or single-node-config.yaml"
+                      "Set ssh_key in provision-output.yaml or sandbox-config.yaml"
             exit 1
         fi
         ssh_init
@@ -230,7 +230,7 @@ main() {
 
     echo ""
     log_success "Uninstall complete. The VM is still provisioned and reachable."
-    log_info    "To start fresh: ./openg2p-single-node.sh --config $(basename "$CONFIG_FILE")"
+    log_info    "To start fresh: ./openg2p-sandbox.sh --config $(basename "$CONFIG_FILE")"
 }
 
 main "$@" 2>&1 | tee -a "$LOG_FILE"

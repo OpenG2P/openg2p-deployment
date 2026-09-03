@@ -2,16 +2,17 @@
 # =============================================================================
 # OpenG2P Deployment Automation — Phase 1: Host-Level Setup
 # =============================================================================
-# Installs all host-level components on the VM: tools, RKE2, Wireguard, NFS,
-# DNS (dnsmasq for local mode or verification for custom), TLS certs, and Nginx.
+# Installs all host-level components on the VM: tools, firewall, RKE2,
+# Wireguard, NFS, public DNS records, a Let's Encrypt TLS certificate, and Nginx.
+# No local DNS server is installed — names resolve via the real public zone.
 # Sourced by roles/infra/run.sh — do not run directly.
 # =============================================================================
 
 # Resolve the deployment repo root (parent of automation/).
 # Supports two layouts:
-#   1. Full git clone:  .../openg2p-deployment/automation/single-node/lib → ../../../
+#   1. Full git clone:  .../openg2p-deployment/automation/sandbox/lib → ../../../
 #   2. Orchestrator stage: /tmp/openg2p-deploy/lib → ../  (nfs-server + kubernetes
-#      are staged alongside the single-node tree by ssh_stage_single_node)
+#      are staged alongside the sandbox tree by ssh_stage_sandbox)
 _SN_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -f "${_SN_LIB_DIR}/../../../nfs-server/install-nfs-server.sh" ]]; then
     REPO_ROOT="$(cd "${_SN_LIB_DIR}/../../.." && pwd)"
@@ -22,10 +23,10 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Helper: get effective Rancher hostname (always derived from the local domain)
+# Helper: get effective Rancher hostname (derived from the sandbox domain)
 # ─────────────────────────────────────────────────────────────────────────────
 get_rancher_hostname() {
-    echo "rancher.$(cfg 'local_domain' 'openg2p.test')"
+    echo "rancher.$(cfg 'domain' '')"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -188,7 +189,7 @@ phase1_step2_firewall() {
     # public_access: when false (default), the web ports (80/443) are reachable
     # ONLY over Wireguard or from inside the VPC — NOT from the public Internet,
     # even if the VM has a public IP. Set it to "true" to expose the sandbox
-    # publicly (see the security warning in single-node-config.example.yaml).
+    # publicly (see the security warning in sandbox-config.example.yaml).
     local public_access=$(cfg "public_access" "false")
 
     # Install ufw if not present
@@ -251,7 +252,7 @@ phase1_step2_firewall() {
     # ── Inter-node / VPC (for multi-node scaling) ────────────────────────
     # These ports only need to be reachable from other cluster nodes.
     # We allow from the node's /16 subnet as a reasonable VPC-level scope.
-    # On a single-node setup these are accessed locally; the rules are
+    # On a sandbox setup these are accessed locally; the rules are
     # pre-configured so that adding worker nodes later "just works."
     log_info "Allowing inter-node ports from ${vpc_cidr}..."
 
@@ -476,11 +477,19 @@ PostUp = iptables -A FORWARD -i ${wg_iface} -j ACCEPT; iptables -A FORWARD -o ${
 PostDown = iptables -D FORWARD -i ${wg_iface} -j ACCEPT; iptables -D FORWARD -o ${wg_iface} -j ACCEPT; iptables -t nat -D POSTROUTING -o eth+ -j MASQUERADE
 EOF
 
-    # DNS line for peer configs:
-    # Clients need to resolve *.<local_domain> via the VM's dnsmasq. On
-    # macOS/Windows Wireguard clients this adds the VM as a DNS server without
-    # breaking normal internet resolution.
-    local peer_dns_line="DNS = ${node_ip}"
+    # DNS line for peer configs.
+    #
+    # The sandbox runs NO local DNS server: hostnames are published as public A
+    # records in the real DNS zone (see lib/acme.sh), so a peer's normal
+    # resolver answers them and no DNS push is needed. Left blank by default.
+    #
+    # Set wireguard.peer_dns to a public resolver (e.g. "1.1.1.1") if a peer's
+    # own resolver strips RFC1918 answers from public DNS — "DNS rebinding
+    # protection", on by default in pfSense/OPNsense, Fritz!Box, OpenDNS and
+    # some appliance firmware. That is the one common failure mode here.
+    local peer_dns=$(cfg "wireguard.peer_dns" "")
+    local peer_dns_line=""
+    [[ -n "$peer_dns" ]] && peer_dns_line="DNS = ${peer_dns}"
 
     # Generate peer configs
     mkdir -p "$peer_dir"
@@ -566,15 +575,8 @@ EOF
     log_info "Peer configs are at: ${peer_dir}/"
     log_info "  Example: ${peer_dir}/peer1/peer1.conf"
     log_info "Copy a peer config to your laptop and import into Wireguard client."
-    if [[ "$allowed_ips" == "0.0.0.0/0" ]]; then
-        log_info "DNS push is enabled — VPN clients will resolve *.$(cfg 'local_domain' 'openg2p.test') automatically."
-    else
-        local local_domain=$(cfg "local_domain" "openg2p.test")
-        log_info "Split tunnel mode — configure per-domain DNS on your laptop:"
-        log_info "  macOS:   sudo mkdir -p /etc/resolver && echo 'nameserver ${node_ip}' | sudo tee /etc/resolver/${local_domain}"
-        log_info "  Windows: Add-DnsClientNrptRule -Namespace '.${local_domain}' -NameServers '${node_ip}'"
-        log_info "  Linux:   sudo resolvectl dns ${wg_iface} ${node_ip} && sudo resolvectl domain ${wg_iface} '~${local_domain}'"
-    fi
+    log_info "No DNS setup is needed on the client — hostnames under $(cfg 'domain' '') are"
+    log_info "published as public A records and resolve via the client's normal resolver."
     log_info ""
 
     mark_step_done "$step_id"
@@ -671,265 +673,43 @@ phase1_step6_nfs_csi() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 7: Local DNS (dnsmasq)
+# Step 7: DNS records + TLS certificate (Let's Encrypt)
 # ─────────────────────────────────────────────────────────────────────────────
-phase1_step7_local_dns() {
-    local step_id="phase1.local_dns"
-    skip_if_done "$step_id" "Local DNS (dnsmasq)" && return 0
-
-    log_step "1.7" "Setting up local DNS server (dnsmasq)"
-
-    local node_ip=$(cfg "node_ip")
-    local local_domain=$(cfg "local_domain" "openg2p.test")
-
-    install_if_missing "dnsmasq" \
-        "dnsmasq --version" \
-        "apt-get install -y -qq dnsmasq=2.90-* > /dev/null 2>&1 || apt-get install -y -qq dnsmasq > /dev/null 2>&1" \
-        "https://thekelleys.org.uk/dnsmasq/doc.html"
-
-    if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
-        log_info "Configuring systemd-resolved to coexist with dnsmasq..."
-        mkdir -p /etc/systemd/resolved.conf.d
-        cat > /etc/systemd/resolved.conf.d/openg2p-dnsmasq.conf <<EOF
-[Resolve]
-DNSStubListener=no
-EOF
-        ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf 2>/dev/null || true
-        systemctl restart systemd-resolved
-    fi
-
-    log_info "Configuring dnsmasq for *.${local_domain} -> ${node_ip}..."
-    cat > /etc/dnsmasq.d/openg2p.conf <<EOF
-# OpenG2P local DNS
-address=/${local_domain}/${node_ip}
-server=8.8.8.8
-server=8.8.4.4
-listen-address=127.0.0.1,${node_ip}
-no-hosts
-log-queries
-log-facility=/var/log/dnsmasq-openg2p.log
-EOF
-
-    systemctl enable dnsmasq
-    systemctl restart dnsmasq || {
-        log_error "dnsmasq failed to start" \
-                  "Another service may be using port 53" \
-                  "Check if systemd-resolved is still holding port 53" \
-                  "ss -tlnp | grep :53; systemctl status systemd-resolved"
-        return 1
-    }
-
-    sleep 2
-    local test_resolve
-    test_resolve=$(dig +short "rancher.${local_domain}" @127.0.0.1 2>/dev/null)
-    if [[ "$test_resolve" == "$node_ip" ]]; then
-        log_success "Local DNS working: rancher.${local_domain} -> ${node_ip}"
-    else
-        log_error "Local DNS verification failed" \
-                  "dnsmasq returned '${test_resolve}' instead of '${node_ip}'" \
-                  "Check dnsmasq config and logs" \
-                  "dig +short rancher.${local_domain} @127.0.0.1; cat /var/log/dnsmasq-openg2p.log"
-        return 1
-    fi
-
-    log_info "Configuring the VM to use local DNS for resolution..."
-    if ! grep -q "127.0.0.1" /etc/resolv.conf 2>/dev/null; then
-        sed -i '1i nameserver 127.0.0.1' /etc/resolv.conf 2>/dev/null || {
-            echo "nameserver 127.0.0.1" > /tmp/resolv.conf
-            cat /etc/resolv.conf >> /tmp/resolv.conf 2>/dev/null
-            mv /tmp/resolv.conf /etc/resolv.conf
-        }
-    fi
-
-    # Ensure the VM's own hostname resolves locally. dnsmasq is configured
-    # with no-hosts (skip /etc/hosts), and on cloud VMs the hostname
-    # (e.g. ip-172-29-9-21) is normally resolved via cloud DNS. With dnsmasq
-    # as primary resolver, hostname lookups fail — causing "sudo: unable to
-    # resolve host" warnings on every sudo command.
-    local vm_hostname
-    vm_hostname=$(hostname 2>/dev/null || true)
-    if [[ -n "$vm_hostname" ]] && ! grep -q "$vm_hostname" /etc/hosts 2>/dev/null; then
-        log_info "Adding hostname '${vm_hostname}' to /etc/hosts..."
-        echo "127.0.0.1 ${vm_hostname}" >> /etc/hosts
-    fi
-
-    log_success "dnsmasq configured. All *.${local_domain} resolves to ${node_ip}."
-
-    # Save local domain and node IP for the CoreDNS patching step (step 7b).
-    # CoreDNS patching requires kubectl, which is available after RKE2 starts.
-    mkdir -p /var/lib/openg2p/deploy-state
-    echo "${local_domain}" > /var/lib/openg2p/deploy-state/coredns-local-domain
-    echo "${node_ip}" > /var/lib/openg2p/deploy-state/coredns-node-ip
-
-    mark_step_done "$step_id"
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 7b: Patch CoreDNS Corefile for local domain forwarding
-# ─────────────────────────────────────────────────────────────────────────────
-# In local mode, pods use CoreDNS which only knows about cluster.local.
-# We patch the main CoreDNS Corefile to add a server block that forwards
-# *.openg2p.test queries to dnsmasq on the node IP.
-#
-# Note: RKE2's CoreDNS does NOT mount a custom ConfigMap volume by default,
-# so the "import custom/*.server" approach doesn't work. We inject the
-# server block directly into the main rke2-coredns-rke2-coredns ConfigMap.
-phase1_step7b_coredns_custom() {
-    local step_id="phase1.coredns_custom"
-    skip_if_done "$step_id" "CoreDNS local domain forwarding" && return 0
-
-    local local_domain=$(cfg "local_domain" "openg2p.test")
-    local node_ip=$(cfg "node_ip")
-
-    log_info "Patching CoreDNS Corefile to forward ${local_domain} -> dnsmasq (${node_ip})..."
-    ensure_kubeconfig || return 1
-
-    # Check if the Corefile already has the local domain block
-    local current_corefile
-    current_corefile=$(kubectl -n kube-system get configmap rke2-coredns-rke2-coredns \
-        -o jsonpath='{.data.Corefile}' 2>/dev/null || true)
-
-    if [[ -z "$current_corefile" ]]; then
-        log_error "CoreDNS ConfigMap not found" \
-                  "rke2-coredns-rke2-coredns ConfigMap missing in kube-system" \
-                  "Check RKE2 CoreDNS deployment" \
-                  "kubectl -n kube-system get configmap"
-        return 1
-    fi
-
-    if echo "$current_corefile" | grep -q "${local_domain}:53"; then
-        log_info "CoreDNS Corefile already contains ${local_domain} server block — skipping."
-    else
-        log_info "Injecting ${local_domain} server block into CoreDNS Corefile..."
-        kubectl -n kube-system get configmap rke2-coredns-rke2-coredns -o json | \
-            jq --arg domain "$local_domain" --arg ip "$node_ip" '
-                .data.Corefile = $domain + ":53 {\n    errors\n    cache 30\n    forward . " + $ip + "\n}\n" + .data.Corefile
-            ' | kubectl apply -f - || {
-            log_error "Failed to patch CoreDNS Corefile" \
-                      "jq/kubectl pipeline failed" \
-                      "Check CoreDNS ConfigMap" \
-                      "kubectl -n kube-system get configmap rke2-coredns-rke2-coredns -o yaml"
-            return 1
-        }
-
-        # Restart CoreDNS to pick up the change
-        kubectl -n kube-system rollout restart deployment rke2-coredns-rke2-coredns > /dev/null 2>&1 || true
-        log_info "CoreDNS restarting..."
-        sleep 10
-    fi
-
-    # Verify: resolve the local domain from inside a pod
-    log_info "Verifying DNS resolution from inside a pod..."
-    local test_ip
-    test_ip=$(kubectl run dns-test --rm -i --restart=Never --image=busybox:1.36 \
-        -- nslookup "rancher.${local_domain}" 2>/dev/null | \
-        grep -A1 "Name:" | tail -1 | awk '{print $2}' || true)
-
-    if [[ "$test_ip" == "$node_ip" ]]; then
-        log_success "CoreDNS resolves rancher.${local_domain} -> ${node_ip} from inside pods."
-    else
-        log_warn "CoreDNS verification returned '${test_ip}' (expected ${node_ip})."
-        log_warn "Pods may need a few more seconds. Check manually:"
-        log_warn "  kubectl run dns-test --rm -it --restart=Never --image=busybox:1.36 -- nslookup rancher.${local_domain}"
-    fi
-
-    mark_step_done "$step_id"
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 8: TLS Certificates
-# ─────────────────────────────────────────────────────────────────────────────
-phase1_step8_certificates() {
+# The sandbox runs NO local DNS server. Hostnames are published as A records in
+# the real public zone, so clients and pods resolve them with their normal
+# resolver. The certificate is issued by Let's Encrypt over the ACME DNS-01
+# challenge — outbound only, nothing ever connects back to this machine.
+phase1_step7_certificates() {
     local step_id="phase1.certificates"
-    skip_if_done "$step_id" "TLS certificates" && return 0
+    skip_if_done "$step_id" "DNS records and TLS certificate" && return 0
 
-    phase1_step8_certificates_local
+    log_step "1.7" "Publishing DNS records and obtaining the TLS certificate"
+
+    local node_ip=$(cfg "node_ip")
+    local rancher_host=$(get_rancher_hostname)
+
+    # Re-validate here as well as in the orchestrator: roles/infra/run.sh can be
+    # invoked directly on-box, bypassing the laptop-side preflight.
+    acme_preflight || return 1
+    acme_install_client || return 1
+
+    # Publish the infra hostname so it resolves without any local DNS server.
+    acme_publish_a_record "rancher" "$node_ip" || return 1
+
+    # Single-name cert; the per-environment wildcard is issued in env phase 1.
+    acme_issue_cert "$rancher_host" "$rancher_host" || return 1
+
     mark_step_done "$step_id"
 }
 
-phase1_step8_certificates_local() {
-    log_step "1.8" "Generating local CA and self-signed TLS certificates"
-
-    local local_domain=$(cfg "local_domain" "openg2p.test")
-    local rancher_host=$(get_rancher_hostname)
-    local ca_dir="/etc/openg2p/ca"
-    local certs_dir="/etc/openg2p/certs"
-
-    mkdir -p "$ca_dir" "$certs_dir"
-
-    if [[ ! -f "${ca_dir}/ca.key" ]]; then
-        log_info "Generating local Certificate Authority..."
-        openssl genrsa -out "${ca_dir}/ca.key" 4096 2>/dev/null
-        openssl req -x509 -new -nodes \
-            -key "${ca_dir}/ca.key" -sha256 -days 3650 \
-            -subj "/C=XX/ST=OpenG2P/L=OpenG2P/O=OpenG2P/CN=OpenG2P Local CA" \
-            -out "${ca_dir}/ca.crt" 2>/dev/null
-        chmod 600 "${ca_dir}/ca.key"
-        log_success "Local CA created at ${ca_dir}/ca.crt"
-    else
-        log_success "Local CA already exists."
-    fi
-
-    for domain in "$rancher_host"; do
-        local cert_path="${certs_dir}/${domain}"
-        if [[ -f "${cert_path}/fullchain.pem" && -f "${cert_path}/privkey.pem" ]]; then
-            log_success "Certificate for ${domain} already exists."
-            continue
-        fi
-        log_info "Generating certificate for ${domain}..."
-        mkdir -p "$cert_path"
-        cat > "${cert_path}/openssl.cnf" <<EOF
-[req]
-distinguished_name = req_distinguished_name
-req_extensions = v3_req
-prompt = no
-[req_distinguished_name]
-C = XX
-ST = OpenG2P
-L = OpenG2P
-O = OpenG2P
-CN = ${domain}
-[v3_req]
-basicConstraints = CA:FALSE
-keyUsage = digitalSignature, keyEncipherment
-subjectAltName = @alt_names
-[alt_names]
-DNS.1 = ${domain}
-DNS.2 = *.${local_domain}
-DNS.3 = ${local_domain}
-EOF
-        openssl genrsa -out "${cert_path}/privkey.pem" 2048 2>/dev/null
-        openssl req -new -key "${cert_path}/privkey.pem" \
-            -config "${cert_path}/openssl.cnf" -out "${cert_path}/cert.csr" 2>/dev/null
-        openssl x509 -req -in "${cert_path}/cert.csr" \
-            -CA "${ca_dir}/ca.crt" -CAkey "${ca_dir}/ca.key" -CAcreateserial \
-            -out "${cert_path}/cert.pem" -days 825 -sha256 \
-            -extensions v3_req -extfile "${cert_path}/openssl.cnf" 2>/dev/null
-        cat "${cert_path}/cert.pem" "${ca_dir}/ca.crt" > "${cert_path}/fullchain.pem"
-        rm -f "${cert_path}/cert.csr" "${cert_path}/openssl.cnf" "${cert_path}/cert.pem"
-        chmod 600 "${cert_path}/privkey.pem"
-        log_success "Certificate generated for ${domain}."
-    done
-
-    log_success "All local certificates generated."
-    log_info ""
-    log_info "To avoid browser warnings, install the CA certificate on your laptop:"
-    log_info "  CA cert: ${ca_dir}/ca.crt"
-    log_info "  macOS:   Import into Keychain Access -> System -> Always Trust"
-    log_info "  Windows: Import into Trusted Root Certification Authorities"
-    log_info "  Linux:   sudo cp ca.crt /usr/local/share/ca-certificates/openg2p-ca.crt"
-    log_info "           sudo update-ca-certificates"
-    log_info ""
-}
-
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 9: Nginx Reverse Proxy
+# Step 8: Nginx Reverse Proxy
 # ─────────────────────────────────────────────────────────────────────────────
 phase1_step9_nginx() {
     local step_id="phase1.nginx"
     skip_if_done "$step_id" "Nginx reverse proxy" && return 0
 
-    log_step "1.9" "Installing and configuring Nginx reverse proxy"
+    log_step "1.8" "Installing and configuring Nginx reverse proxy"
 
     local node_ip=$(cfg "node_ip")
     local rancher_host=$(get_rancher_hostname)
@@ -1036,10 +816,8 @@ run_phase1() {
     phase1_step4_wireguard
     phase1_step5_nfs_server
     phase1_step6_nfs_csi
-    phase1_step7_local_dns      # dnsmasq for *.<local_domain>
-    phase1_step7b_coredns_custom  # CoreDNS forward for the local domain
-    phase1_step8_certificates   # local CA + self-signed certs
-    phase1_step9_nginx          # Nginx reverse proxy using the self-signed certs
+    phase1_step7_certificates   # public A records + Let's Encrypt certificate
+    phase1_step9_nginx          # Nginx reverse proxy using the issued certificate
 
     log_success "Phase 1 complete — all host-level components installed."
 }

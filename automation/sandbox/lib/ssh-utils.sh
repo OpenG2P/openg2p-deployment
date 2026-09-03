@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # =============================================================================
-# OpenG2P Single-Node — SSH / orchestration helpers
+# OpenG2P Sandbox — SSH / orchestration helpers
 # =============================================================================
-# Sourced by openg2p-single-node.sh on the admin's laptop.
+# Sourced by openg2p-sandbox.sh on the admin's laptop.
 #
 # ControlMaster SSH (when supported), sudo -E, and rsync staging for a single
 # Ubuntu node. Role name is always "node".
 #
-# SSH endpoint keys (from provision-output.yaml or single-node-config.yaml):
+# SSH endpoint keys (from provision-output.yaml or sandbox-config.yaml):
 #   ssh_host / ssh_user / ssh_key
 # Fallbacks: public_ip, wireguard.endpoint for host.
 #
@@ -16,7 +16,7 @@
 # unreliable there. Force either mode with OPENG2P_SSH_NO_MUX=1|0.
 # =============================================================================
 
-SSH_CTRL_DIR="${SSH_CTRL_DIR:-${HOME}/.ssh/openg2p-single-node-ctrl}"
+SSH_CTRL_DIR="${SSH_CTRL_DIR:-${HOME}/.ssh/openg2p-sandbox-ctrl}"
 REMOTE_WORK_DIR="/tmp/openg2p-deploy"
 LAPTOP_ARTIFACT_DIR="${LAPTOP_ARTIFACT_DIR:-./artifacts}"
 _SSH_MUX_WARNED=false
@@ -59,7 +59,7 @@ ssh_resolve_role() {
     if [[ -z "$host" ]]; then
         log_error "No SSH host resolved" \
                   "ssh_host / public_ip / wireguard.endpoint are all blank" \
-                  "Run aws/openg2p-aws-provision.sh first, or set ssh_host in single-node-config.yaml" \
+                  "Run aws/openg2p-aws-provision.sh first, or set ssh_host in sandbox-config.yaml" \
                   "Check provision-output.yaml next to your config"
         return 1
     fi
@@ -79,7 +79,7 @@ ssh_resolve_role() {
     if [[ ! -f "$key" ]]; then
         log_error "SSH key file not found: ${key}" \
                   "ssh_key does not point to a readable .pem" \
-                  "Fix ssh_key in provision-output.yaml or single-node-config.yaml" \
+                  "Fix ssh_key in provision-output.yaml or sandbox-config.yaml" \
                   "ls -la ${key}"
         return 1
     fi
@@ -151,7 +151,7 @@ ssh_probe() {
             -o "BatchMode=yes" -o "ConnectTimeout=10" \
             "${user}@${host}" "true" 2>&1); then
         log_error "SSH connection failed: ${user}@${host}" \
-                  "Cannot connect to the single-node VM" \
+                  "Cannot connect to the sandbox VM" \
                   "ssh said: ${ssh_err}" \
                   "ssh -i ${key} ${user}@${host}"
         return 1
@@ -250,16 +250,16 @@ ssh_pull() {
 }
 
 # ---------------------------------------------------------------------------
-# Stage the full single-node automation tree + merged configs onto the VM.
+# Stage the full sandbox automation tree + merged configs onto the VM.
 # ---------------------------------------------------------------------------
-# ssh_stage_single_node <repo_root> <single_node_config> [provision_output] [env_config]
-ssh_stage_single_node() {
+# ssh_stage_sandbox <repo_root> <sandbox_config> [provision_output] [env_config]
+ssh_stage_sandbox() {
     local repo_root="$1"
-    local single_node_config="$2"
+    local sandbox_config="$2"
     local provision_output="${3:-}"
     local env_config="${4:-}"
 
-    log_info "Staging single-node automation bundle on remote..."
+    log_info "Staging sandbox automation bundle on remote..."
 
     local stage
     stage=$(mktemp -d -t openg2p-sn-stage.XXXXXX)
@@ -277,8 +277,8 @@ ssh_stage_single_node() {
         --exclude '.state/' \
         --exclude 'artifacts/' \
         --exclude 'setup-output/' \
-        --exclude 'single-node-config.yaml' \
-        --exclude 'env-config.yaml' \
+        --exclude 'sandbox-config.yaml' \
+        --exclude 'environment-config.yaml' \
         --exclude 'provision-output.yaml' \
         --exclude 'provision-output.yaml.prev' \
         --exclude '*.pem' \
@@ -287,7 +287,7 @@ ssh_stage_single_node() {
 
     # On-box phase1 expects nfs-server/ and kubernetes/nfs-client/ at REPO_ROOT
     # (sibling of automation/ in a full clone). Stage them next to the
-    # single-node tree so REPO_ROOT resolves correctly on the remote.
+    # sandbox tree so REPO_ROOT resolves correctly on the remote.
     local git_root
     git_root="$(cd "${repo_root}/../.." && pwd)"
     if [[ ! -d "${git_root}/nfs-server" || ! -d "${git_root}/kubernetes/nfs-client" ]]; then
@@ -302,28 +302,28 @@ ssh_stage_single_node() {
     rsync -a "${git_root}/kubernetes/nfs-client/" "${stage}/kubernetes/nfs-client/"
     log_info "Included nfs-server/ and kubernetes/nfs-client/ in stage bundle."
 
-    # Merged single-node config: user prefs + AWS overlay (last wins).
-    cat "$single_node_config" > "${stage}/single-node-config.yaml"
+    # Merged sandbox config: user prefs + AWS overlay (last wins).
+    cat "$sandbox_config" > "${stage}/sandbox-config.yaml"
     if [[ -n "$provision_output" && -f "$provision_output" ]]; then
         {
             echo ""
             echo "# ─── merged from provision-output.yaml at stage time ───"
             cat "$provision_output"
-        } >> "${stage}/single-node-config.yaml"
+        } >> "${stage}/sandbox-config.yaml"
         # Also ship provision-output so on-box auto-detect still works if
         # someone re-runs scripts directly on the VM later.
         cp "$provision_output" "${stage}/provision-output.yaml"
     fi
 
     if [[ -n "$env_config" && -f "$env_config" ]]; then
-        cat "$env_config" > "${stage}/env-config.yaml"
-        # Point env at the staged single-node config by relative name.
-        if ! grep -qE '^single_node_config:' "${stage}/env-config.yaml"; then
-            echo 'single_node_config: "single-node-config.yaml"' >> "${stage}/env-config.yaml"
+        cat "$env_config" > "${stage}/environment-config.yaml"
+        # Point env at the staged sandbox config by relative name.
+        if ! grep -qE '^sandbox_config:' "${stage}/environment-config.yaml"; then
+            echo 'sandbox_config: "sandbox-config.yaml"' >> "${stage}/environment-config.yaml"
         fi
     fi
 
     ssh_push "node" "${stage}/" "${REMOTE_WORK_DIR}/"
 
-    log_success "Staged single-node bundle at ${REMOTE_WORK_DIR}/ on remote."
+    log_success "Staged sandbox bundle at ${REMOTE_WORK_DIR}/ on remote."
 }

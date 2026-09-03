@@ -6,21 +6,23 @@
 # Run this AFTER base infrastructure is complete (roles/infra/run.sh).
 #
 # Preferred — from your laptop (SSHes into the VM, same pattern as the
-# single-node orchestrator / production environment stage):
-#   ./openg2p-environment.sh --config env-config.yaml
+# sandbox orchestrator / production environment stage):
+#   ./roles/environment/run.sh --config environment-config.yaml
 #
 # Or via the full orchestrator:
-#   ./openg2p-single-node.sh --config single-node-config.yaml --stage environment
+#   ./openg2p-sandbox.sh --config sandbox-config.yaml --stage environment
 #
 # Advanced — run ON the Ubuntu VM as root (after infra is installed):
-#   sudo ./openg2p-environment.sh --config env-config.yaml
+#   sudo ./roles/environment/run.sh --config environment-config.yaml
 #
 # Docs: https://docs.openg2p.org/deployment/concepts/openg2p-deployment-model#environments
 # =============================================================================
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Charts, helmfile, and lib/ live at the sandbox root (two levels up).
+SCRIPT_DIR="$(cd "${ROLE_DIR}/../.." && pwd)"
 CONFIG_FILE=""
 RUN_PHASE=""
 FORCE_MODE=false
@@ -29,6 +31,7 @@ DRY_RUN=false
 LOG_FILE=""
 
 source "${SCRIPT_DIR}/lib/utils.sh"
+source "${SCRIPT_DIR}/lib/acme.sh"
 source "${SCRIPT_DIR}/lib/env-phase1.sh"
 source "${SCRIPT_DIR}/lib/env-phase2.sh"
 
@@ -54,8 +57,8 @@ parse_args() {
     if [[ -z "$CONFIG_FILE" ]]; then
         log_error "No config file specified" \
                   "The --config flag is required" \
-                  "Copy env-config.example.yaml to env-config.yaml and provide it" \
-                  "$0 --config env-config.yaml"
+                  "Copy environment-config.example.yaml to environment-config.yaml and provide it" \
+                  "$0 --config environment-config.yaml"
         exit 1
     fi
 
@@ -67,14 +70,12 @@ show_help() {
 OpenG2P Environment Setup
 ===========================
 
-Preferred (from your laptop — SSHes into the VM):
-  ./openg2p-environment.sh --config env-config.yaml [options]
+Preferred — from your laptop, via the orchestrator (SSHes into the VM):
+  ./openg2p-sandbox.sh --config sandbox-config.yaml --stage environment
 
-  # equivalent via the full orchestrator:
-  ./openg2p-single-node.sh --config single-node-config.yaml --stage environment
-
-Advanced (ON the Ubuntu VM, as root, after infra is installed):
-  sudo ./openg2p-environment.sh --config env-config.yaml [options]
+Direct — run this role script yourself, ON the Ubuntu VM as root,
+after the infra stage has completed:
+  sudo bash roles/environment/run.sh --config environment-config.yaml [options]
 
 Options:
   --config <file>    Path to environment config file (required)
@@ -102,32 +103,32 @@ is_onbox_node() {
     [[ -f /etc/rancher/rke2/rke2.yaml ]] || [[ "${OPENG2P_ORCHESTRATED:-}" == "1" ]]
 }
 
-resolve_sn_config_path() {
-    local sn_config_path
-    sn_config_path=$(cfg "single_node_config" "")
-    if [[ -z "$sn_config_path" ]]; then
-        sn_config_path=$(cfg "infra_config" "single-node-config.yaml")
+resolve_sandbox_config_path() {
+    local sandbox_config_path
+    sandbox_config_path=$(cfg "sandbox_config" "")
+    if [[ -z "$sandbox_config_path" ]]; then
+        sandbox_config_path=$(cfg "infra_config" "sandbox-config.yaml")
     fi
-    [[ "$sn_config_path" = /* ]] || sn_config_path="${SCRIPT_DIR}/${sn_config_path}"
-    echo "$sn_config_path"
+    [[ "$sandbox_config_path" = /* ]] || sandbox_config_path="${SCRIPT_DIR}/${sandbox_config_path}"
+    echo "$sandbox_config_path"
 }
 
 load_sn_and_provision_overlays() {
     # Sets PROVISION_OUTPUT_RESOLVED (path or empty). Logs to stderr/console only.
     PROVISION_OUTPUT_RESOLVED=""
-    local sn_config_path
-    sn_config_path=$(resolve_sn_config_path)
-    if [[ -f "$sn_config_path" ]]; then
-        log_info "Loading single-node config from: ${sn_config_path}"
-        load_config "$sn_config_path"
+    local sandbox_config_path
+    sandbox_config_path=$(resolve_sandbox_config_path)
+    if [[ -f "$sandbox_config_path" ]]; then
+        log_info "Loading sandbox config from: ${sandbox_config_path}"
+        load_config "$sandbox_config_path"
         load_config "$CONFIG_FILE"
     else
-        log_warn "Single-node config not found: ${sn_config_path}"
-        log_warn "node_ip, local_domain, ssh_* must be set somehow."
+        log_warn "Single-node config not found: ${sandbox_config_path}"
+        log_warn "node_ip, domain,ssh_* must be set somehow."
     fi
 
     local provision_output
-    provision_output="$(dirname "$sn_config_path")/provision-output.yaml"
+    provision_output="$(dirname "$sandbox_config_path")/provision-output.yaml"
     if [[ ! -f "$provision_output" ]]; then
         provision_output="$(dirname "$CONFIG_FILE")/provision-output.yaml"
     fi
@@ -156,7 +157,7 @@ run_from_laptop() {
 
     if [[ $EUID -eq 0 ]]; then
         log_warn "You are running this with sudo on the laptop — that is not needed."
-        log_warn "Prefer: ./openg2p-environment.sh --config env-config.yaml"
+        log_warn "Prefer: ./roles/environment/run.sh --config environment-config.yaml"
         echo ""
     fi
 
@@ -174,34 +175,34 @@ run_from_laptop() {
         exit 1
     fi
 
-    local sn_config_path
-    sn_config_path=$(resolve_sn_config_path)
+    local sandbox_config_path
+    sandbox_config_path=$(resolve_sandbox_config_path)
     load_sn_and_provision_overlays
     local provision_output="${PROVISION_OUTPUT_RESOLVED:-}"
 
     if ! ssh_endpoint_available; then
-        log_error "Cannot reach the single-node VM from this laptop" \
+        log_error "Cannot reach the sandbox VM from this laptop" \
                   "Kubeconfig is not local (this is not the RKE2 node) and ssh_host/ssh_key are blank" \
-                  "Set ssh_* in provision-output.yaml or single-node-config.yaml, or run on the VM after infra" \
-                  "./openg2p-single-node.sh --config single-node-config.yaml --stage environment"
+                  "Set ssh_* in provision-output.yaml or sandbox-config.yaml, or run on the VM after infra" \
+                  "./openg2p-sandbox.sh --config sandbox-config.yaml --stage environment"
         exit 1
     fi
 
-    if [[ ! -f "$sn_config_path" ]]; then
-        log_error "single-node-config.yaml not found: ${sn_config_path}" \
-                  "Environment install from the laptop needs the single-node config for SSH" \
-                  "Set single_node_config in env-config.yaml"
+    if [[ ! -f "$sandbox_config_path" ]]; then
+        log_error "sandbox-config.yaml not found: ${sandbox_config_path}" \
+                  "Environment install from the laptop needs the sandbox config for SSH" \
+                  "Set sandbox_config in environment-config.yaml"
         exit 1
     fi
 
     log_info "Environment: ${BOLD}${env_name}${NC}"
-    log_info "Mode:        laptop → SSH → on-box openg2p-environment.sh"
+    log_info "Mode:        laptop → SSH → on-box roles/environment/run.sh"
     log_info "Log:         ${LOG_FILE}"
     log_info "Config:      ${CONFIG_FILE}"
     echo ""
 
     if [[ "$DRY_RUN" == "true" ]]; then
-        log_info "[dry-run] would stage and run on remote: openg2p-environment.sh --config env-config.yaml${RUN_PHASE:+ --phase $RUN_PHASE}"
+        log_info "[dry-run] would stage and run on remote: roles/environment/run.sh --config environment-config.yaml${RUN_PHASE:+ --phase $RUN_PHASE}"
         return 0
     fi
 
@@ -209,9 +210,9 @@ run_from_laptop() {
     trap 'ssh_cleanup 2>/dev/null || true' EXIT
     ssh_probe "node" || exit 1
 
-    ssh_stage_single_node "$SCRIPT_DIR" "$sn_config_path" "$provision_output" "$CONFIG_FILE"
+    ssh_stage_sandbox "$SCRIPT_DIR" "$sandbox_config_path" "$provision_output" "$CONFIG_FILE"
 
-    local remote_cmd="cd ${REMOTE_WORK_DIR} && OPENG2P_ORCHESTRATED=1 bash openg2p-environment.sh --config env-config.yaml"
+    local remote_cmd="cd ${REMOTE_WORK_DIR} && OPENG2P_ORCHESTRATED=1 bash roles/environment/run.sh --config environment-config.yaml"
     if [[ -n "$RUN_PHASE" ]]; then remote_cmd+=" --phase ${RUN_PHASE}"; fi
     if [[ "$FORCE_MODE" == "true" ]]; then remote_cmd+=" --force"; fi
 
@@ -278,15 +279,15 @@ run_onbox() {
         exit 1
     fi
 
-    local sn_config_path
-    sn_config_path=$(resolve_sn_config_path)
-    if [[ -f "$sn_config_path" ]]; then
-        log_info "Loading single-node config from: ${sn_config_path}"
-        load_config "$sn_config_path"
+    local sandbox_config_path
+    sandbox_config_path=$(resolve_sandbox_config_path)
+    if [[ -f "$sandbox_config_path" ]]; then
+        log_info "Loading sandbox config from: ${sandbox_config_path}"
+        load_config "$sandbox_config_path"
         load_config "$CONFIG_FILE"
     else
-        log_warn "Single-node config not found: ${sn_config_path}"
-        log_warn "node_ip, local_domain, etc. must be set in env config."
+        log_warn "Single-node config not found: ${sandbox_config_path}"
+        log_warn "node_ip, domain,etc. must be set in env config."
     fi
 
     # When staged by the orchestrator, provision-output may sit alongside.

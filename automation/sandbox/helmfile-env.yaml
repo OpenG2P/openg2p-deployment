@@ -2,7 +2,7 @@
 # OpenG2P Environment Helmfile — Namespace-level module releases
 # =============================================================================
 # Installs: Istio gateway for env, openg2p-commons, Registry, PBMS, SPAR, etc.
-# Called by openg2p-environment.sh after base infra is in place.
+# Called by roles/environment/run.sh after base infra is in place.
 # Can be run multiple times for different environments (dev, qa, pilot).
 # =============================================================================
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# OpenG2P Single-Node — Infrastructure Uninstall
+# OpenG2P Sandbox — Infrastructure Uninstall
 # =============================================================================
 # Completely removes the OpenG2P base infrastructure: RKE2 cluster, all Helm
 # releases, Wireguard VPN, dnsmasq, Nginx, NFS, TLS certificates, and all
@@ -15,7 +15,7 @@
 #   sudo bash roles/infra/uninstall.sh --yes   # skip typed confirmation
 #
 # Prefer the laptop wrapper:
-#   ./openg2p-single-node-uninstall.sh --config single-node-config.yaml
+#   ./openg2p-sandbox-uninstall.sh --config sandbox-config.yaml
 # =============================================================================
 
 set -euo pipefail
@@ -45,7 +45,7 @@ parse_args() {
 
 show_help() {
     cat <<'EOF'
-OpenG2P Single-Node — Infrastructure Uninstall
+OpenG2P Sandbox — Infrastructure Uninstall
 ================================================
 
 Usage:
@@ -56,17 +56,19 @@ Options:
   --help       Show this help
 
 Prefer running from your laptop:
-  ./openg2p-single-node-uninstall.sh --config single-node-config.yaml
+  ./openg2p-sandbox-uninstall.sh --config sandbox-config.yaml
 
-This script completely removes the OpenG2P single-node base infrastructure:
+This script completely removes the OpenG2P sandbox base infrastructure:
   - RKE2 Kubernetes cluster (all pods, services, volumes)
   - All Helm releases across all namespaces
   - Wireguard VPN server and peer configs
-  - dnsmasq DNS server
   - Nginx reverse proxy
   - NFS server and CSI driver
-  - TLS certificates (local CA and self-signed certs)
+  - TLS certificates and the acme.sh client (incl. its renewal cron)
+  - dnsmasq, if left over from an older install
   - All deployment state markers
+
+DNS records in your provider's zone are NOT removed — delete those yourself.
 
 WARNING: This is DESTRUCTIVE and IRREVERSIBLE. ALL data will be lost.
 EOF
@@ -91,8 +93,7 @@ main() {
     echo -e "${RED}║${NC}    • ALL environments and their data                         ${RED}║${NC}"
     echo -e "${RED}║${NC}    • Rancher, Istio, monitoring, logging (OTel + Loki)       ${RED}║${NC}"
     echo -e "${RED}║${NC}    • Wireguard VPN server and ALL peer configs               ${RED}║${NC}"
-    echo -e "${RED}║${NC}    • dnsmasq DNS server                                      ${RED}║${NC}"
-    echo -e "${RED}║${NC}    • Nginx reverse proxy and TLS certificates                ${RED}║${NC}"
+    echo -e "${RED}║${NC}    • Nginx reverse proxy, TLS certs, acme.sh renewal cron    ${RED}║${NC}"
     echo -e "${RED}║${NC}    • NFS server exports                                      ${RED}║${NC}"
     echo -e "${RED}║${NC}    • All deployment state markers                            ${RED}║${NC}"
     echo -e "${RED}║${NC}                                                              ${RED}║${NC}"
@@ -166,23 +167,27 @@ main() {
     rm -rf /etc/wireguard
     log_success "Wireguard removed."
 
-    # ── Step 4: Stop and remove dnsmasq ─────────────────────────────────
-    log_info "Removing dnsmasq..."
+    # ── Step 4: Remove dnsmasq left over from older installs ────────────
+    # Current installs no longer deploy a local DNS server, but a sandbox
+    # created by an earlier version will still have one. Clean it up so the
+    # host is left in a consistent state either way.
+    if systemctl is-active --quiet dnsmasq 2>/dev/null || [[ -f /etc/dnsmasq.d/openg2p.conf ]]; then
+        log_info "Removing dnsmasq (left over from an earlier install)..."
+        if systemctl is-active --quiet dnsmasq 2>/dev/null; then
+            systemctl stop dnsmasq
+            systemctl disable dnsmasq 2>/dev/null || true
+        fi
+        rm -f /etc/dnsmasq.d/openg2p.conf
+        rm -f /var/log/dnsmasq-openg2p.log
 
-    if systemctl is-active --quiet dnsmasq 2>/dev/null; then
-        systemctl stop dnsmasq
-        systemctl disable dnsmasq 2>/dev/null || true
+        # Restore systemd-resolved if its stub listener was disabled
+        if [[ -f /etc/systemd/resolved.conf.d/openg2p-dnsmasq.conf ]]; then
+            rm -f /etc/systemd/resolved.conf.d/openg2p-dnsmasq.conf
+            systemctl restart systemd-resolved 2>/dev/null || true
+            log_info "systemd-resolved restored."
+        fi
+        log_success "dnsmasq removed."
     fi
-    rm -f /etc/dnsmasq.d/openg2p.conf
-    rm -f /var/log/dnsmasq-openg2p.log
-
-    # Restore systemd-resolved if we disabled its stub listener
-    if [[ -f /etc/systemd/resolved.conf.d/openg2p-dnsmasq.conf ]]; then
-        rm -f /etc/systemd/resolved.conf.d/openg2p-dnsmasq.conf
-        systemctl restart systemd-resolved 2>/dev/null || true
-        log_info "systemd-resolved restored."
-    fi
-    log_success "dnsmasq removed."
 
     # ── Step 5: Stop and remove Nginx ───────────────────────────────────
     log_info "Removing Nginx configs..."
@@ -205,12 +210,22 @@ main() {
     # Don't delete /srv/nfs — user may have other NFS exports
     log_success "NFS exports removed."
 
-    # ── Step 7: Remove TLS certificates ─────────────────────────────────
-    log_info "Removing TLS certificates..."
+    # ── Step 7: Remove TLS certificates and the ACME client ─────────────
+    log_info "Removing TLS certificates and the ACME client..."
 
-    rm -rf /etc/openg2p/ca
+    # Drop acme.sh's renewal cron before deleting it, or cron logs errors
+    # against a missing binary every 6 hours.
+    if [[ -x /opt/acme.sh/acme.sh ]]; then
+        /opt/acme.sh/acme.sh --uninstall \
+            --home /opt/acme.sh --config-home /opt/acme.sh/data > /dev/null 2>&1 || true
+    fi
+    rm -rf /opt/acme.sh
+    rm -rf /etc/openg2p/ca      # only present on sandboxes from earlier versions
     rm -rf /etc/openg2p/certs
-    log_success "Local CA and certificates removed."
+
+    log_success "Certificates and ACME client removed."
+    log_warn "DNS records under your domain were NOT deleted — remove them in your"
+    log_warn "  DNS provider (e.g. https://desec.io/domains) if the sandbox is gone for good."
 
     # ── Step 8: Clean up state and logs ─────────────────────────────────
     log_info "Cleaning up state and deployment markers..."
@@ -234,10 +249,9 @@ main() {
     echo -e "${GREEN}║${NC}   The following were removed:                                ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}     • RKE2 Kubernetes cluster                                ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}     • Wireguard VPN                                          ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}     • dnsmasq DNS                                            ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}     • Nginx configs                                          ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}     • NFS exports                                            ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}     • TLS certificates                                      ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}     • TLS certificates + acme.sh (renewal cron)             ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}     • All deployment state                                   ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}   The VM is ready for a fresh installation.                  ${GREEN}║${NC}"

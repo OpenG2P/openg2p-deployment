@@ -3,7 +3,7 @@
 # OpenG2P Deployment Automation — Utility Library
 # =============================================================================
 # Shared functions for logging, error handling, state management, and checks.
-# Sourced by roles/infra/run.sh and openg2p-environment.sh — do not run directly.
+# Sourced by roles/infra/run.sh and roles/environment/run.sh — do not run directly.
 # =============================================================================
 
 set -euo pipefail
@@ -217,7 +217,7 @@ validate_config() {
 # ---------------------------------------------------------------------------
 # Step 0: System prerequisites check (HARD STOP — will not proceed if unmet)
 # Verifies: OS, version, CPU, RAM, disk per OpenG2P resource requirements
-# Ref: https://docs.openg2p.org/deployment/resource-requirements#single-node
+# Ref: https://docs.openg2p.org/deployment/resource-requirements#sandbox
 # ---------------------------------------------------------------------------
 check_root() {
     if [[ $EUID -ne 0 ]]; then
@@ -231,8 +231,8 @@ check_root() {
 
 check_prerequisites() {
     log_step "0" "Verifying system prerequisites"
-    log_info "Checking against OpenG2P resource requirements for single-node deployment."
-    log_info "Ref: https://docs.openg2p.org/deployment/resource-requirements#single-node"
+    log_info "Checking against OpenG2P resource requirements for sandbox deployment."
+    log_info "Ref: https://docs.openg2p.org/deployment/resource-requirements#sandbox"
     echo ""
 
     local failures=0
@@ -289,7 +289,7 @@ check_prerequisites() {
                   "The VM does not have enough CPU cores for OpenG2P" \
                   "Resize the VM to at least ${required_cpus} vCPUs" \
                   "nproc" \
-                  "https://docs.openg2p.org/deployment/resource-requirements#single-node"
+                  "https://docs.openg2p.org/deployment/resource-requirements#sandbox"
         failures=$((failures + 1))
     else
         log_success "CPU cores: ${actual_cpus} vCPU — OK."
@@ -309,7 +309,7 @@ check_prerequisites() {
                   "The VM does not have enough memory for OpenG2P" \
                   "Resize the VM to at least ${required_ram_gb} GB RAM" \
                   "free -g" \
-                  "https://docs.openg2p.org/deployment/resource-requirements#single-node"
+                  "https://docs.openg2p.org/deployment/resource-requirements#sandbox"
         failures=$((failures + 1))
     else
         log_success "RAM: ${actual_ram_gb} GB — OK."
@@ -331,7 +331,7 @@ check_prerequisites() {
                   "The VM disk is too small for OpenG2P" \
                   "Resize the disk to at least ${required_disk_gb} GB" \
                   "df -h /" \
-                  "https://docs.openg2p.org/deployment/resource-requirements#single-node"
+                  "https://docs.openg2p.org/deployment/resource-requirements#sandbox"
         failures=$((failures + 1))
     else
         log_success "Disk: ${actual_disk_gb} GB total, ${free_disk_gb} GB free — OK."
@@ -350,7 +350,7 @@ check_prerequisites() {
     if [[ "$rotational" == "1" ]]; then
         log_warn "Root disk appears to be a spinning HDD (rotational=1)."
         log_warn "SSD is strongly recommended for OpenG2P performance."
-        log_warn "Ref: https://docs.openg2p.org/deployment/resource-requirements#single-node"
+        log_warn "Ref: https://docs.openg2p.org/deployment/resource-requirements#sandbox"
     elif [[ "$rotational" == "0" ]]; then
         log_success "Disk type: SSD — OK."
     else
@@ -367,7 +367,7 @@ check_prerequisites() {
         echo -e "${RED}║${NC}  ${failures} requirement(s) failed. The deployment cannot proceed"
         echo -e "${RED}║${NC}  until the system meets the minimum resource requirements."
         echo -e "${RED}║${NC}                                                              ${RED}║${NC}"
-        echo -e "${RED}║${NC}  Required for single-node:                                   ${RED}║${NC}"
+        echo -e "${RED}║${NC}  Required for sandbox:                                   ${RED}║${NC}"
         echo -e "${RED}║${NC}    • Ubuntu 24.04 LTS                                        ${RED}║${NC}"
         echo -e "${RED}║${NC}    • 16 vCPU                                                 ${RED}║${NC}"
         echo -e "${RED}║${NC}    • 64 GB RAM                                               ${RED}║${NC}"
@@ -473,8 +473,10 @@ install_if_missing() {
 # ---------------------------------------------------------------------------
 # TLS certificate helpers
 # ---------------------------------------------------------------------------
-# Resolves cert/key paths for a given hostname. All certs are self-signed by
-# the local CA and installed under /etc/openg2p/certs/<hostname>/.
+# Resolves cert/key paths for a given hostname. Certificates are issued by
+# Let's Encrypt (see lib/acme.sh) and installed under
+# /etc/openg2p/certs/<hostname>/ by acme.sh, which also re-installs them there
+# on every automatic renewal.
 #
 # Usage: get_cert_path <hostname> "cert|key"
 # Returns the file path to stdout.

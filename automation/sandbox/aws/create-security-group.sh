@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Create AWS Security Group for OpenG2P Single-Node Deployment
+# Create AWS Security Group for OpenG2P Sandbox Deployment
 # =============================================================================
 # Standalone helper for when you already have an EC2 instance and only need
 # the security group. For full EC2 provisioning (instance + SG + EIP + key),
@@ -9,7 +9,7 @@
 #   ./openg2p-aws-provision.sh --config aws-config.yaml
 #   ./openg2p-aws-destroy.sh    --config aws-config.yaml
 #
-# Creates a security group called "openg2p-single-node" with all the inbound
+# Creates a security group called "openg2p-sandbox" with all the inbound
 # rules required for an OpenG2P K8s cluster. The rules are multi-node ready
 # (etcd, VXLAN, RKE2 supervisor ports are included for future scaling).
 #
@@ -31,8 +31,8 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
-SG_NAME="openg2p-single-node"
-SG_DESCRIPTION="OpenG2P single-node K8s cluster - SSH, HTTPS, Wireguard, RKE2, etcd, CNI, NodePorts"
+SG_NAME="openg2p-sandbox"
+SG_DESCRIPTION="OpenG2P sandbox K8s cluster - SSH, HTTPS, Wireguard, RKE2, etcd, CNI, NodePorts"
 VPC_ID=""
 VPC_CIDR=""
 REGION=""
@@ -40,7 +40,7 @@ WG_PORT="51820"
 # Private by default: 80/443 are opened only to the VPC CIDR. The sandbox is
 # then reachable over Wireguard or from inside the VPC, but NOT from the public
 # Internet. Pass --public-web to open 80/443 to 0.0.0.0/0 (security risk — must
-# be paired with public_access: true in single-node-config.yaml).
+# be paired with public_access: true in sandbox-config.yaml).
 PUBLIC_WEB="false"
 
 # ---------------------------------------------------------------------------
@@ -144,7 +144,7 @@ if [[ "$PUBLIC_WEB" == "true" ]]; then
     WEB_CIDR="0.0.0.0/0"
     echo "  [PUBLIC] TCP 443  — HTTPS (Nginx) — OPEN TO THE INTERNET (--public-web)"
     echo "  [PUBLIC] TCP 80   — HTTP redirect — OPEN TO THE INTERNET (--public-web)"
-    echo "           ⚠️  Pair this with public_access: true in single-node-config.yaml."
+    echo "           ⚠️  Pair this with public_access: true in sandbox-config.yaml."
 else
     WEB_CIDR="$VPC_CIDR"
     echo "  [vpc]    TCP 443  — HTTPS (Nginx) — restricted to ${VPC_CIDR}"

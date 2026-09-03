@@ -1,28 +1,31 @@
 #!/usr/bin/env bash
 # =============================================================================
-# OpenG2P Single-Node — Base Infrastructure Setup
+# OpenG2P Sandbox — Base Infrastructure Setup
 # =============================================================================
 # Sets up the complete base infrastructure on a single Ubuntu 24.04 VM:
-#   Phase 1 (bash):     Tools, firewall, RKE2, Wireguard, NFS, DNS, TLS, Nginx
+#   Phase 1 (bash):     Tools, firewall, RKE2, Wireguard, NFS, DNS records,
+#                       Let's Encrypt TLS certificate, Nginx
 #   Phase 2 (helmfile): Istio, Rancher, Monitoring, Logging
 #   Phase 3 (APIs):     Rancher bootstrap (local admin, cluster name, RBAC roles, catalog repo)
 #
-# Local-only sandbox: local DNS (dnsmasq, *.<local_domain>) + a self-signed CA.
+# Hostnames live under a REAL registered domain and are published as public A
+# records; certificates come from Let's Encrypt via the ACME DNS-01 challenge
+# (outbound only). No local DNS server and no self-signed CA are involved.
 # Private by default — the web UIs (80/443) are reachable only over Wireguard or
 # from inside the VPC, even on a public IP. Set public_access: true to expose
-# them to the Internet (security risk; see single-node-config.example.yaml).
+# them to the Internet (security risk; see sandbox-config.example.yaml).
 #
-# After this completes, run openg2p-environment.sh to create environments.
+# After this completes, run roles/environment/run.sh to create environments.
 #
 # Preferred — from your laptop:
-#   ./openg2p-single-node.sh --config single-node-config.yaml
+#   ./openg2p-sandbox.sh --config sandbox-config.yaml
 #
 # Advanced — run ON the Ubuntu VM as root:
-#   sudo bash roles/infra/run.sh --config single-node-config.yaml
+#   sudo bash roles/infra/run.sh --config sandbox-config.yaml
 #
 # Optional AWS path (laptop):
 #   cd aws && ./openg2p-aws-provision.sh --config aws-config.yaml
-#   # If provision-output.yaml sits next to single-node-config.yaml, it is
+#   # If provision-output.yaml sits next to sandbox-config.yaml, it is
 #   # loaded as an overlay (node_ip, wireguard.endpoint, ssh_*).
 #
 # Docs: https://docs.openg2p.org/deployment/deployment-instructions/infrastructure-setup
@@ -31,7 +34,7 @@
 set -euo pipefail
 
 ROLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Charts, helmfile, and lib/ live at the single-node root (two levels up).
+# Charts, helmfile, and lib/ live at the sandbox root (two levels up).
 SCRIPT_DIR="$(cd "${ROLE_DIR}/../.." && pwd)"
 CONFIG_FILE=""
 PROVISION_OUTPUT=""
@@ -41,6 +44,7 @@ DRY_RUN=false
 LOG_FILE="/var/log/openg2p-infra-$(date '+%Y%m%d-%H%M%S').log"
 
 source "${SCRIPT_DIR}/lib/utils.sh"
+source "${SCRIPT_DIR}/lib/acme.sh"
 source "${SCRIPT_DIR}/lib/phase1.sh"
 source "${SCRIPT_DIR}/lib/phase2.sh"
 source "${SCRIPT_DIR}/lib/phase3.sh"
@@ -69,8 +73,8 @@ parse_args() {
     if [[ -z "$CONFIG_FILE" ]]; then
         log_error "No config file specified" \
                   "The --config flag is required" \
-                  "Copy single-node-config.example.yaml to single-node-config.yaml and provide it" \
-                  "$0 --config single-node-config.yaml"
+                  "Copy sandbox-config.example.yaml to sandbox-config.yaml and provide it" \
+                  "$0 --config sandbox-config.yaml"
         exit 1
     fi
 
@@ -79,11 +83,11 @@ parse_args() {
 
 show_help() {
     cat <<'EOF'
-OpenG2P Single-Node — Base Infrastructure Setup
+OpenG2P Sandbox — Base Infrastructure Setup
 =================================================
 
 Usage:
-  sudo bash roles/infra/run.sh --config single-node-config.yaml [options]
+  sudo bash roles/infra/run.sh --config sandbox-config.yaml [options]
 
 Options:
   --config <file>            Path to configuration file (required)
@@ -94,13 +98,16 @@ Options:
   --reset                    Clear all infra state markers and exit
   --help                     Show this help message
 
-Prefer the laptop orchestrator (openg2p-single-node.sh). For AWS EC2 creation
+Prefer the laptop orchestrator (openg2p-sandbox.sh). For AWS EC2 creation
 from your laptop, use aws/openg2p-aws-provision.sh first.
 
-This is a local-only sandbox: it sets up local DNS (dnsmasq, *.<local_domain>)
-and a self-signed CA. By default the sandbox is reachable only over Wireguard
-or from inside the VPC — set public_access: true in the config to expose it to
-the public Internet (carries security risk; see single-node-config.example.yaml).
+Requires a REAL registered domain plus a DNS API token (see `domain` and
+`tls.*` in sandbox-config.example.yaml) — certificates are issued by
+Let's Encrypt over DNS-01. Free domain option: https://desec.io/
+
+By default the sandbox is reachable only over Wireguard or from inside the VPC
+— set public_access: true in the config to expose it to the public Internet
+(carries security risk; see sandbox-config.example.yaml).
 
 Docs: https://docs.openg2p.org/deployment/deployment-instructions/infrastructure-setup
 EOF
@@ -111,7 +118,7 @@ show_summary() {
     local node_ip=$(cfg "node_ip")
     local cluster_display_name=$(cfg "cluster_name" "openg2p")
     local rancher_host=$(get_rancher_hostname)
-    local local_domain=$(cfg "local_domain" "openg2p.test")
+    local domain=$(cfg "domain" "")
     local public_access=$(cfg "public_access" "false")
     # cluster_subnet is an undocumented override; default is split tunnel
     local allowed_ips=$(cfg "wireguard.cluster_subnet" "split-tunnel")
@@ -185,42 +192,15 @@ show_summary() {
     echo -e "${GREEN}║${NC}    set wireguard.endpoint in config or edit peer1.conf.     ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
 
-    if [[ "$allowed_ips" == "0.0.0.0/0" ]]; then
-            echo -e "${GREEN}║${NC}  ${BOLD}Step 2: DNS${NC}                                                ${GREEN}║${NC}"
-            echo -e "${GREEN}║${NC}    Full tunnel — DNS push is included in peer config.      ${GREEN}║${NC}"
-            echo -e "${GREEN}║${NC}    All *.${local_domain} resolves automatically.             ${GREEN}║${NC}"
-        else
-            echo -e "${GREEN}║${NC}  ${BOLD}Step 2: Per-domain DNS (split tunnel)${NC}                      ${GREEN}║${NC}"
-            echo -e "${GREEN}║${NC}    macOS:                                                  ${GREEN}║${NC}"
-            echo -e "${GREEN}║${NC}      sudo mkdir -p /etc/resolver                          ${GREEN}║${NC}"
-            echo -e "${GREEN}║${NC}      echo 'nameserver ${node_ip}'                          ${GREEN}║${NC}"
-            echo -e "${GREEN}║${NC}        | sudo tee /etc/resolver/${local_domain}             ${GREEN}║${NC}"
-            echo -e "${GREEN}║${NC}    Windows (PowerShell as Admin):                          ${GREEN}║${NC}"
-            echo -e "${GREEN}║${NC}      Add-DnsClientNrptRule -Namespace '.${local_domain}'    ${GREEN}║${NC}"
-            echo -e "${GREEN}║${NC}        -NameServers '${node_ip}'                             ${GREEN}║${NC}"
-            echo -e "${GREEN}║${NC}    Linux:                                                  ${GREEN}║${NC}"
-            echo -e "${GREEN}║${NC}      sudo resolvectl dns wg0 ${node_ip}                     ${GREEN}║${NC}"
-            echo -e "${GREEN}║${NC}      sudo resolvectl domain wg0 '~${local_domain}'          ${GREEN}║${NC}"
-        fi
-        echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
-        echo -e "${GREEN}║${NC}  ${BOLD}Step 3: Install CA certificate${NC}                             ${GREEN}║${NC}"
-    if [[ -n "$ssh_host" ]]; then
-        echo -e "${GREEN}║${NC}    From your laptop:                                         ${GREEN}║${NC}"
-        echo -e "${GREEN}║${NC}      ssh -i ${ssh_key} ${ssh_user}@${ssh_host} \\              ${GREEN}║${NC}"
-        echo -e "${GREEN}║${NC}        \"sudo cat /etc/openg2p/ca/ca.crt\" > openg2p-ca.crt   ${GREEN}║${NC}"
-    else
-        echo -e "${GREEN}║${NC}    Copy /etc/openg2p/ca/ca.crt from the VM, then:           ${GREEN}║${NC}"
-    fi
-        echo -e "${GREEN}║${NC}    macOS:                                                   ${GREEN}║${NC}"
-        echo -e "${GREEN}║${NC}      sudo security add-trusted-cert -d -r trustRoot \\      ${GREEN}║${NC}"
-        echo -e "${GREEN}║${NC}        -k /Library/Keychains/System.keychain openg2p-ca.crt  ${GREEN}║${NC}"
-        echo -e "${GREEN}║${NC}    Windows: Import into Trusted Root CAs                    ${GREEN}║${NC}"
-        echo -e "${GREEN}║${NC}    Linux:                                                   ${GREEN}║${NC}"
-        echo -e "${GREEN}║${NC}      sudo cp openg2p-ca.crt /usr/local/share/ca-certificates/${GREEN}║${NC}"
-        echo -e "${GREEN}║${NC}      sudo update-ca-certificates                            ${GREEN}║${NC}"
-        echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}  ${BOLD}Step 2: DNS and certificates — nothing to do${NC}               ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}    Hostnames under ${domain}"
+    echo -e "${GREEN}║${NC}    are public A records -> ${node_ip}, so your normal"
+    echo -e "${GREEN}║${NC}    resolver answers them. No /etc/hosts, no local DNS.      ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}    Certificates are from Let's Encrypt — already trusted.   ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}    Verify:  nslookup rancher.${domain}"
+    echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
 
-    echo -e "${GREEN}║${NC}  ${BOLD}Step 4: kubectl/helm access from laptop${NC}                    ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}  ${BOLD}Step 3: kubectl/helm access from laptop${NC}                    ${GREEN}║${NC}"
     if [[ -n "$ssh_host" ]]; then
         echo -e "${GREEN}║${NC}    From your laptop:                                         ${GREEN}║${NC}"
         echo -e "${GREEN}║${NC}      ssh -i ${ssh_key} ${ssh_user}@${ssh_host} \\              ${GREEN}║${NC}"
@@ -258,9 +238,9 @@ show_summary() {
     echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${GREEN}║${NC}  ${BOLD}What's next:${NC}                                                ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}  From your laptop:                                           ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}    ./openg2p-single-node.sh --config single-node-config.yaml \\${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}    ./openg2p-sandbox.sh --config sandbox-config.yaml \\${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}      --stage environment                                     ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}  Or on-box: sudo ./openg2p-environment.sh --config env-config.yaml${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}  Or on-box: sudo ./roles/environment/run.sh --config environment-config.yaml${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}  Log: ${LOG_FILE}"
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
@@ -287,7 +267,7 @@ main() {
 
     load_config "$CONFIG_FILE"
 
-    # Auto-detect provision-output.yaml next to single-node-config.yaml unless
+    # Auto-detect provision-output.yaml next to sandbox-config.yaml unless
     # --provision-output was given explicitly.
     if [[ -z "$PROVISION_OUTPUT" ]]; then
         PROVISION_OUTPUT="$(dirname "$CONFIG_FILE")/provision-output.yaml"
@@ -297,7 +277,7 @@ main() {
         load_config "$PROVISION_OUTPUT"
     else
         PROVISION_OUTPUT=""
-        log_info "No provision-output.yaml found — using single-node-config.yaml only"
+        log_info "No provision-output.yaml found — using sandbox-config.yaml only"
     fi
 
     validate_config "node_ip" "node_name"

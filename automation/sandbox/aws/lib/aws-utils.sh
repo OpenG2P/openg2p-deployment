@@ -1,24 +1,27 @@
 #!/usr/bin/env bash
 # =============================================================================
-# OpenG2P AWS Single-Node — helpers
+# OpenG2P AWS Sandbox — helpers
 # =============================================================================
 # Sourced by openg2p-aws-provision.sh and openg2p-aws-destroy.sh.
 # Reuses shared AWS helpers for credentials, VPC/subnet/key
 # pickers, AMI resolution, waits, and YAML helpers.
-# Adds single-node-specific ManagedBy tagging, SG rules, launch, and EIP.
+# Adds sandbox-specific ManagedBy tagging, SG rules, launch, and EIP.
 # =============================================================================
 
 _SN_AWS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "${_SN_AWS_LIB_DIR}/../../../production/aws/lib/aws-utils.sh"
 
-# Distinct ManagedBy so destroy only targets single-node resources.
-SN_MANAGED_BY="openg2p-aws-single-node"
+# Distinct ManagedBy so destroy only targets sandbox resources.
+# NOTE: deliberately still "single-node", not "sandbox". This is an AWS TAG
+# VALUE used to find and destroy existing resources. Changing it would
+# orphan every already-provisioned sandbox from discovery and teardown.
+SANDBOX_MANAGED_BY="openg2p-aws-single-node"
 
 # ---------------------------------------------------------------------------
-# Security group — describe-or-create with single-node ManagedBy tag
+# Security group — describe-or-create with sandbox ManagedBy tag
 # ---------------------------------------------------------------------------
-aws_ensure_security_group_sn() {
+aws_ensure_security_group_sandbox() {
     local name="$1"
     local description="$2"
     local vpc_id="$3"
@@ -41,7 +44,7 @@ aws_ensure_security_group_sn() {
         --group-name "$name" \
         --description "$description" \
         --vpc-id "$vpc_id" \
-        --tag-specifications "ResourceType=security-group,Tags=[{Key=Name,Value=${name}},{Key=Project,Value=${project}},{Key=Role,Value=${role}},{Key=ManagedBy,Value=${SN_MANAGED_BY}}]" \
+        --tag-specifications "ResourceType=security-group,Tags=[{Key=Name,Value=${name}},{Key=Project,Value=${project}},{Key=Role,Value=${role}},{Key=ManagedBy,Value=${SANDBOX_MANAGED_BY}}]" \
         --query 'GroupId' --output text)
     echo "$sg_id"
 }
@@ -53,7 +56,7 @@ aws_ensure_security_group_sn() {
 #   • Wireguard UDP from world (VPN tunnel)
 #   • 80/443 from VPC (private) or 0.0.0.0/0 when public_web=true
 #   • ALL from VPC (K8s API, RKE2, etcd, CNI, NodePorts, NFS, WG-decapsulated)
-aws_apply_sg_rules_single_node() {
+aws_apply_sg_rules_sandbox() {
     local sg_id="$1"
     local admin_cidr="$2"
     local vpc_cidr="$3"
@@ -72,7 +75,7 @@ aws_apply_sg_rules_single_node() {
             --ip-permissions "IpProtocol=tcp,FromPort=443,ToPort=443,IpRanges=[{CidrIp=0.0.0.0/0,Description=HTTPS public}]"
         aws_add_ingress "$sg_id" "TCP/80  from 0.0.0.0/0 (PUBLIC web)" \
             --ip-permissions "IpProtocol=tcp,FromPort=80,ToPort=80,IpRanges=[{CidrIp=0.0.0.0/0,Description=HTTP public}]"
-        log_warn "public_web=true — 80/443 open to the Internet. Pair with public_access: true in single-node-config.yaml." >&2
+        log_warn "public_web=true — 80/443 open to the Internet. Pair with public_access: true in sandbox-config.yaml." >&2
     else
         aws_add_ingress "$sg_id" "TCP/443 from ${vpc_cidr} (private web)" \
             --ip-permissions "IpProtocol=tcp,FromPort=443,ToPort=443,IpRanges=[{CidrIp=${vpc_cidr},Description=HTTPS VPC}]"
@@ -85,17 +88,17 @@ aws_apply_sg_rules_single_node() {
 }
 
 # ---------------------------------------------------------------------------
-# Elastic IP — allocate-or-find with single-node ManagedBy
+# Elastic IP — allocate-or-find with sandbox ManagedBy
 # Soft-fails on quota exhaustion (caller falls back to ephemeral public IP).
 # ---------------------------------------------------------------------------
-aws_ensure_eip_sn() {
+aws_ensure_eip_sandbox() {
     local project="$1"
     local role_tag="$2"
 
     local alloc_id
     alloc_id=$(aws_cli ec2 describe-addresses \
         --filters "Name=tag:Project,Values=${project}" "Name=tag:Role,Values=${role_tag}" \
-                  "Name=tag:ManagedBy,Values=${SN_MANAGED_BY}" \
+                  "Name=tag:ManagedBy,Values=${SANDBOX_MANAGED_BY}" \
         --query 'Addresses[0].AllocationId' --output text 2>/dev/null || true)
 
     if [[ -n "$alloc_id" && "$alloc_id" != "None" ]]; then
@@ -107,7 +110,7 @@ aws_ensure_eip_sn() {
     log_info "Allocating new Elastic IP for ${role_tag}..." >&2
     local result
     if ! result=$(aws_cli ec2 allocate-address --domain vpc \
-            --tag-specifications "ResourceType=elastic-ip,Tags=[{Key=Project,Value=${project}},{Key=Role,Value=${role_tag}},{Key=ManagedBy,Value=${SN_MANAGED_BY}}]" \
+            --tag-specifications "ResourceType=elastic-ip,Tags=[{Key=Project,Value=${project}},{Key=Role,Value=${role_tag}},{Key=ManagedBy,Value=${SANDBOX_MANAGED_BY}}]" \
             --query 'AllocationId' --output text 2>&1); then
         log_warn "Could not allocate Elastic IP: ${result}" >&2
         if echo "$result" | grep -q 'AddressLimitExceeded'; then
@@ -122,9 +125,9 @@ aws_ensure_eip_sn() {
 }
 
 # ---------------------------------------------------------------------------
-# Key pair — create/verify with single-node ManagedBy on new keys
+# Key pair — create/verify with sandbox ManagedBy on new keys
 # ---------------------------------------------------------------------------
-aws_ensure_key_pair_sn() {
+aws_ensure_key_pair_sandbox() {
     local key_name="$1"
     local key_path="$2"
     local mode="$3"
@@ -155,7 +158,7 @@ aws_ensure_key_pair_sn() {
             aws_cli ec2 create-key-pair \
                 --key-name "$key_name" \
                 --key-format pem \
-                --tag-specifications "ResourceType=key-pair,Tags=[{Key=Project,Value=${project}},{Key=ManagedBy,Value=${SN_MANAGED_BY}}]" \
+                --tag-specifications "ResourceType=key-pair,Tags=[{Key=Project,Value=${project}},{Key=ManagedBy,Value=${SANDBOX_MANAGED_BY}}]" \
                 --query 'KeyMaterial' --output text > "$key_path"
             chmod 0400 "$key_path"
             log_success "Key pair created. Private key saved to ${key_path} (mode 0400)."
@@ -171,9 +174,9 @@ aws_ensure_key_pair_sn() {
 }
 
 # ---------------------------------------------------------------------------
-# Find / launch single-node instance (ManagedBy=openg2p-aws-single-node)
+# Find / launch sandbox instance (ManagedBy=openg2p-aws-single-node)
 # ---------------------------------------------------------------------------
-aws_find_single_node_instance() {
+aws_find_sandbox_instance() {
     local name="$1"
     local project="$2"
 
@@ -182,7 +185,7 @@ aws_find_single_node_instance() {
         --filters \
             "Name=tag:Name,Values=${name}" \
             "Name=tag:Project,Values=${project}" \
-            "Name=tag:ManagedBy,Values=${SN_MANAGED_BY}" \
+            "Name=tag:ManagedBy,Values=${SANDBOX_MANAGED_BY}" \
             "Name=instance-state-name,Values=pending,running,stopping,stopped" \
         --query 'Reservations[].Instances[0].InstanceId | [0]' \
         --output text 2>/dev/null || true)
@@ -201,7 +204,7 @@ aws_find_single_node_instance() {
     echo ""
 }
 
-aws_run_single_node_instance() {
+aws_run_sandbox_instance() {
     local name="$1"
     local project="$2"
     local role="$3"
@@ -214,7 +217,7 @@ aws_run_single_node_instance() {
     local disk_iops="${10}"
     local disk_throughput="${11}"
 
-    log_info "Launching single-node (${instance_type}, ${disk_gb} GB gp3)..." >&2
+    log_info "Launching sandbox (${instance_type}, ${disk_gb} GB gp3)..." >&2
 
     local bdm
     bdm=$(printf '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":%d,"VolumeType":"gp3","Iops":%d,"Throughput":%d,"DeleteOnTermination":true,"Encrypted":true}}]' \
@@ -230,8 +233,8 @@ aws_run_single_node_instance() {
         --associate-public-ip-address \
         --block-device-mappings "$bdm" \
         --tag-specifications \
-            "ResourceType=instance,Tags=[{Key=Name,Value=${name}},{Key=Project,Value=${project}},{Key=Role,Value=${role}},{Key=ManagedBy,Value=${SN_MANAGED_BY}}]" \
-            "ResourceType=volume,Tags=[{Key=Name,Value=${name}-root},{Key=Project,Value=${project}},{Key=Role,Value=${role}},{Key=ManagedBy,Value=${SN_MANAGED_BY}}]" \
+            "ResourceType=instance,Tags=[{Key=Name,Value=${name}},{Key=Project,Value=${project}},{Key=Role,Value=${role}},{Key=ManagedBy,Value=${SANDBOX_MANAGED_BY}}]" \
+            "ResourceType=volume,Tags=[{Key=Name,Value=${name}-root},{Key=Project,Value=${project}},{Key=Role,Value=${role}},{Key=ManagedBy,Value=${SANDBOX_MANAGED_BY}}]" \
         --query 'Instances[0].InstanceId' --output text)
     echo "$id"
 }

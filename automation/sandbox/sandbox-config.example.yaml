@@ -1,11 +1,11 @@
 # =============================================================================
-# OpenG2P Single-Node Configuration
+# OpenG2P Sandbox Configuration
 # =============================================================================
-# Copy this file to single-node-config.yaml and fill in your values:
-#   cp single-node-config.example.yaml single-node-config.yaml
+# Copy this file to sandbox-config.yaml and fill in your values:
+#   cp sandbox-config.example.yaml sandbox-config.yaml
 #
 # Preferred — run from your laptop (orchestrator SSHes into the VM):
-#   ./openg2p-single-node.sh --config single-node-config.yaml
+#   ./openg2p-sandbox.sh --config sandbox-config.yaml
 #
 # Optional AWS path (laptop):
 #   cd aws && ./openg2p-aws-provision.sh --config aws-config.yaml
@@ -13,7 +13,7 @@
 #   # [AWS] fields below (node_ip, wireguard.endpoint, ssh_*) are filled.
 #
 # Advanced — run on-box directly:
-#   sudo bash roles/infra/run.sh --config single-node-config.yaml
+#   sudo bash roles/infra/run.sh --config sandbox-config.yaml
 # =============================================================================
 
 # ---------------------------------------------------------------------------
@@ -32,24 +32,70 @@ node_name: "node1"
 cluster_name: "openg2p"
 
 # ---------------------------------------------------------------------------
-# Local domain
+# Domain & TLS                                    [REQUIRED — read before running]
 # ---------------------------------------------------------------------------
-# This is a local-only sandbox. No public domain names or DNS provider are
-# needed. The script sets up:
-#   • dnsmasq on the VM for local DNS (*.<local_domain>)
-#   • A local Certificate Authority with self-signed certs
-#   • Wireguard DNS push so VPN clients resolve hostnames automatically
-# All hostnames are auto-derived as <service>.<local_domain>
-# (e.g. rancher.openg2p.test). Rancher uses LOCAL authentication — create
-# admin users directly in Rancher (☰ → Users & Authentication → Users).
+# The sandbox uses REAL, browser-trusted certificates from Let's Encrypt.
+# Self-signed certificates are NOT supported: services inside the cluster call
+# each other over HTTPS and fail when the issuing CA is not publicly trusted.
 #
-# Uses the .test TLD (reserved by RFC 2606 for testing, avoids mDNS conflicts).
+# That means you need a REAL, publicly-registered domain name. Reserved TLDs
+# (.test, .local, .internal, .localhost) can NEVER receive a public certificate
+# — this is a CA/Browser Forum rule binding on every public CA, not a
+# Let's Encrypt policy — so they are rejected by the preflight check.
 #
-# TLS: ALL certificates are SELF-SIGNED by the built-in local CA. There is no
-# option to supply your own certificate or use Let's Encrypt / a public CA —
-# this is a sandbox. Trust the CA on your client (/etc/openg2p/ca/ca.crt) or
-# accept the browser warning.
-local_domain: "openg2p.test"
+# You do NOT need to expose this machine to the internet, and you do NOT need
+# to touch your organisation's DNS. Certificates are obtained with the ACME
+# DNS-01 challenge: the automation writes one TXT record via your DNS
+# provider's API and Let's Encrypt reads it. All traffic is outbound only.
+#
+# ── QUICK START (free, ~2 minutes, no domain purchase) ──────────────────────
+#   1. Sign up at https://desec.io/          (email + captcha)
+#   2. Create a free domain, e.g.            mydept.dedyn.io
+#   3. Create an API token at https://desec.io/tokens
+#   4. Set `domain` and `tls.api_token` below.
+#
+# Hostnames are derived automatically:
+#   Infra:    rancher.<domain>
+#   Per-env:  keycloak.<env>.<domain>, superset.<env>.<domain>, ...
+domain: ""                       # REQUIRED, e.g. "mydept.dedyn.io"
+
+tls:
+  # Contact address registered with Let's Encrypt (expiry / problem notices).
+  email: ""                      # REQUIRED, e.g. "admin@dept.gov.et"
+
+  # DNS provider hosting `domain` above. Used ONLY to write the ACME
+  # `_acme-challenge` TXT records and (optionally) the A records below.
+  #   desec      — free dedyn.io domain — the quick-start path
+  #   cloudflare — you own the domain, DNS hosted on Cloudflare
+  #   route53    — you own the domain, DNS hosted on AWS Route 53
+  #   acmedns    — self-hosted acme-dns via CNAME delegation (advanced)
+  dns_provider: "desec"
+
+  # Credentials for the provider selected above — fill in only the relevant set.
+  api_token: ""                  # desec: deSEC API token | cloudflare: API token
+  cf_account_id: ""              # cloudflare only
+  aws_access_key_id: ""          # route53 only (blank = use the EC2 instance role)
+  aws_secret_access_key: ""      # route53 only
+  acmedns_base_url:  "https://auth.acme-dns.io"   # acmedns only
+  acmedns_username:  ""
+  acmedns_password:  ""
+  acmedns_subdomain: ""
+
+  # Publish A records for the sandbox hostnames into the public DNS zone,
+  # pointing at node_ip. This is what makes the names resolve on laptops and
+  # inside pods with NO local DNS server and NO /etc/hosts entries.
+  #
+  # node_ip is normally a private RFC1918 address. Publishing it grants nobody
+  # access — the address is unroutable from the internet — but it does disclose
+  # your hostname and internal IP layout to anyone who queries the zone. Set
+  # this to false if that is unacceptable, and manage DNS yourself.
+  # Supported for: desec, cloudflare, route53.
+  publish_a_records: true
+
+  # Let's Encrypt STAGING: untrusted certificates, but very generous rate
+  # limits. Use it while testing repeated installs, then set false and re-run
+  # with --force to obtain real certificates.
+  staging: false
 
 # ---------------------------------------------------------------------------
 # Public access (security-sensitive)
@@ -62,16 +108,17 @@ local_domain: "openg2p.test"
 #                     the recommended, safe default.
 #
 #   true            — PUBLIC. Opens 80/443 to 0.0.0.0/0 so anyone who can route
-#                     to the public IP (and adds the hostnames to their
-#                     /etc/hosts, accepting the self-signed cert) can reach the
-#                     sandbox WITHOUT the VPN.
+#                     to this machine's public IP can reach the sandbox WITHOUT
+#                     the VPN. Requires node_ip (or the A records) to point at a
+#                     publicly reachable address.
 #
 #   ⚠️  SECURITY WARNING: Setting this to true exposes the Rancher cluster-admin
 #       UI and every environment service to the public Internet, protected only
-#       by a self-signed certificate and local passwords. This is a sandbox, not
-#       a hardened deployment — only enable it if you understand and accept the
-#       risk, and prefer restricting the source IPs (ufw / cloud security group)
-#       to the specific addresses that need access.
+#       by local passwords. A valid TLS certificate encrypts the connection —
+#       it does NOT restrict who may connect. This is a sandbox, not a hardened
+#       deployment: only enable it if you understand and accept the risk, and
+#       prefer restricting the source IPs (ufw / cloud security group) to the
+#       specific addresses that need access.
 #       On AWS you must ALSO open 80/443 in the security group (see the docs).
 public_access: false
 
@@ -98,10 +145,10 @@ wireguard:
   peers: "254"
 
 # ---------------------------------------------------------------------------
-# SSH — laptop orchestrator (openg2p-single-node.sh)
+# SSH — laptop orchestrator (openg2p-sandbox.sh)
 # ---------------------------------------------------------------------------
 # Used only by the laptop orchestrator to reach the VM. The on-box
-# roles/infra/run.sh / openg2p-environment.sh scripts ignore these keys.
+# roles/infra/run.sh / roles/environment/run.sh scripts ignore these keys.
 # [AWS] — all three auto-filled from provision-output.yaml when present.
 ssh_host: ""                 # Public IP or hostname reachable from your laptop
 ssh_user: "ubuntu"
@@ -110,13 +157,22 @@ ssh_key:  ""                 # Path to .pem (e.g. ./aws/keys/openg2p-sandbox.pem
 # ---------------------------------------------------------------------------
 # Environment stage (laptop orchestrator)
 # ---------------------------------------------------------------------------
-# Master switch for openg2p-single-node.sh when run with default --stage all.
-#   true  — after infra, also run openg2p-environment.sh (needs env-config.yaml)
-#   false — stop after infra; install an environment later with:
-#             ./openg2p-single-node.sh --config single-node-config.yaml --stage environment
-#             # or: ./openg2p-environment.sh --config env-config.yaml
-# CLI --skip-environment also skips the env stage for one run.
-install_environment: true
+# Master switch for openg2p-sandbox.sh when run with default --stage all.
+#
+# The sandbox itself is just INFRASTRUCTURE (Kubernetes, Rancher, Nginx,
+# Wireguard, DNS + TLS). An *environment* — a namespace with its own sub-domain
+# and the OpenG2P commons stack — is a separate, follow-on step, and you can
+# create several of them on one sandbox.
+#
+#   false (default) — stop after infra. The install prints how to add an
+#                     environment when you are ready:
+#                       ./openg2p-sandbox.sh --config sandbox-config.yaml \
+#                           --stage environment
+#   true            — also install one environment straight after infra
+#                     (requires environment-config.yaml to exist)
+#
+# CLI --skip-environment also skips the env stage for a single run.
+install_environment: false
 
 # ---------------------------------------------------------------------------
 # Rancher
@@ -131,7 +187,7 @@ rancher:
 
 # Note: Keycloak is NOT installed at the infra level. Rancher uses local
 # authentication. The OpenG2P apps' Keycloak is deployed per-environment by
-# openg2p-environment.sh (at keycloak.<environment domain>), not here.
+# roles/environment/run.sh (at keycloak.<environment domain>), not here.
 
 # ---------------------------------------------------------------------------
 # Observability — OpenTelemetry + Grafana Loki (replaces Fluentd/OpenSearch)

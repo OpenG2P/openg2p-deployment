@@ -13,7 +13,7 @@
 # Future modules (Registry, PBMS, SPAR, G2P Bridge) will be added as
 # separate steps.
 #
-# Sourced by openg2p-environment.sh — do not run directly.
+# Sourced by roles/environment/run.sh — do not run directly.
 # =============================================================================
 
 # ─────────────────────────────────────────────────────────────────────────────
