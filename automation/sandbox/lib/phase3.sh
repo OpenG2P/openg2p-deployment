@@ -123,6 +123,66 @@ YAML
     log_info "  Rancher UI → Apps → Repositories will reflect it within ~30s."
 }
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Show prerelease chart versions in the Rancher UI
+# ─────────────────────────────────────────────────────────────────────────────
+# OpenG2P charts are versioned like 0.0.0-develop, which is a PRERELEASE under
+# semver, so Rancher's Apps -> Charts list hides them unless the user has
+# "Include Prerelease Versions" enabled (user avatar -> Preferences -> Helm
+# Charts). Freshly installed sandboxes therefore look like the catalogue is
+# empty, which is a confusing first experience.
+#
+# Rancher has NO cluster-wide default for this — it is a per-user preference,
+# stored as a Preference CR in the user's own namespace, and the dashboard
+# hardcodes the default to false. The best we can do is pre-seed it for the
+# bootstrap admin. Users created later must set it themselves (Preferences ->
+# Helm Charts -> Include Prerelease Versions).
+#
+# Non-fatal: a cosmetic UI default must never fail the install.
+set_rancher_prerelease_preference() {
+    log_info "Enabling 'Include Prerelease Versions' for the Rancher admin user..."
+
+    # The bootstrap admin carries this label; fall back to matching username.
+    local admin_id
+    admin_id=$(kubectl get users.management.cattle.io \
+        -l authz.management.cattle.io/bootstrapping=admin-user \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [[ -z "$admin_id" ]]; then
+        admin_id=$(kubectl get users.management.cattle.io \
+            -o jsonpath='{.items[?(@.username=="admin")].metadata.name}' 2>/dev/null | awk '{print $1}' || true)
+    fi
+
+    if [[ -z "$admin_id" ]]; then
+        log_warn "Could not resolve the Rancher admin user id — skipping the prerelease preference."
+        log_warn "  Set it manually: Rancher -> avatar -> Preferences -> Helm Charts."
+        return 0
+    fi
+
+    # The per-user namespace is created lazily on the first preference write,
+    # so it will not exist yet on a fresh install — create it ourselves.
+    kubectl create namespace "$admin_id" --dry-run=client -o yaml 2>/dev/null \
+        | kubectl apply -f - > /dev/null 2>&1 || true
+
+    # `value` is a string field holding JSON. It must parse as JSON or the
+    # dashboard silently ignores the key and falls back to false.
+    if kubectl apply -f - > /dev/null 2>&1 <<YAML
+apiVersion: management.cattle.io/v3
+kind: Preference
+metadata:
+  name: show-pre-release
+  namespace: ${admin_id}
+value: "true"
+YAML
+    then
+        log_success "Rancher admin will see prerelease chart versions (user: ${admin_id})."
+    else
+        log_warn "Could not set the prerelease preference (non-fatal)."
+        log_warn "  Set it manually: Rancher -> avatar -> Preferences -> Helm Charts."
+    fi
+    return 0
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Phase 3: Rancher configuration (local authentication)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -432,6 +492,9 @@ RTEOF
 
     # ── Step 3.4: Register the OpenG2P Helm repo in Rancher's catalog ──────
     register_openg2p_clusterrepo
+
+    # ── Step 3.5: Show prerelease chart versions (OpenG2P uses 0.0.0-develop)
+    set_rancher_prerelease_preference
 
     # ── Done ─────────────────────────────────────────────────────────────
     log_success "Rancher configuration complete."

@@ -143,6 +143,33 @@ env_phase1_step3_nginx() {
     local node_ip=$(cfg "node_ip")
     local base_domain=$(get_env_base_domain)
 
+    # Per-environment public exposure.
+    #
+    #   public: false (default) — this environment answers only clients coming
+    #                             over Wireguard or from inside the VPC, even
+    #                             if sandbox public_access has opened 80/443.
+    #   public: true            — this environment answers anyone.
+    #
+    # The firewall is host-wide, so it cannot separate one environment from
+    # another. Nginx routes by hostname, so the allow/deny list here is what
+    # makes "public for dev, private for everything else" possible.
+    local env_public env_allow
+    env_public=$(cfg "public" "false")
+    if [[ "$env_public" == "true" ]]; then
+        env_allow=""
+        log_warn "Environment '${env_name}' will be served to ANY client (public: true)."
+        log_warn "  Every service under *.${base_domain} becomes publicly reachable."
+        log_warn "  This also requires public_access: true in the sandbox config."
+    else
+        local wg_subnet_cidr vpc_cidr
+        wg_subnet_cidr=$(cfg "wireguard.subnet" "10.15.0.0/16")
+        vpc_cidr=$(echo "$node_ip" | awk -F. '{printf "%s.%s.0.0/16", $1, $2}')
+        env_allow="    allow ${wg_subnet_cidr};
+    allow ${vpc_cidr};
+    allow 127.0.0.1;
+    deny all;"
+    fi
+
     local env_cert env_key
     env_cert=$(get_cert_path "$base_domain" "cert")
     env_key=$(get_cert_path "$base_domain" "key")
@@ -168,6 +195,7 @@ env_phase1_step3_nginx() {
 server {
     listen 80;
     server_name *.${base_domain} ${base_domain};
+${env_allow}
     return 301 https://\$host\$request_uri;
 }
 server {
@@ -176,6 +204,7 @@ server {
     ssl_certificate     ${env_cert};
     ssl_certificate_key ${env_key};
     ssl_protocols       TLSv1.2 TLSv1.3;
+${env_allow}
     location / {
         proxy_pass                      http://istio_ingress;
         proxy_http_version              1.1;

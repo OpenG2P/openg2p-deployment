@@ -48,6 +48,27 @@ base_domain: ""
 sandbox_config: "sandbox-config.yaml"
 
 # ---------------------------------------------------------------------------
+# Public exposure for THIS environment
+# ---------------------------------------------------------------------------
+# Controls who Nginx will answer for *.<environment>.<domain>.
+#
+#   false (default) — served only to clients arriving over Wireguard or from
+#                     inside the VPC. Anyone else gets 403, even if the
+#                     sandbox has opened 80/443 to the internet.
+#   true            — served to ANY client.
+#
+# Use this to expose ONE environment publicly while everything else — and in
+# particular the Rancher admin UI — stays private. The Rancher hostname always
+# keeps its allowlist and is never made public by this setting.
+#
+# Requires public_access: true in sandbox-config.yaml as well: that opens the
+# firewall port, this decides which hostnames are answered on it.
+#
+#   ⚠️  A public environment exposes every service under that domain to the
+#       internet, protected only by each application's own authentication.
+public: false
+
+# ---------------------------------------------------------------------------
 # What this creates
 # ---------------------------------------------------------------------------
 # Running the environment stage performs, for this environment only:

@@ -688,6 +688,23 @@ phase1_step7_certificates() {
     local node_ip=$(cfg "node_ip")
     local rancher_host=$(get_rancher_hostname)
 
+    # Source allowlist for the ADMIN (Rancher) server block.
+    #
+    # This is the durable channel-separation layer. The firewall is host-wide
+    # and all-or-nothing: once public_access opens 80/443 so an environment can
+    # serve the public, the Rancher UI would be exposed too. Nginx routes by
+    # hostname, so an allowlist here keeps the admin hostname private no matter
+    # what the firewall allows — a public client presenting a forged
+    # "Host: rancher.<domain>" still arrives with its real source IP and is
+    # rejected with 403.
+    local wg_subnet_cidr vpc_cidr admin_allow
+    wg_subnet_cidr=$(cfg "wireguard.subnet" "10.15.0.0/16")
+    vpc_cidr=$(echo "$node_ip" | awk -F. '{printf "%s.%s.0.0/16", $1, $2}')
+    admin_allow="    allow ${wg_subnet_cidr};
+    allow ${vpc_cidr};
+    allow 127.0.0.1;
+    deny all;"
+
     # Re-validate here as well as in the orchestrator: roles/infra/run.sh can be
     # invoked directly on-box, bypassing the laptop-side preflight.
     acme_preflight || return 1
@@ -745,6 +762,7 @@ upstream istio_ingress {
 server {
     listen 80;
     server_name ${rancher_host};
+${admin_allow}
     return 301 https://\$host\$request_uri;
 }
 server {
@@ -753,6 +771,7 @@ server {
     ssl_certificate     ${rancher_cert};
     ssl_certificate_key ${rancher_key};
     ssl_protocols       TLSv1.2 TLSv1.3;
+${admin_allow}
     location / {
         proxy_pass                      http://istio_ingress;
         proxy_http_version              1.1;

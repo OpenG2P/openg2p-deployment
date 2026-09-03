@@ -128,18 +128,19 @@ tls:
 #                     firewall blocks 80/443 from the public Internet. This is
 #                     the recommended, safe default.
 #
-#   true            — PUBLIC. Opens 80/443 to 0.0.0.0/0 so anyone who can route
-#                     to this machine's public IP can reach the sandbox WITHOUT
-#                     the VPN. Requires node_ip (or the A records) to point at a
-#                     publicly reachable address.
+#   true            — Opens 80/443 to 0.0.0.0/0 at the FIREWALL. On its own this
+#                     exposes nothing extra: Nginx still answers the Rancher
+#                     hostname only to Wireguard/VPC clients, and each
+#                     environment stays private unless it sets `public: true`
+#                     in its own environment-config.yaml.
+#                     Set this to true when you want at least one environment
+#                     reachable without the VPN.
 #
-#   ⚠️  SECURITY WARNING: Setting this to true exposes the Rancher cluster-admin
-#       UI and every environment service to the public Internet, protected only
-#       by local passwords. A valid TLS certificate encrypts the connection —
-#       it does NOT restrict who may connect. This is a sandbox, not a hardened
-#       deployment: only enable it if you understand and accept the risk, and
-#       prefer restricting the source IPs (ufw / cloud security group) to the
-#       specific addresses that need access.
+#   ⚠️  SECURITY WARNING: a valid TLS certificate encrypts the connection — it
+#       does NOT restrict who may connect. Any environment you mark `public`
+#       is reachable by anyone, protected only by that application's own
+#       authentication. Prefer restricting source IPs (ufw / cloud security
+#       group) to the addresses that need access.
 #       On AWS you must ALSO open 80/443 in the security group (see the docs).
 public_access: false
 
@@ -184,14 +185,14 @@ ssh_key:  ""                 # Path to .pem (e.g. ./aws/keys/openg2p-sandbox.pem
 # this sandbox can do: publish DNS records, obtain a Let's Encrypt wildcard for
 # *.<environment>.<domain>, and add the matching Nginx server block.
 #
-#   false (default) — stop after infra. Add an environment later with:
+#   true (default)  — after infra, also install the environment named in
+#                     environment-config.yaml (default: "dev")
+#   false           — stop after infra. Add an environment later with:
 #                       ./openg2p-sandbox.sh --config sandbox-config.yaml \
 #                           --stage environment
-#   true            — also install one environment straight after infra
-#                     (requires environment-config.yaml to exist)
 #
 # CLI --skip-environment skips it for a single run.
-install_environment: false
+install_environment: true
 
 # ---------------------------------------------------------------------------
 # Rancher

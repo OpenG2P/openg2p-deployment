@@ -146,7 +146,7 @@ Options:
   --provision-output <file>  Path to provision-output.yaml (auto-detect if blank)
   --stage <name>             What to run: all | infra | environment  (default: all)
   --phase <n>                Pass --phase N through to the on-box script
-                             (infra: 1|2|3 · environment: 1|2)
+                             (infra: 1|2|3 · environment has a single phase)
   --probe                    SSH-probe the node and exit (no changes)
   --check                    Validate config + DNS/TLS prerequisites and exit.
                              Makes no SSH connection and changes nothing —
@@ -819,7 +819,7 @@ main() {
             if [[ "$SKIP_ENV" == "true" ]]; then
                 log_info "Skipping environment stage (--skip-environment)."
                 show_completion_summary false
-            elif ! cfg_bool "install_environment" "false"; then
+            elif ! cfg_bool "install_environment" "true"; then
                 log_info "install_environment=false — environment stage skipped."
                 log_info "Run it later with: $0 --config $(basename "$CONFIG_FILE") --stage environment"
                 log_info "  or: ./roles/environment/run.sh --config environment-config.yaml"
