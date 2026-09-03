@@ -1,0 +1,70 @@
+# =============================================================================
+# OpenG2P Environment Configuration
+# =============================================================================
+# Copy this file to environment-config.yaml and fill in your values:
+#   cp environment-config.example.yaml environment-config.yaml
+#
+# Preferred — from your laptop (SSHes into the VM):
+#   ./roles/environment/run.sh --config environment-config.yaml
+#
+# Or via the full orchestrator:
+#   ./openg2p-sandbox.sh --config sandbox-config.yaml --stage environment
+#
+# Advanced — on the VM after infra is installed:
+#   sudo ./roles/environment/run.sh --config environment-config.yaml
+#
+# Prerequisites:
+#   Base infrastructure must be set up first (roles/infra/run.sh / orchestrator)
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------------
+# Environment name (used as K8s namespace and Rancher project name).
+# Keep it short, lowercase, no hyphens (e.g., dev, qa, staging, pilot).
+# You can run this script multiple times with different environments
+# to create multiple isolated setups on the same cluster.
+environment: "dev"
+
+# Base domain for this environment.
+# Modules will be accessible at: <module>.<base_domain>
+#
+# Leave empty to auto-derive as <environment>.<domain>, where `domain` comes
+# from sandbox-config.yaml — e.g. with domain "mydept.dedyn.io" this yields
+# dev.mydept.dedyn.io → minio.dev.mydept.dedyn.io, superset.dev.mydept.dedyn.io
+#
+# A wildcard A record (*.<base_domain>) and a Let's Encrypt wildcard
+# certificate for *.<base_domain> are created automatically.
+#
+# If you set this explicitly to a domain OUTSIDE `domain`, the DNS records are
+# not managed for you — create them yourself before running.
+base_domain: ""
+
+# ---------------------------------------------------------------------------
+# Infrastructure reference
+# ---------------------------------------------------------------------------
+# Path to the sandbox config file (inherits node_ip, domain, tls.*, etc.)
+# Relative paths are resolved from the automation/sandbox/ directory.
+sandbox_config: "sandbox-config.yaml"
+
+# ---------------------------------------------------------------------------
+# What this creates
+# ---------------------------------------------------------------------------
+# Running the environment stage performs, for this environment only:
+#
+#   • DNS A records   *.<environment>.<domain>  and  <environment>.<domain>
+#                     pointing at the sandbox node
+#   • A Let's Encrypt wildcard certificate covering both
+#   • An Nginx server block (HTTPS termination + HTTP -> HTTPS redirect)
+#   • The Kubernetes namespace
+#   • A Rancher Project (so you can assign users to this environment)
+#   • An Istio Gateway for *.<environment>.<domain>
+#
+# Application charts (openg2p-commons-base / -services, and the product
+# modules) are NOT installed here. Deploy them afterwards — via the Rancher
+# Apps catalogue (the OpenG2P repo is pre-registered), helm directly, or
+# automation/environment/.
+#
+# Adding another environment later: change `environment` above and re-run
+#   ./openg2p-sandbox.sh --config sandbox-config.yaml --stage environment
+# Each environment is tracked separately, so existing ones are left alone.

@@ -697,6 +697,8 @@ phase1_step7_certificates() {
     acme_publish_a_record "rancher" "$node_ip" || return 1
 
     # Single-name cert; the per-environment wildcard is issued in env phase 1.
+    acme_wait_dns_propagation "$rancher_host"
+
     acme_issue_cert "$rancher_host" "$rancher_host" || return 1
 
     mark_step_done "$step_id"

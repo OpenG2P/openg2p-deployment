@@ -105,6 +105,14 @@ tls:
   # Supported for: desec, cloudflare, route53.
   publish_a_records: true
 
+  # Seconds to wait after writing the ACME challenge TXT record before letting
+  # Let's Encrypt validate it. A freshly created name needs time to reach both
+  # deSEC nameservers and clear any short-lived negative cache; validating too
+  # early fails with "No TXT record found" and burns a validation attempt
+  # (Let's Encrypt allows only 5 failures per hostname per hour).
+  # Set to 0 to use acme.sh's adaptive DNS-over-HTTPS check instead.
+  dns_propagation_seconds: 120
+
   # Let's Encrypt STAGING: untrusted certificates, but very generous rate
   # limits. Use it while testing repeated installs, then set false and re-run
   # with --force to obtain real certificates.
@@ -167,6 +175,23 @@ ssh_host: ""                 # Public IP or hostname reachable from your laptop
 ssh_user: "ubuntu"
 ssh_key:  ""                 # Path to .pem (e.g. ./aws/keys/openg2p-sandbox.pem)
 
+
+# ---------------------------------------------------------------------------
+# Environment stage
+# ---------------------------------------------------------------------------
+# An *environment* is a namespace on this sandbox with its own sub-domain and
+# the OpenG2P commons stack. Creating one also does host-level work that only
+# this sandbox can do: publish DNS records, obtain a Let's Encrypt wildcard for
+# *.<environment>.<domain>, and add the matching Nginx server block.
+#
+#   false (default) — stop after infra. Add an environment later with:
+#                       ./openg2p-sandbox.sh --config sandbox-config.yaml \
+#                           --stage environment
+#   true            — also install one environment straight after infra
+#                     (requires environment-config.yaml to exist)
+#
+# CLI --skip-environment skips it for a single run.
+install_environment: false
 
 # ---------------------------------------------------------------------------
 # Rancher

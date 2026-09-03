@@ -3,7 +3,7 @@
 # OpenG2P Sandbox Orchestrator — runs on your laptop
 # =============================================================================
 # SSHes into one Ubuntu 24.04 VM and runs the on-box install scripts
-# (roles/infra/run.sh) remotely.
+# (roles/infra/run.sh, roles/environment/run.sh) remotely.
 #
 # Typical flow:
 #   cd automation/sandbox/aws
@@ -17,7 +17,10 @@
 # environment — a namespace with its own sub-domain and the OpenG2P commons
 # stack — is a separate follow-on step, and several can live on one sandbox:
 #
-#   cd ../environment && ./env-cluster.sh --config env-config.yaml
+#   cp environment-config.example.yaml environment-config.yaml
+#   ./openg2p-sandbox.sh --config sandbox-config.yaml --stage environment
+#
+# Set install_environment: true to run that automatically after infra.
 #
 # Idempotent — node state at /var/lib/openg2p/deploy-state/; laptop markers
 # under ./.state/. Use --force to re-run completed stages.
@@ -50,13 +53,15 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE=""
+ENV_CONFIG=""
 PROVISION_OUTPUT=""
-RUN_STAGE="all"          # all | infra
+RUN_STAGE="all"          # all | infra | environment
 RUN_PHASE=""             # optional phase within infra (1|2|3) or env (1|2)
 FORCE_MODE=false
 DRY_RUN=false
 PROBE_ONLY=false
 CHECK_ONLY=false
+SKIP_ENV=false
 ASSUME_YES=false
 LOG_FILE="${SCRIPT_DIR}/logs/openg2p-sandbox-$(date '+%Y%m%d-%H%M%S').log"
 
@@ -77,6 +82,7 @@ parse_args() {
     while [[ $# -gt 0 ]]; do
         case $1 in
             --config)            CONFIG_FILE="$2";       shift 2 ;;
+            --env-config)        ENV_CONFIG="$2";        shift 2 ;;
             --provision-output)  PROVISION_OUTPUT="$2";  shift 2 ;;
             --stage)             RUN_STAGE="$2";         shift 2 ;;
             --phase)             RUN_PHASE="$2";         shift 2 ;;
@@ -84,6 +90,7 @@ parse_args() {
             --dry-run)           DRY_RUN=true;           shift ;;
             --probe)             PROBE_ONLY=true;        shift ;;
             --check)             CHECK_ONLY=true;        shift ;;
+            --skip-environment)  SKIP_ENV=true;          shift ;;
             --yes|-y)            ASSUME_YES=true;        shift ;;
             --reset-laptop)
                 log_warn "Clearing laptop-side state at ${STATE_DIR}"
@@ -112,14 +119,14 @@ parse_args() {
     [[ "$CONFIG_FILE" = /* ]] || CONFIG_FILE="${SCRIPT_DIR}/${CONFIG_FILE}"
 
     case "$RUN_STAGE" in
-        all|infra) ;;
+        all|infra|environment|env) ;;
         *)
             log_error "Invalid --stage: '${RUN_STAGE}'" \
-                      "Expected one of: all, infra" \
-                      "Environments are installed separately — see automation/environment/"
+                      "Expected one of: all, infra, environment"
             exit 1
             ;;
     esac
+    if [[ "$RUN_STAGE" == "env" ]]; then RUN_STAGE="environment"; fi
 }
 
 show_help() {
@@ -128,21 +135,24 @@ OpenG2P Sandbox Orchestrator
 ================================
 
 Runs on your laptop. SSHes into one Ubuntu 24.04 VM and executes the on-box
-scripts (roles/infra/run.sh) remotely.
+scripts (roles/infra/run.sh, roles/environment/run.sh) remotely.
 
 Usage:
   ./openg2p-sandbox.sh --config sandbox-config.yaml [options]
 
 Options:
   --config <file>            Path to sandbox-config.yaml (required)
+  --env-config <file>        Path to environment-config.yaml (auto-detect if blank)
   --provision-output <file>  Path to provision-output.yaml (auto-detect if blank)
-  --stage <name>             What to run: all | infra  (default: all — the
-                             sandbox installs infrastructure only)
-  --phase <n>                Pass --phase N (1|2|3) through to roles/infra/run.sh
+  --stage <name>             What to run: all | infra | environment  (default: all)
+  --phase <n>                Pass --phase N through to the on-box script
+                             (infra: 1|2|3 · environment: 1|2)
   --probe                    SSH-probe the node and exit (no changes)
   --check                    Validate config + DNS/TLS prerequisites and exit.
                              Makes no SSH connection and changes nothing —
                              use this to confirm you are ready to install.
+  --skip-environment         With --stage all, run infra only (same as
+                             install_environment: false in config for this run)
   --force                    Ignore completion markers, re-run stages
   --dry-run                  Print what would run, do nothing
   --yes, -y                  Skip the interactive prerequisite confirmation
@@ -160,7 +170,8 @@ Before you start — DNS & TLS prerequisites (one-time, manual):
   token or domain is wrong. No inbound connectivity is required.
 
 Config layering:
-  1. sandbox-config.yaml     — your preferences (cluster_name, domain, tls.*)
+  1. sandbox-config.yaml — your preferences (cluster_name, domain, tls.*,
+                               install_environment, …)
   2. provision-output.yaml   — AWS-derived state (node_ip, wireguard.endpoint,
                                ssh_host, ssh_user, ssh_key). Auto-detected next
                                to sandbox-config.yaml; its keys win on conflict.
@@ -172,11 +183,9 @@ Prerequisites on the VM:
 After AWS provisioning:
   cd automation/sandbox
   cp sandbox-config.example.yaml sandbox-config.yaml
+  cp environment-config.example.yaml   environment-config.yaml
   ./openg2p-sandbox.sh --config sandbox-config.yaml --check
   ./openg2p-sandbox.sh --config sandbox-config.yaml
-
-Environments (namespace + Istio + OpenG2P commons) are installed separately:
-  cd ../environment && ./env-cluster.sh --config env-config.yaml
 EOF
 }
 
@@ -295,7 +304,7 @@ stage_and_run_infra() {
         return 0
     fi
 
-    ssh_stage_sandbox "$SCRIPT_DIR" "$CONFIG_FILE" "$PROVISION_OUTPUT"
+    ssh_stage_sandbox "$SCRIPT_DIR" "$CONFIG_FILE" "$PROVISION_OUTPUT" "$ENV_CONFIG"
 
     local remote_cmd="cd ${REMOTE_WORK_DIR} && OPENG2P_ORCHESTRATED=1 bash roles/infra/run.sh --config sandbox-config.yaml"
     if [[ -n "$RUN_PHASE" ]]; then remote_cmd+=" --phase ${RUN_PHASE}"; fi
@@ -312,6 +321,54 @@ mark_orchestrator_done() {
     local marker="$1"
     mkdir -p "${STATE_DIR}/$(dirname "$marker")"
     mark_step_done "$marker"
+}
+
+stage_and_run_environment() {
+    if [[ -z "$ENV_CONFIG" || ! -f "$ENV_CONFIG" ]]; then
+        log_warn "No environment-config.yaml found — skipping environment stage."
+        log_warn "Create one with: cp environment-config.example.yaml environment-config.yaml"
+        log_warn "Then re-run: $0 --config $(basename "$CONFIG_FILE") --stage environment"
+        return 0
+    fi
+
+    # Marker MUST be per-environment. Several environments can live on one
+    # sandbox, and a flat "orchestrator/environment" marker would make the
+    # second one silently skip as "already installed".
+    local env_name
+    env_name=$( (load_config "$ENV_CONFIG" >/dev/null 2>&1; cfg "environment" "") || true )
+    if [[ -z "$env_name" ]]; then
+        log_error "'environment' is not set in $(basename "$ENV_CONFIG")" \
+                  "The environment name is required — it becomes the namespace and the sub-domain" \
+                  "Set environment: \"dev\" (or qa, trial, ...) in that file"
+        exit 1
+    fi
+
+    local marker="orchestrator/environment-${env_name}"
+    if [[ -n "$RUN_PHASE" ]]; then marker="${marker}-phase${RUN_PHASE}"; fi
+
+    if [[ "$FORCE_MODE" != "true" ]] && skip_if_done "$marker" "environment '${env_name}' install"; then
+        log_info "To add a DIFFERENT environment, change 'environment:' in $(basename "$ENV_CONFIG") and re-run."
+        return 0
+    fi
+
+    log_step "ENVIRONMENT" "Install environment '${env_name}' on remote"
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_info "[dry-run] would stage and run: roles/environment/run.sh --config environment-config.yaml${RUN_PHASE:+ --phase $RUN_PHASE}"
+        return 0
+    fi
+
+    # Re-stage so env-config changes are picked up even if infra already ran.
+    ssh_stage_sandbox "$SCRIPT_DIR" "$CONFIG_FILE" "$PROVISION_OUTPUT" "$ENV_CONFIG"
+
+    local remote_cmd="cd ${REMOTE_WORK_DIR} && OPENG2P_ORCHESTRATED=1 bash roles/environment/run.sh --config environment-config.yaml"
+    if [[ -n "$RUN_PHASE" ]]; then remote_cmd+=" --phase ${RUN_PHASE}"; fi
+    if [[ "$FORCE_MODE" == "true" ]]; then remote_cmd+=" --force"; fi
+
+    log_info "Remote: ${remote_cmd}"
+    ssh_run "node" "$remote_cmd"
+
+    mark_orchestrator_done "$marker"
 }
 
 # ---------------------------------------------------------------------------
@@ -359,6 +416,8 @@ _resolve_ssh_key_display() {
 }
 
 show_completion_summary() {
+    # $1 = env_installed: "true" if environment stage ran this session, else "false"
+    local env_installed="${1:-false}"
 
     local node_ip rancher_host domain public_ip ssh_user ssh_key_disp
     local public_access cluster_name rancher_pw wg_subnet wg_server_ip
@@ -408,9 +467,82 @@ show_completion_summary() {
     config_disp=$(basename "$CONFIG_FILE")
 
     local headline="OpenG2P Sandbox Infrastructure — SETUP COMPLETE"
+    local env_status_line="not installed this run"
+    local env_block=""
     local whats_next_block=""
 
-    whats_next_block=$(cat <<NEXTBLOCK
+    if [[ "$env_installed" == "true" ]]; then
+        headline="OpenG2P Sandbox — Infrastructure + Environment COMPLETE"
+        env_status_line="installed (see ENVIRONMENT section below)"
+
+        local env_name="" base_domain=""
+        if [[ -n "${ENV_CONFIG:-}" && -f "$ENV_CONFIG" ]]; then
+            load_config "$ENV_CONFIG"
+            env_name=$(cfg "environment" "")
+            base_domain=$(cfg "base_domain" "")
+        fi
+        [[ -z "$env_name" ]] && env_name="dev"
+        if [[ -z "$base_domain" ]]; then
+            base_domain="${env_name}.${domain}"
+        fi
+
+        env_block=$(cat <<ENVBLOCK
+
+══════════════════════════════════════════════════════════════════════════════
+  ENVIRONMENT — already installed
+══════════════════════════════════════════════════════════════════════════════
+
+  Environment:  ${env_name}
+  Namespace:    ${env_name}
+  Base domain:  ${base_domain}
+
+  In place for it: DNS *.${base_domain}, a Let's Encrypt wildcard certificate,
+  the Nginx server block, the namespace, a Rancher Project and an Istio
+  Gateway. Any hostname under that domain now resolves, terminates TLS and
+  routes into the namespace.
+
+  Applications are NOT installed — deploy them into namespace '${env_name}'
+  via Rancher → Apps (the OpenG2P repo is pre-registered), helm, or
+  automation/environment/.
+
+  Assign users in Rancher:
+      Rancher → Project '${env_name}' → Members → Add Member
+
+ENVBLOCK
+)
+
+        whats_next_block=$(cat <<NEXTBLOCK
+══════════════════════════════════════════════════════════════════════════════
+  WHAT'S NEXT
+══════════════════════════════════════════════════════════════════════════════
+
+  Environment '${env_name}' is already installed — you do NOT need to run the
+  environment stage again for this environment.
+
+  Optional — re-run the same environment (idempotent / force):
+
+      ./openg2p-sandbox.sh --config ${config_disp} --stage environment --force
+      # or: ./roles/environment/run.sh --config environment-config.yaml --force
+
+  Optional — create an additional environment (edit environment-config.yaml first):
+
+      ./roles/environment/run.sh --config environment-config.yaml
+NEXTBLOCK
+)
+    else
+        env_block=$(cat <<ENVBLOCK
+
+══════════════════════════════════════════════════════════════════════════════
+  ENVIRONMENT — not installed
+══════════════════════════════════════════════════════════════════════════════
+
+  Infrastructure is ready. No environment was installed — that is a separate
+  follow-on step, described below.
+
+ENVBLOCK
+)
+
+        whats_next_block=$(cat <<NEXTBLOCK
 ══════════════════════════════════════════════════════════════════════════════
   WHAT'S NEXT
 ══════════════════════════════════════════════════════════════════════════════
@@ -436,37 +568,30 @@ show_completion_summary() {
 
   ── THEN: install an environment ────────────────────────────────────────────
 
-  An environment is a namespace on this cluster with its own sub-domain and the
-  OpenG2P commons stack (PostgreSQL, Kafka, MinIO, Keycloak, eSignet, Superset,
-  ODK, ...). You can create several on one sandbox — dev, qa, pilot.
+  An environment is a namespace on this cluster with its own sub-domain, ready
+  for you to deploy applications into. You can create several on one sandbox —
+  dev, qa, trial — now or at any time later.
 
-  Environments are installed by a SEPARATE tool, not by this script:
+      cp environment-config.example.yaml environment-config.yaml
+      #  edit it: set  environment: "dev"
+      ./openg2p-sandbox.sh --config ${config_disp} --stage environment
 
-      cd ../environment
-      cp env-config.example.yaml env-config.yaml
-      #  edit: environment: "dev"   base_domain: "dev.${domain}"
-      ./env-cluster.sh --config env-config.yaml
+  This sets up, for that environment only:
+      • DNS records  *.dev.${domain}  and  dev.${domain}  ->  ${node_ip}
+      • a Let's Encrypt wildcard certificate (auto-renewing)
+      • an Nginx server block — HTTPS termination + HTTP redirect
+      • the K8s namespace, a Rancher Project and an Istio Gateway
 
-  It creates the namespace, Rancher Project, Istio Gateway and the commons
-  charts. It does NOT set up host-level access, so first do these two on the
-  sandbox VM for each new environment:
+  Applications are NOT installed. Deploy them into the namespace afterwards
+  via Rancher → Apps (the OpenG2P chart repo is already registered), helm,
+  or automation/environment/.
 
-    1) DNS — point the environment's wildcard at this node:
-
-           *.dev.${domain}   A   ${node_ip}
-           dev.${domain}     A   ${node_ip}
-
-    2) TLS + Nginx — obtain a wildcard certificate and serve it:
-
-           ssh -i ${ssh_key_disp} ${ssh_user}@${public_ip}
-           sudo /opt/acme.sh/acme.sh --issue --dns dns_desec \\
-                -d dev.${domain} -d '*.dev.${domain}' \\
-                --server letsencrypt \\
-                --home /opt/acme.sh --config-home /opt/acme.sh/data
-           # then add an Nginx server block for *.dev.${domain}
-           # (copy the pattern in /etc/nginx/sites-available/openg2p-infra.conf)
+  To add ANOTHER environment later, change 'environment' in
+  environment-config.yaml and run the same command again — environments are
+  tracked separately, so existing ones are left untouched.
 NEXTBLOCK
 )
+    fi
 
     cat > "$summary_file" <<EOF
 
@@ -482,6 +607,7 @@ NEXTBLOCK
   Public IP:   ${public_ip}
   Rancher:     https://${rancher_host}
   Access:      ${access_line}
+  Environment: ${env_status_line}
 
   SSH into the VM (from this laptop):
 
@@ -496,6 +622,7 @@ NEXTBLOCK
     │   (also in K8s secret: cattle-system/rancher-secret)                     │
     └──────────────────────────────────────────────────────────────────────────┘
 
+${env_block}
 ══════════════════════════════════════════════════════════════════════════════
   WHAT TO DO NEXT — on your laptop
 ══════════════════════════════════════════════════════════════════════════════
@@ -598,6 +725,20 @@ main() {
         log_info "No provision-output.yaml found — using sandbox-config.yaml only"
     fi
 
+    # Auto-detect env-config
+    if [[ -z "$ENV_CONFIG" ]]; then
+        local auto_env
+        auto_env="$(dirname "$CONFIG_FILE")/environment-config.yaml"
+        if [[ -f "$auto_env" ]]; then
+            ENV_CONFIG="$auto_env"
+        fi
+    else
+        [[ "$ENV_CONFIG" = /* ]] || ENV_CONFIG="${SCRIPT_DIR}/${ENV_CONFIG}"
+    fi
+    if [[ -n "$ENV_CONFIG" && -f "$ENV_CONFIG" ]]; then
+        log_info "Env config: ${ENV_CONFIG}"
+    fi
+
     # --check: answer "am I ready to install?" without connecting anywhere.
     # DNS/TLS problems are fatal; a missing VM/SSH detail is only a warning, so
     # the DNS side can be validated before the machine even exists.
@@ -659,11 +800,36 @@ main() {
         ssh_probe "node"
     fi
 
-    # The sandbox installs INFRASTRUCTURE only. Environments are installed
-    # separately with automation/environment/.
-    stage_and_run_infra
-    pull_laptop_artifacts
-    show_completion_summary
+    case "$RUN_STAGE" in
+        infra)
+            stage_and_run_infra
+            pull_laptop_artifacts
+            show_completion_summary false
+            ;;
+        environment)
+            stage_and_run_environment
+            show_completion_summary true
+            ;;
+        all)
+            stage_and_run_infra
+            pull_laptop_artifacts
+            # Gate env like production's install_environment. Explicit
+            # --stage environment always runs (install later without flipping
+            # the flag). --skip-environment skips for this run only.
+            if [[ "$SKIP_ENV" == "true" ]]; then
+                log_info "Skipping environment stage (--skip-environment)."
+                show_completion_summary false
+            elif ! cfg_bool "install_environment" "false"; then
+                log_info "install_environment=false — environment stage skipped."
+                log_info "Run it later with: $0 --config $(basename "$CONFIG_FILE") --stage environment"
+                log_info "  or: ./roles/environment/run.sh --config environment-config.yaml"
+                show_completion_summary false
+            else
+                stage_and_run_environment
+                show_completion_summary true
+            fi
+            ;;
+    esac
 
     log_success "Orchestrator finished."
 }

@@ -1,4 +1,5 @@
 sandbox-config.yaml
+environment-config.yaml
 helmfile-infra-values.yaml
 provision-output.yaml
 provision-output.yaml.prev

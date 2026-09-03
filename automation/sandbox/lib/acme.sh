@@ -374,6 +374,66 @@ acme_publish_a_record() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Wait for a freshly published name to be visible in PUBLIC DNS
+# ─────────────────────────────────────────────────────────────────────────────
+# Publishing an RRset and immediately asking Let's Encrypt to validate is a
+# race. If any resolver queried the name while it did not exist, it cached the
+# NXDOMAIN for the zone's negative TTL (deSEC: up to 3600s) — and per RFC 8020
+# that also suppresses every name BELOW it, including _acme-challenge.<name>.
+# Let's Encrypt validates from several vantage points with its own resolvers,
+# so one stale cache is enough to fail the order.
+#
+# Failed validations also count against Let's Encrypt's rate limits, so it is
+# worth confirming visibility before spending an attempt.
+#
+# Usage: acme_wait_dns_propagation <fqdn> [timeout_seconds]
+acme_wait_dns_propagation() {
+    local fqdn="$1"
+    local timeout="${2:-900}"
+
+    if ! command -v dig >/dev/null 2>&1; then
+        log_warn "dig not available — skipping the DNS propagation check for ${fqdn}."
+        return 0
+    fi
+
+    log_info "Waiting for ${fqdn} to be visible in public DNS..."
+
+    # Public resolvers with independent caches. All must stop saying NXDOMAIN
+    # before we ask Let's Encrypt to validate.
+    local resolvers="1.1.1.1 8.8.8.8 9.9.9.9"
+    local elapsed=0 interval=15
+
+    while [[ $elapsed -lt $timeout ]]; do
+        local all_ok=true r status
+        for r in $resolvers; do
+            status=$(dig "@${r}" +noall +comments +time=5 +tries=1 A "$fqdn" 2>/dev/null \
+                     | grep -o "status: [A-Z]*" | head -1 | awk '{print $2}')
+            # NOERROR means the name exists (with or without an A record).
+            # NXDOMAIN means a resolver still has the negative answer cached.
+            if [[ "$status" != "NOERROR" ]]; then
+                all_ok=false
+                break
+            fi
+        done
+
+        if [[ "$all_ok" == "true" ]]; then
+            log_success "${fqdn} is visible in public DNS."
+            return 0
+        fi
+
+        [[ $elapsed -eq 0 ]] && log_info "  A resolver still has a stale NXDOMAIN cached; waiting (up to ${timeout}s)..."
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+
+    log_warn "${fqdn} is still not consistently visible after ${timeout}s."
+    log_warn "  Proceeding anyway — validation may fail if a Let's Encrypt resolver"
+    log_warn "  still holds a cached NXDOMAIN. If it does, wait for the zone's"
+    log_warn "  negative TTL to expire (dig SOA ${fqdn#*.} — last field) and re-run."
+    return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # acme.sh installation
 # ─────────────────────────────────────────────────────────────────────────────
 acme_install_client() {
@@ -493,6 +553,24 @@ acme_issue_cert() {
     local -a extra_args=()
     [[ "$(cfg 'tls.staging' 'false')" == "true" ]] && extra_args+=(--staging)
     [[ "${FORCE_MODE:-false}" == "true" ]] && extra_args+=(--force)
+
+    # Settling time between writing the _acme-challenge TXT and letting
+    # Let's Encrypt validate.
+    #
+    # By default acme.sh polls public DNS-over-HTTPS and proceeds as soon as
+    # ONE resolver sees the record. That has proved optimistic here: the DoH
+    # check passed while Let's Encrypt — validating from several vantage
+    # points, against both deSEC nameservers — still reported "No TXT record
+    # found" ~24s after the write. --dnssleep replaces that check with a flat
+    # wait, which is slower but far more reliable on a freshly created name.
+    #
+    # Set tls.dns_propagation_seconds: 0 to restore acme.sh's adaptive check.
+    local dns_sleep
+    dns_sleep=$(cfg 'tls.dns_propagation_seconds' '120')
+    if [[ "$dns_sleep" != "0" ]]; then
+        extra_args+=(--dnssleep "$dns_sleep")
+        log_info "  Allowing ${dns_sleep}s for DNS propagation before validation."
+    fi
 
     log_info "Requesting certificate for: $*"
     log_info "  (DNS-01 via ${hook} — outbound only, no inbound connectivity needed)"
