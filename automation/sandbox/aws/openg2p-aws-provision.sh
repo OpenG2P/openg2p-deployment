@@ -11,7 +11,7 @@
 #   - ../provision-output.yaml is written with node_ip / wireguard.endpoint
 #
 # Then from your laptop run openg2p-sandbox.sh (orchestrator SSHes in
-# and runs roles/infra/run.sh + roles/environment/run.sh on the VM).
+# and runs roles/infra/run.sh on the VM).
 #
 # Usage:
 #   cp aws-config.example.yaml aws-config.yaml
@@ -435,7 +435,6 @@ show_summary() {
 ║  Next — install from your laptop:                                  ║
 ║    cd ..                                                           ║
 ║    cp sandbox-config.example.yaml sandbox-config.yaml              ║
-║    cp environment-config.example.yaml   environment-config.yaml    ║
 ║    # node_ip / wireguard.endpoint / ssh_* come from                ║
 ║    # provision-output.yaml (auto-loaded as an overlay)             ║
 ║    ./openg2p-sandbox.sh --config sandbox-config.yaml \\            ║

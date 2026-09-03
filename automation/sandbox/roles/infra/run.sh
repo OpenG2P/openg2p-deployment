@@ -15,7 +15,7 @@
 # from inside the VPC, even on a public IP. Set public_access: true to expose
 # them to the Internet (security risk; see sandbox-config.example.yaml).
 #
-# After this completes, run roles/environment/run.sh to create environments.
+# Environments are installed separately — see automation/environment/.
 #
 # Preferred — from your laptop:
 #   ./openg2p-sandbox.sh --config sandbox-config.yaml
@@ -240,7 +240,6 @@ show_summary() {
     echo -e "${GREEN}║${NC}  From your laptop:                                           ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}    ./openg2p-sandbox.sh --config sandbox-config.yaml \\${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}      --stage environment                                     ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}  Or on-box: sudo ./roles/environment/run.sh --config environment-config.yaml${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}  Log: ${LOG_FILE}"
     echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"

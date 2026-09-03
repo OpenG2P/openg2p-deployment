@@ -71,15 +71,28 @@ tls:
   #   acmedns    — self-hosted acme-dns via CNAME delegation (advanced)
   dns_provider: "desec"
 
-  # Credentials for the provider selected above — fill in only the relevant set.
-  api_token: ""                  # desec: deSEC API token | cloudflare: API token
-  cf_account_id: ""              # cloudflare only
-  aws_access_key_id: ""          # route53 only (blank = use the EC2 instance role)
-  aws_secret_access_key: ""      # route53 only
-  acmedns_base_url:  "https://auth.acme-dns.io"   # acmedns only
-  acmedns_username:  ""
-  acmedns_password:  ""
-  acmedns_subdomain: ""
+  # ── Credentials ─────────────────────────────────────────────────────────
+  # You only need the ONE set matching your dns_provider above.
+  # For the default (desec) that is a single token — nothing else applies.
+
+  #   desec: an API token from https://desec.io/tokens
+  #   cloudflare: a Cloudflare API token with DNS:Edit on the zone
+  api_token: ""
+
+  # Only if you change dns_provider — uncomment the matching lines:
+  #
+  #   cloudflare
+  # cf_account_id: ""
+  #
+  #   route53  (leave both blank to use the EC2 instance role instead)
+  # aws_access_key_id: ""
+  # aws_secret_access_key: ""
+  #
+  #   acmedns  (self-hosted acme-dns CNAME delegation — advanced)
+  # acmedns_base_url:  "https://auth.acme-dns.io"
+  # acmedns_username:  ""
+  # acmedns_password:  ""
+  # acmedns_subdomain: ""
 
   # Publish A records for the sandbox hostnames into the public DNS zone,
   # pointing at node_ip. This is what makes the names resolve on laptops and
@@ -148,31 +161,12 @@ wireguard:
 # SSH — laptop orchestrator (openg2p-sandbox.sh)
 # ---------------------------------------------------------------------------
 # Used only by the laptop orchestrator to reach the VM. The on-box
-# roles/infra/run.sh / roles/environment/run.sh scripts ignore these keys.
+# roles/infra/run.sh ignores these keys.
 # [AWS] — all three auto-filled from provision-output.yaml when present.
 ssh_host: ""                 # Public IP or hostname reachable from your laptop
 ssh_user: "ubuntu"
 ssh_key:  ""                 # Path to .pem (e.g. ./aws/keys/openg2p-sandbox.pem)
 
-# ---------------------------------------------------------------------------
-# Environment stage (laptop orchestrator)
-# ---------------------------------------------------------------------------
-# Master switch for openg2p-sandbox.sh when run with default --stage all.
-#
-# The sandbox itself is just INFRASTRUCTURE (Kubernetes, Rancher, Nginx,
-# Wireguard, DNS + TLS). An *environment* — a namespace with its own sub-domain
-# and the OpenG2P commons stack — is a separate, follow-on step, and you can
-# create several of them on one sandbox.
-#
-#   false (default) — stop after infra. The install prints how to add an
-#                     environment when you are ready:
-#                       ./openg2p-sandbox.sh --config sandbox-config.yaml \
-#                           --stage environment
-#   true            — also install one environment straight after infra
-#                     (requires environment-config.yaml to exist)
-#
-# CLI --skip-environment also skips the env stage for a single run.
-install_environment: false
 
 # ---------------------------------------------------------------------------
 # Rancher
@@ -187,7 +181,7 @@ rancher:
 
 # Note: Keycloak is NOT installed at the infra level. Rancher uses local
 # authentication. The OpenG2P apps' Keycloak is deployed per-environment by
-# roles/environment/run.sh (at keycloak.<environment domain>), not here.
+# automation/environment/ (at keycloak.<environment domain>), not here.
 
 # ---------------------------------------------------------------------------
 # Observability — OpenTelemetry + Grafana Loki (replaces Fluentd/OpenSearch)

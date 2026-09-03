@@ -11,7 +11,7 @@
 # Rancher uses local authentication. Administrators create additional users
 # directly in Rancher (☰ → Users & Authentication → Users). There is no
 # Keycloak/SAML integration at the infra level — the OpenG2P apps' Keycloak is
-# installed per-environment by roles/environment/run.sh.
+# installed per-environment by automation/environment/.
 #
 # Rancher admin password resolution (no password in config file):
 #   1. Environment variable RANCHER_ADMIN_PASSWORD

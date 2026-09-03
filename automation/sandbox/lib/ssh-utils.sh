@@ -252,12 +252,11 @@ ssh_pull() {
 # ---------------------------------------------------------------------------
 # Stage the full sandbox automation tree + merged configs onto the VM.
 # ---------------------------------------------------------------------------
-# ssh_stage_sandbox <repo_root> <sandbox_config> [provision_output] [env_config]
+# ssh_stage_sandbox <repo_root> <sandbox_config> [provision_output]
 ssh_stage_sandbox() {
     local repo_root="$1"
     local sandbox_config="$2"
     local provision_output="${3:-}"
-    local env_config="${4:-}"
 
     log_info "Staging sandbox automation bundle on remote..."
 
@@ -278,7 +277,6 @@ ssh_stage_sandbox() {
         --exclude 'artifacts/' \
         --exclude 'setup-output/' \
         --exclude 'sandbox-config.yaml' \
-        --exclude 'environment-config.yaml' \
         --exclude 'provision-output.yaml' \
         --exclude 'provision-output.yaml.prev' \
         --exclude '*.pem' \
@@ -313,14 +311,6 @@ ssh_stage_sandbox() {
         # Also ship provision-output so on-box auto-detect still works if
         # someone re-runs scripts directly on the VM later.
         cp "$provision_output" "${stage}/provision-output.yaml"
-    fi
-
-    if [[ -n "$env_config" && -f "$env_config" ]]; then
-        cat "$env_config" > "${stage}/environment-config.yaml"
-        # Point env at the staged sandbox config by relative name.
-        if ! grep -qE '^sandbox_config:' "${stage}/environment-config.yaml"; then
-            echo 'sandbox_config: "sandbox-config.yaml"' >> "${stage}/environment-config.yaml"
-        fi
     fi
 
     ssh_push "node" "${stage}/" "${REMOTE_WORK_DIR}/"

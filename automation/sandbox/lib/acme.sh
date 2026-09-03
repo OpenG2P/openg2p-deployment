@@ -22,7 +22,7 @@
 # single POSIX shell script with no Python/venv dependency, and persists both
 # the DNS credentials and the nginx reload command so renewals are automatic.
 #
-# Sourced by roles/infra/run.sh and roles/environment/run.sh (issuance), and by
+# Sourced by roles/infra/run.sh (issuance) and by
 # openg2p-sandbox.sh (laptop-side preflight). Depends only on cfg, log_*,
 # curl and coreutils — deliberately no jq, so the laptop needs nothing extra.
 # =============================================================================
@@ -81,6 +81,17 @@ acme_export_provider_creds() {
     case "$provider" in
         desec)
             export DEDYN_TOKEN="$(cfg 'tls.api_token' '')"
+            # Fail loudly on an empty token. acme.sh treats an empty env var
+            # exactly like an unset one and silently falls back to whatever it
+            # cached in account.conf on a previous run — which surfaces much
+            # later as a bare "invalid domain" from the zone lookup.
+            if [[ -z "$DEDYN_TOKEN" ]]; then
+                log_error "tls.api_token is empty (dns_provider: desec)" \
+                          "Without it the ACME client silently reuses a token cached from an earlier run" \
+                          "Set tls.api_token in your config, then re-run" \
+                          "grep -A5 '^tls:' <your-config>.yaml"
+                return 1
+            fi
             ;;
         cloudflare)
             export CF_Token="$(cfg 'tls.api_token' '')"
@@ -251,6 +262,29 @@ acme_preflight_desec() {
     case "$http_code" in
         200)
             log_success "  deSEC token valid; domain '${domain}' found."
+            # acme.sh's deSEC plugin detects the zone by LISTING all domains
+            # (GET /domains/) and string-matching the name — a different
+            # permission from the single-domain read above. A token restricted
+            # by deSEC token policies can pass the read and still fail the
+            # list, which surfaces much later as a bare "invalid domain".
+            # Check it here instead.
+            local list_body list_code
+            list_body=$(curl -sS --max-time 20 -w '\n%{http_code}' \
+                -H "Authorization: Token ${token}" \
+                "${DESEC_API}/domains/" 2>/dev/null) || {
+                log_warn "  Could not list deSEC domains — skipping the zone-detection check."
+                return 0
+            }
+            list_code=$(echo "$list_body" | tail -1)
+            if [[ "$list_code" != "200" ]] || ! echo "$list_body" | sed '$d' | grep -q "\"name\": *\"${domain}\""; then
+                log_error "deSEC token cannot LIST domains (HTTP ${list_code})" \
+                          "The token reads '${domain}' fine, but the ACME client detects the zone via GET ${DESEC_API}/domains/ and that call does not return it" \
+                          "This is usually a token restricted by deSEC token policies. Create an UNRESTRICTED token at https://desec.io/tokens and set tls.api_token to it" \
+                          "curl -s -H 'Authorization: Token <token>' ${DESEC_API}/domains/" \
+                          "https://desec.io/tokens"
+                return 1
+            fi
+            log_success "  deSEC token can list domains (zone detection will work)."
             return 0
             ;;
         401|403)
@@ -332,7 +366,7 @@ acme_publish_a_record() {
     fi
 
     log_error "deSEC rejected the A record for ${fqdn} (HTTP ${http_code})" \
-              "Response: $(echo "$body" | head -n -1 | head -c 300)" \
+              "Response: $(echo "$body" | sed '$d' | head -c 300)" \
               "Verify tls.api_token has write access to '${domain}', then re-run" \
               "" \
               "https://desec.io/domains"
@@ -398,6 +432,14 @@ acme_install_client() {
     # acme.sh defaults to ZeroSSL — pin the default CA to Let's Encrypt.
     "$ACME_BIN" --set-default-ca --server letsencrypt \
         --home "$ACME_HOME" --config-home "$ACME_CONFIG_HOME" > /dev/null 2>&1 || true
+
+    # Drop any DNS credential cached by an earlier run. The config file is the
+    # single source of truth; a stale cached token would otherwise win whenever
+    # the env var is empty and fail confusingly during the zone lookup.
+    if [[ -f "${ACME_CONFIG_HOME}/account.conf" ]]; then
+        sed -i '/^SAVED_DEDYN_TOKEN=/d;/^SAVED_CF_Token=/d;/^SAVED_CF_Account_ID=/d;/^SAVED_AWS_ACCESS_KEY_ID=/d;/^SAVED_AWS_SECRET_ACCESS_KEY=/d' \
+            "${ACME_CONFIG_HOME}/account.conf" 2>/dev/null || true
+    fi
 
     # Credentials land in account.conf; acme.sh sets 600/700 at creation, but
     # tighten defensively in case the directories pre-existed.

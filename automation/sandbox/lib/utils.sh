@@ -3,7 +3,7 @@
 # OpenG2P Deployment Automation — Utility Library
 # =============================================================================
 # Shared functions for logging, error handling, state management, and checks.
-# Sourced by roles/infra/run.sh and roles/environment/run.sh — do not run directly.
+# Sourced by roles/infra/run.sh — do not run directly.
 # =============================================================================
 
 set -euo pipefail
