@@ -379,7 +379,9 @@ write_provision_output() {
 
 # ─── Suggested sandbox-config.yaml values (auto-loaded as overlay) ─────────
 node_ip:   "${private_ip}"
-node_name: "${instance_name}"
+# node_name is deliberately NOT emitted. It is a user preference set in
+# sandbox-config.yaml, not AWS-derived state, and this overlay wins on
+# conflict — emitting it would silently override what the operator chose.
 
 wireguard:
   endpoint: "${public_ip}"
