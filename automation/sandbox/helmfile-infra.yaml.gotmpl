@@ -525,7 +525,12 @@ releases:
                   restartPolicy: OnFailure
                   containers:
                     - name: mc
-                      image: minio/mc
+                      # docker.io/minio/mc is no longer publicly pullable;
+                      # use the same quay.io image the Loki MinIO chart uses.
+                      image: quay.io/minio/mc:RELEASE.2024-04-18T16-45-29Z
+                      env:
+                        - name: HOME
+                          value: /tmp
                       command: ["sh", "-c"]
                       args:
                         - >
