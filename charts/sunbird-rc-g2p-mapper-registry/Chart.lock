@@ -1,6 +1,0 @@
-dependencies:
-- name: sunbird-rc-core
-  repository: ""
-  version: 0.1.0
-digest: sha256:24f4549722655b1465bab18e796ed8431b8d7fbd10d2068ff672eff3ece06f67
-generated: "2024-02-02T02:10:39.540261102+05:30"

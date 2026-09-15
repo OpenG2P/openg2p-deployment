@@ -1,9 +1,0 @@
-primary:
-  persistence:
-    size: 1Gi
-
-auth:
-  usernames:
-  - mojaloop
-  databases:
-  - mlos

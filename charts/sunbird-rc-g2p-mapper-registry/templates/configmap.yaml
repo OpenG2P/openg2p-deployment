@@ -1,9 +1,0 @@
-{{- $schemas := .Files.Glob "schemas/*" }}
-{{ if $schemas }}
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: {{ .Release.Name }}-schemas
-data:
-  {{ (.Files.Glob "schemas/*").AsConfig | indent 2 }}
-{{ end }}

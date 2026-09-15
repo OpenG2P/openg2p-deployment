@@ -1,9 +1,0 @@
-dependencies:
-- name: postgresql
-  repository: oci://registry-1.docker.io/bitnamicharts
-  version: 15.4.0
-- name: elasticsearch
-  repository: oci://registry-1.docker.io/bitnamicharts
-  version: 19.21.2
-digest: sha256:c49b31ac5652981c2d776fa82098b7eb67e2ab0e3b4d92fb9275441e098a352c
-generated: "2024-05-26T01:09:40.821671732+05:30"
