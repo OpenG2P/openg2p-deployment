@@ -56,4 +56,4 @@ Commons installs from your laptop).
 
 Helm chart repo default (see `env-config.example.yaml`):
 
-`https://gitlab.com/api/v4/projects/84460547/packages/helm/stable`
+`https://openg2p.github.io/openg2p-helm/rancher`

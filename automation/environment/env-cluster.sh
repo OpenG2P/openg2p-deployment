@@ -99,19 +99,15 @@ EOF
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-# Helm repo alias for the commons charts.
-#
-# Deliberately NOT plain `openg2p`: helm repo aliases live in the user's global
-# helm config, and the infra automation (single-node, production) points
-# `openg2p` at the GitHub chart repo. Re-pointing that alias here would silently
-# break those installs, so the commons charts get their own alias.
+# Helm repo for the commons charts — same GitHub Rancher index used by
+# production scaffolding / Rancher Apps UI.
 commons_repo_alias() {
-    cfg "commons_base.chart_repo_alias" "openg2p-gitlab"
+    cfg "commons_base.chart_repo_alias" "openg2p"
 }
 
 commons_repo_url() {
     cfg "commons_base.chart_repo" \
-        "https://gitlab.com/api/v4/projects/84460547/packages/helm/stable"
+        "https://openg2p.github.io/openg2p-helm/rancher"
 }
 
 get_chart_ref() {
