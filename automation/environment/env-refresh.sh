@@ -130,15 +130,15 @@ fetch_recent_versions() {
         | head -8
 }
 
-# Helm repo alias for the commons charts. Must match what env-cluster.sh uses,
-# and is deliberately not plain `openg2p` (the infra scripts own that alias).
+# Helm repo for the commons charts. Must match what env-cluster.sh uses —
+# same GitHub Rancher index as production / Rancher Apps UI.
 commons_repo_alias() {
-    cfg "commons_base.chart_repo_alias" "openg2p-gitlab"
+    cfg "commons_base.chart_repo_alias" "openg2p"
 }
 
 commons_repo_url() {
     cfg "commons_base.chart_repo" \
-        "https://gitlab.com/api/v4/projects/84460547/packages/helm/stable"
+        "https://openg2p.github.io/openg2p-helm/rancher"
 }
 
 # Confirms a version actually exists in the Helm repo for BOTH charts.
