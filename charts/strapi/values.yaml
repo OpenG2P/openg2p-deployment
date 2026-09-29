@@ -8,13 +8,13 @@ image:
 service:
   type: ClusterIP
   port: 1337
-  
+
 istio:
   enabled: true
-  
+
   gatewayName: "internal"
-      
-     
+
+
 
 ingress:
   enabled: false

@@ -1,26 +1,31 @@
+{{- if and .Values.ws.istio.enabled .Values.ws.istio.virtualservice.enabled }}
+{{- $wsRoot := include "common.tplvalues.render" (dict "value" .Values.dashboard.wsExternalEndpoint "context" $) }}
+{{- $wsHost := $wsRoot | trimPrefix "https://" | trimPrefix "http://" | trimSuffix "/" }}
+{{- $gateway := include "common.tplvalues.render" (dict "value" .Values.ws.istio.virtualservice.gateway "context" $) }}
+{{- $destination := include "common.tplvalues.render" (dict "value" .Values.ws.istio.virtualservice.destination "context" $) }}
 apiVersion: networking.istio.io/v1
 kind: VirtualService
 metadata:
-  name: {{ printf "%s-%s" .Release.Name "ws"  }}
+  name: {{ include "novu.componentName" (dict "context" $ "component" "ws")}}
   namespace: {{ include "common.names.namespace" . | quote }}
   labels: {{- include "common.labels.standard" . | nindent 4 }}
 spec:
   hosts:
-    - {{ (trimPrefix "https://" (trimPrefix "http://" .Values.web.wsExternalEndpoint)) | trimSuffix "/" }}
+    - {{ $wsHost }}
   gateways:
-    - {{ .Values.ws.istio.virtualservice.gateway }}
+    - {{ $gateway }}
   http:
     - headers:
         request:
           set:
-            x-forwarded-host: "{{ (trimPrefix "https://" (trimPrefix "http://" .Values.web.wsExternalEndpoint)) | trimSuffix "/" }}"
+            x-forwarded-host: {{ $wsHost | quote }}
             x-forwarded-proto: "https"
       match:
         - authority:
-            exact: {{ (trimPrefix "https://" (trimPrefix "http://" .Values.web.wsExternalEndpoint)) | trimSuffix "/" }}
+            exact: {{ $wsHost }}
       route:
         - destination:
-            host: {{ .Values.ws.istio.virtualservice.destination }}
+            host: {{ $destination }}
             port:
               number: {{ .Values.ws.istio.virtualservice.destinationPort }}
       {{- if .Values.ws.istio.virtualservice.prefix }}
@@ -32,3 +37,4 @@ spec:
       rewrite:
         uri: {{ .Values.ws.istio.virtualservice.rewriteUri }}
       {{- end }}
+{{- end }}

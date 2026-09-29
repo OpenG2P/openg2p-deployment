@@ -1,26 +1,31 @@
+{{- if and .Values.api.istio.enabled .Values.api.istio.virtualservice.enabled }}
+{{- $apiRoot := include "common.tplvalues.render" (dict "value" .Values.api.env.API_ROOT_URL "context" $) }}
+{{- $apiHost := $apiRoot | trimPrefix "https://" | trimPrefix "http://" | trimSuffix "/" }}
+{{- $gateway := include "common.tplvalues.render" (dict "value" .Values.api.istio.virtualservice.gateway "context" $) }}
+{{- $destination := include "common.tplvalues.render" (dict "value" .Values.api.istio.virtualservice.destination "context" $) }}
 apiVersion: networking.istio.io/v1
 kind: VirtualService
 metadata:
-  name: {{ printf "%s-%s" .Release.Name "api"  }}
+  name: {{ include "novu.componentName" (dict "context" $ "component" "api")}}
   namespace: {{ include "common.names.namespace" . | quote }}
   labels: {{- include "common.labels.standard" . | nindent 4 }}
 spec:
   hosts:
-    - {{ (trimPrefix "https://" (trimPrefix "http://" .Values.api.env.API_ROOT_URL)) | trimSuffix "/" }}
+    - {{ $apiHost }}
   gateways:
-    - {{ .Values.api.istio.virtualservice.gateway }}
+    - {{ $gateway }}
   http:
     - headers:
         request:
           set:
-            x-forwarded-host: "{{ (trimPrefix "https://" (trimPrefix "http://" .Values.api.env.API_ROOT_URL)) | trimSuffix "/" }}"
+            x-forwarded-host: {{ $apiHost | quote }}
             x-forwarded-proto: "https"
       match:
         - authority:
-            exact: {{ (trimPrefix "https://" (trimPrefix "http://" .Values.api.env.API_ROOT_URL)) | trimSuffix "/" }}
+            exact: {{ $apiHost }}
       route:
         - destination:
-            host: {{ .Values.api.istio.virtualservice.destination }}
+            host: {{ $destination }}
             port:
               number: {{ .Values.api.istio.virtualservice.destinationPort }}
       {{- if .Values.api.istio.virtualservice.prefix }}
@@ -32,3 +37,4 @@ spec:
       rewrite:
         uri: {{ .Values.api.istio.virtualservice.rewriteUri }}
       {{- end }}
+{{- end }}

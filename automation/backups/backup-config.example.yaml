@@ -260,5 +260,6 @@ versions:
   # operator app version (there is no plain "7.0.0" chart). Choose one whose
   # rancher-version / kube-version annotations match your cluster:
   #   helm search repo rancher-charts/rancher-backup --versions
-  # 107.1.5+up8.1.5 → Rancher 2.12.x, Kubernetes 1.31–1.33.
-  rancher_backup_chart: "107.1.5+up8.1.5"
+  # 110.x matches Rancher 2.15 / RKE2 1.35. Older 107.x ships kuberlr-kubectl
+  # v5 whose post-upgrade patch-sa Job often fails (BackoffLimitExceeded).
+  rancher_backup_chart: "110.0.1+up11.0.2"

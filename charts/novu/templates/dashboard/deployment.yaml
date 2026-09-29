@@ -1,0 +1,54 @@
+{{- if .Values.dashboard.enabled }}
+apiVersion: {{ include "common.capabilities.deployment.apiVersion" . }}
+kind: Deployment
+metadata:
+  name: {{ include "novu.componentName" (dict "context" $ "component" "dashboard")}}
+  namespace: {{ include "common.names.namespace" . | quote }}
+  labels: {{- include "common.labels.standard" . | nindent 4 }}
+    app.kubernetes.io/component: {{ include "novu.componentName" (dict "context" $ "component" "dashboard")}}
+    {{- if .Values.commonLabels }}
+    {{- include "common.tplvalues.render" ( dict "value" .Values.commonLabels "context" $ ) | nindent 4 }}
+    {{- end }}
+  {{- if .Values.commonAnnotations }}
+  annotations: {{- include "common.tplvalues.render" ( dict "value" .Values.commonAnnotations "context" $ ) | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.dashboard.replicaCount }}
+  selector:
+    matchLabels: {{- include "common.labels.matchLabels" . | nindent 6 }}
+      app.kubernetes.io/component: {{ include "novu.componentName" (dict "context" $ "component" "dashboard")}}
+  template:
+    metadata:
+      labels: {{- include "common.labels.standard" . | nindent 8 }}
+        app.kubernetes.io/component: {{ include "novu.componentName" (dict "context" $ "component" "dashboard")}}
+        {{- if .Values.commonLabels }}
+        {{- include "common.tplvalues.render" ( dict "value" .Values.commonLabels "context" $ ) | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ template "novu.serviceAccountName" . }}
+      {{- include "novu.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: novu-dashboard
+          image: {{ template "novu-dashboard.image" . }}
+          imagePullPolicy: {{ .Values.dashboard.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.dashboard.port }}
+          env:
+            - name: VITE_API_HOSTNAME
+              value: {{ include "common.tplvalues.render" (dict "value" .Values.dashboard.apiExternalEndpoint "context" $) | quote }}
+            - name: VITE_WEBSOCKET_HOSTNAME
+              value: {{ include "common.tplvalues.render" (dict "value" .Values.dashboard.wsExternalEndpoint "context" $) | quote }}
+            {{- if .Values.dashboard.extraEnvVars }}
+            {{- include "common.tplvalues.render" (dict "value" .Values.dashboard.extraEnvVars "context" $) | nindent 12 }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: {{ .Values.dashboard.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.dashboard.readinessProbe.periodSeconds }}
+          {{- if .Values.dashboard.resources }}
+          resources: {{- toYaml .Values.dashboard.resources | nindent 12 }}
+          {{- end }}
+{{- end }}

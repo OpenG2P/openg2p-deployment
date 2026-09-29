@@ -8,7 +8,7 @@
 # Safety boundaries (never touched by this script):
 #   • VPC, subnets, security groups (pre-existing / shared)
 #   • Key pairs that were selected as "existing"
-#   • Production instances (ManagedBy=openg2p-aws-provision)
+#   • Other cluster instances (ManagedBy=openg2p-aws-provision)
 #
 # Target resolution (first match wins):
 #   1. --instance-id <id>
@@ -102,7 +102,7 @@ What gets deleted:
 What is NEVER deleted:
   • Security groups, VPCs, subnets (shared / pre-existing)
   • Existing key pairs you selected during provisioning
-  • Production cluster nodes (ManagedBy=openg2p-aws-provision)
+  • Other cluster nodes (ManagedBy=openg2p-aws-provision)
 EOF
 }
 
@@ -227,7 +227,7 @@ EOF
 ║  Preserved (intentionally):                                        ║
 ║    • Security groups / VPC / subnets                               ║
 ║    • Key pairs                                                     ║
-║    • Production cluster instances                                  ║
+║    • Other cluster instances (ManagedBy=openg2p-aws-provision)      ║
 ║                                                                    ║
 ║  Re-provision:                                                     ║
 ║    ./openg2p-aws-provision.sh --config aws-config.yaml             ║

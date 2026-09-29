@@ -42,7 +42,7 @@ DRY_RUN=false
 SSH_WAIT_TIMEOUT=600
 LOG_FILE="${SCRIPT_DIR}/logs/aws-add-node-$(date '+%Y%m%d-%H%M%S').log"
 
-# Reuse production logging + cfg() and AWS helpers.
+# Shared logging + cfg() and AWS helpers.
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/../../production/lib/shared/utils.sh"
 # shellcheck disable=SC1091
@@ -95,7 +95,7 @@ Options:
   --ssh-timeout <sec>  SSH wait timeout (default: 600)
   --force              If an add-node instance with the same Name already exists
                        (e.g. a previous run failed mid-way), terminate it first
-                       and launch a fresh one. Refuses to touch production nodes.
+                       and launch a fresh one. Refuses to touch other cluster nodes.
   --dry-run            Resolve selection (VPC/SG/AMI/…) and print what would be
                        launched; do not create, terminate, or write output.
   --help, -h           Show this help
@@ -115,7 +115,7 @@ Interactive prompts (when the matching config key is blank):
 
 Selections are written back to aws-config.yaml so subsequent runs are stable.
 
-Teardown (this instance only — never SGs / VPC / production nodes):
+Teardown (this instance only — never SGs / VPC / other cluster nodes):
   ./openg2p-aws-destroy.sh --config aws-config.yaml
 
 After provisioning, provision-output.yaml is written next to this script.

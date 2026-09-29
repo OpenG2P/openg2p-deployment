@@ -156,33 +156,8 @@ nfs_install() {
 
     # Ensure the storage node exports ${export_root} to the backup host,
     # read-only, with no_root_squash so root on the backup host can read
-    # root-owned files (restic runs as root and must see everything). The
-    # production install typically exports only to the compute node — without
-    # this the mount below hangs/fails.
-    log_info "Ensuring storage node exports ${export_root} to backup host ${backup_ip} (ro)..."
-    ssh_run "storage" "set -euo pipefail
-        install -d -m 0755 '${export_root}'
-        line='${export_root} ${backup_ip}(ro,sync,no_subtree_check,no_root_squash)'
-        touch /etc/exports
-        if ! grep -qF '${backup_ip}' /etc/exports; then
-            echo \"\$line\" >> /etc/exports
-        fi
-        exportfs -ra
-        # Make sure the export path is actually served.
-        exportfs -v | grep -q '${export_root}' || { echo 'export not active'; exit 1; }
-
-        # Open the storage firewall to the backup host. The production storage
-        # ufw (roles/storage/phase1.sh storage_configure_ufw) allows NFS ONLY
-        # from the compute node; the backup host is a 4th node not covered there,
-        # so without these rules its mount is silently dropped and fails with
-        # 'mount.nfs: Connection timed out'. Open NFSv4 (2049) + rpcbind (111,
-        # for NFSv3 negotiation). Only touch ufw if it's active; ufw skips
-        # duplicate rules so this is idempotent.
-        if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
-            ufw allow from ${backup_ip} to any port 2049 proto tcp comment 'NFS from backup host'
-            ufw allow from ${backup_ip} to any port 111  proto tcp comment 'rpcbind from backup host'
-            ufw allow from ${backup_ip} to any port 111  proto udp comment 'rpcbind from backup host'
-        fi"
+    # root-owned files (restic runs as root and must see everything).
+    _nfs_ensure_storage_export "$export_root" "$backup_ip" || return 1
 
     log_info "Mounting NFS export ${storage_ip}:${export_root} read-only on backup host..."
     ssh_run "backup" "set -euo pipefail
@@ -203,13 +178,47 @@ nfs_install() {
                 restic init
         fi"
 
-    # Trust storage node's NFS export from backup host. Storage exports to
-    # the private subnet by default — assume that's still in effect. If not,
-    # the operator must add backup_private_ip to /etc/exports on storage.
-    log_info "If the NFS export is not already permissive to the backup subnet,"
-    log_info "add ${storage_ip}:${export_root} → backup_private_ip in /etc/exports on storage."
-
     log_success "NFS read-only mount established + restic repo ready."
+}
+
+# _nfs_ensure_storage_export — storage node must export RO to the backup host
+# and (if ufw is active) allow NFS ports. Idempotent; safe to call from nfs_run
+# after storage rebuild / firewall reset (common post-upgrade failure mode).
+_nfs_ensure_storage_export() {
+    local export_root="$1"
+    local backup_ip="$2"
+    log_info "Ensuring storage exports ${export_root} to backup host ${backup_ip} (ro)..."
+    ssh_run "storage" "set -euo pipefail
+        install -d -m 0755 '${export_root}'
+        line='${export_root} ${backup_ip}(ro,sync,no_subtree_check,no_root_squash)'
+        touch /etc/exports
+        if ! grep -qF '${backup_ip}' /etc/exports; then
+            echo \"\$line\" >> /etc/exports
+        fi
+        exportfs -ra
+        exportfs -v | grep -q '${export_root}' || { echo 'export not active' >&2; exit 1; }
+
+        if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+            ufw allow from ${backup_ip} to any port 2049 proto tcp comment 'NFS from backup host'
+            ufw allow from ${backup_ip} to any port 111  proto tcp comment 'rpcbind from backup host'
+            ufw allow from ${backup_ip} to any port 111  proto udp comment 'rpcbind from backup host'
+        fi
+
+        # Confirm NFS server is listening (nfs-kernel-server / nfs-server).
+        if systemctl is-active --quiet nfs-server 2>/dev/null \
+           || systemctl is-active --quiet nfs-kernel-server 2>/dev/null; then
+            true
+        else
+            systemctl start nfs-kernel-server 2>/dev/null \
+              || systemctl start nfs-server 2>/dev/null \
+              || { echo 'NFS server service not active' >&2; systemctl status nfs-kernel-server nfs-server 2>&1 | head -40 >&2; exit 1; }
+        fi
+    " || {
+        log_error "Storage NFS export/firewall check failed for ${backup_ip}" \
+                  "mount.nfs Connection timed out usually means ufw/security-group or nfs-server down" \
+                  "Verify: ssh storage 'exportfs -v; ufw status; systemctl status nfs-kernel-server'"
+        return 1
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -218,9 +227,16 @@ nfs_install() {
 nfs_run() {
     local started; started="$(ts_utc)"
     local repo_root="$(cfg backup_repo_root /var/lib/openg2p-backup)"
+    local export_root="$(cfg nfs.export_root /srv/nfs/openg2p)"
+    local storage_ip="$(cfg storage_private_ip)"
+    local backup_ip="$(cfg backup_private_ip)"
     local restic_pass_file
     restic_pass_file="$(ensure_passphrase_file restic_passphrase_file restic false)"
     local restic_pass; restic_pass="$(< "$restic_pass_file")"
+
+    # Re-assert export + firewall every run (storage rebuild / upgrade often
+    # drops backup-host from /etc/exports and ufw → Connection timed out).
+    _nfs_ensure_storage_export "$export_root" "$backup_ip" || return 1
 
     # 1. Generate PVC sidecar manifest by joining `kubectl get pv -o json`
     #    with the live NFS file listing. This bridges UUID dirs back to apps.
@@ -234,7 +250,12 @@ nfs_run() {
     exclude_args=$(_nfs_render_exclude_args)
 
     local rc=0
-    _nfs_ensure_ro_mount "$(cfg storage_private_ip)" "$(cfg nfs.export_root /srv/nfs/openg2p)"
+    _nfs_ensure_ro_mount "$storage_ip" "$export_root" || {
+        log_error "NFS mount failed for ${storage_ip}:${export_root}" \
+                  "From backup host: showmount -e ${storage_ip}; ping ${storage_ip}" \
+                  "Also check AWS SG / VPC NACL allows TCP 2049 from backup → storage"
+        return 1
+    }
     local nfs_mp
     nfs_mp="$(_nfs_resolve_mount_point)"
 

@@ -164,4 +164,3 @@ metrics_install_prometheusrule() {
     "
     log_success "PrometheusRule applied in ${ns}"
 }
-

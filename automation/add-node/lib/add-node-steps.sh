@@ -120,7 +120,7 @@ step2_tools() {
     # kubectl only useful on server (control-plane) nodes — agents don't get a kubeconfig
     local role; role=$(cfg "node_role")
     if [[ "$role" == "server" ]]; then
-        local kube_version="v1.33.6"
+        local kube_version="v1.35.8"
         if ! kubectl version --client &>/dev/null; then
             log_info "Installing kubectl ${kube_version}..."
             curl -sLO "https://dl.k8s.io/release/${kube_version}/bin/linux/amd64/kubectl" || {
@@ -228,7 +228,7 @@ step4_rke2() {
     local role;         role=$(cfg "node_role")
     local server_url;   server_url=$(cfg "server_url")
     local rke2_token;   rke2_token=$(cfg "rke2_token")
-    local rke2_version; rke2_version=$(cfg "rke2_version" "v1.33.6+rke2r1")
+    local rke2_version; rke2_version=$(cfg "rke2_version" "v1.35.8+rke2r1")
     local node_name;    node_name=$(cfg "node_name")
     local node_ip;      node_ip=$(cfg "node_ip")
 

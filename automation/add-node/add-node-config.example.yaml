@@ -4,9 +4,29 @@
 # Copy this file to add-node-config.yaml and fill in your values:
 #   cp add-node-config.example.yaml add-node-config.yaml
 #
-# Then run ON THE NEW NODE (as root):
-#   sudo ./openg2p-add-node.sh --config add-node-config.yaml
+# Run from your ADMIN LAPTOP (no need to SSH into the node):
+#   ./openg2p-add-node.sh --config add-node-config.yaml
+#
+# After AWS provisioning, ssh_* / node_ip / node_name are often filled from
+# aws/provision-output.yaml automatically when that file exists.
 # =============================================================================
+
+# ---------------------------------------------------------------------------
+# SSH — how this laptop reaches the NEW node
+# ---------------------------------------------------------------------------
+# Required for the laptop orchestrator.
+ssh_host: ""          # public IP or reachable hostname of the NEW node
+ssh_user: "ubuntu"
+ssh_key:  ""          # local path to .pem  (e.g. ~/sshkeys/openg2p-aws3.pem)
+
+# ---------------------------------------------------------------------------
+# SSH — control-plane (primary) — used by openg2p-remove-node.sh / verify
+# ---------------------------------------------------------------------------
+# Private IP works if you jump via VPN/Wireguard; otherwise use the RP public
+# IP only if kubectl on primary is reachable that way (usually private + VPN).
+primary_ssh_host: ""
+primary_ssh_user: "ubuntu"
+primary_ssh_key:  ""          # defaults to ssh_key when blank
 
 # ---------------------------------------------------------------------------
 # Existing cluster — where this node will join
@@ -14,38 +34,16 @@
 # URL of the RKE2 supervisor on ANY existing control-plane (server) node.
 # Format: https://<server-ip-or-host>:9345
 #
-# Which node to point at:
-#   • Any node running 'rke2-server' works — they are peers, not primary/secondary.
-#     There is no "master" node in RKE2; all control-plane nodes are equivalent
-#     and all run the supervisor on port 9345.
-#   • If your cluster has only one control-plane node (typical after a single-node
-#     install), that is your only choice. As you add more control-plane nodes
-#     with --role server, any of them becomes a valid target here.
-#   • In HA setups, point this at a load balancer fronting all server nodes so
-#     joins stay robust when individual servers are down.
-#   • Worker (rke2-agent) nodes do NOT run the supervisor — do not point here.
-#
-# To confirm a candidate node IS a control-plane node, SSH to it and check:
-#     systemctl is-active rke2-server          # must return "active"
-#     sudo ls /var/lib/rancher/rke2/server/token   # file must exist
-#
-# Protocol/IP:
-#   • Always https (the supervisor speaks TLS only; the token authenticates).
-#   • Use the PRIVATE IP when the new node is on the same VPC/subnet (normal case).
-#     Public IP only needed if the new node is outside that network.
-#
-# The port is always 9345 (RKE2 supervisor), NOT 6443 (which is the K8s API).
+# Use the PRIVATE IP when the new node is on the same VPC (normal case).
+# Port is always 9345 (RKE2 supervisor), NOT 6443.
 server_url: ""
 
-# Cluster-wide RKE2 join token.
-# On an existing control-plane node, get it with:
+# Cluster-wide RKE2 join token (from a control-plane node):
 #   sudo cat /var/lib/rancher/rke2/server/node-token
-# (Full value, including the "K10..." prefix.)
 rke2_token: ""
 
-# RKE2 version — MUST match the version running on the existing cluster.
-# Check on primary: rke2 --version
-rke2_version: "v1.33.6+rke2r1"
+# RKE2 version — MUST match the existing cluster (rke2 --version).
+rke2_version: "v1.35.8+rke2r1"
 
 # ---------------------------------------------------------------------------
 # This new node
@@ -53,39 +51,17 @@ rke2_version: "v1.33.6+rke2r1"
 # Private IP of this node (used by RKE2, firewall rules, kubelet).
 node_ip: ""
 
-# Unique name for this node in the cluster (visible in 'kubectl get nodes').
-# Must not collide with an existing node.
+# Unique name for this node in the cluster (kubectl get nodes).
 node_name: "node2"
 
-# Role: "server" (control-plane) or "worker" (agent / data-plane only).
-# Leave empty to be prompted interactively, or override with --role on CLI.
-#
-#   server — Joins etcd, runs apiserver, participates in control-plane HA.
-#            Choose this for true HA (needs odd number of servers: 3, 5, ...).
-#   worker — Runs application pods only. Most common choice when scaling.
+# Role: "server" (control-plane) or "worker" (agent). Leave empty to prompt.
 node_role: ""
 
 # ---------------------------------------------------------------------------
 # Network
 # ---------------------------------------------------------------------------
-# VPC / private network CIDR used for inter-node firewall rules.
-# If empty, the script derives a /16 from node_ip (e.g. 10.0.0.6 → 10.0.0.0/16).
-# Override explicitly if your VPC uses a different mask.
+# VPC / private network CIDR for inter-node firewall rules.
 vpc_subnet: ""
 
-# Wireguard peer subnet — MUST match the primary's wireguard.subnet setting.
-# Used only for ufw rules (Wireguard itself is NOT installed on this node).
-#
-# How to find it (on the primary / any existing control-plane node):
-#   a) From the infra config that was used to install the primary:
-#        grep -A1 '^wireguard:' /path/to/infra-config.yaml
-#   b) From the running Wireguard interface:
-#        ip -br addr show wg0
-#        # e.g. "wg0  UNKNOWN  10.15.0.1/16"  →  subnet is 10.15.0.0/16
-#   c) From any generated peer config:
-#        sudo cat /etc/wireguard/peers/peer1/peer1.conf
-#        # First CIDR in the AllowedIPs line under [Peer]
-#
-# Default if the primary was installed without customising this: 10.15.0.0/16
-# (which is what the example keeps). Most users can leave this as-is.
+# Wireguard peer subnet — MUST match the RP wireguard.subnet (default below).
 wireguard_subnet: "10.15.0.0/16"

@@ -1,7 +1,4 @@
 questions:
-  # -----------------------
-  # API Configuration Group
-  # -----------------------
   - variable: api.env.API_ROOT_URL
     group: "API Configuration"
     label: "API Root URL"
@@ -12,27 +9,31 @@ questions:
 
   - variable: api.env.FRONT_BASE_URL
     group: "API Configuration"
-    label: "Frontend Base URL"
-    description: "The base URL where Novu Frontend is accessible"
+    label: "Dashboard Base URL"
+    description: "Public URL for the Novu dashboard (3.x)"
     type: string
     required: true
     default: "https://novu.loadtest.openg2p.org"
 
-  # -----------------------
-  # Web Configuration Group
-  # -----------------------
-  - variable: web.apiExternalEndpoint
-    group: "Web Configuration"
+  - variable: dashboard.apiExternalEndpoint
+    group: "Dashboard Configuration"
     label: "API External Endpoint"
-    description: "Public API endpoint used by the Web UI"
+    description: "Public API endpoint used by the dashboard"
     type: string
     required: true
     default: "https://novu-api.loadtest.openg2p.org"
 
-  - variable: web.wsExternalEndpoint
-    group: "Web Configuration"
+  - variable: dashboard.wsExternalEndpoint
+    group: "Dashboard Configuration"
     label: "WebSocket External Endpoint"
-    description: "Public WebSocket endpoint used by the Web UI"
+    description: "Public WebSocket endpoint used by the dashboard"
     type: string
     required: true
     default: "https://novu-ws.loadtest.openg2p.org"
+
+  - variable: bootstrap.email
+    group: "Bootstrap"
+    label: "Admin email"
+    description: "First dashboard user, stored on the Novu secret. The commons API-key Job signs this user up."
+    type: string
+    default: "admin@openg2p.org"

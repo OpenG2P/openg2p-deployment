@@ -1,0 +1,31 @@
+{{- if and .Values.dashboard.enabled .Values.dashboard.istio.enabled .Values.dashboard.istio.virtualservice.enabled }}
+{{- $dashRoot := include "common.tplvalues.render" (dict "value" .Values.api.env.FRONT_BASE_URL "context" $) }}
+{{- $dashHost := $dashRoot | trimPrefix "https://" | trimPrefix "http://" | trimSuffix "/" }}
+{{- $gateway := include "common.tplvalues.render" (dict "value" .Values.dashboard.istio.virtualservice.gateway "context" $) }}
+{{- $destination := include "common.tplvalues.render" (dict "value" .Values.dashboard.istio.virtualservice.destination "context" $) }}
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: {{ include "novu.componentName" (dict "context" $ "component" "dashboard")}}
+  namespace: {{ include "common.names.namespace" . | quote }}
+  labels: {{- include "common.labels.standard" . | nindent 4 }}
+spec:
+  hosts:
+    - {{ $dashHost }}
+  gateways:
+    - {{ $gateway }}
+  http:
+    - headers:
+        request:
+          set:
+            x-forwarded-host: {{ $dashHost | quote }}
+            x-forwarded-proto: "https"
+      match:
+        - authority:
+            exact: {{ $dashHost }}
+      route:
+        - destination:
+            host: {{ $destination }}
+            port:
+              number: {{ .Values.dashboard.istio.virtualservice.destinationPort }}
+{{- end }}

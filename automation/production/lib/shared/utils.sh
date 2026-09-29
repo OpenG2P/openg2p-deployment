@@ -149,6 +149,11 @@ load_config() {
             local value="${stripped#*:}"
             key="${key%"${key##*[![:space:]]}"}"
             key="${key#"${key%%[![:space:]]*}"}"
+            # Preserve the raw post-colon token (before quote-stripping) so we
+            # can tell `key: ""` (explicit empty scalar) from `key:` (map header).
+            local raw_scalar="${value#"${value%%[![:space:]]*}"}"
+            raw_scalar="${raw_scalar%%#*}"
+            raw_scalar="${raw_scalar%"${raw_scalar##*[![:space:]]}"}"
             value="${value#"${value%%[![:space:]]*}"}"
             value="${value%\"}"
             value="${value#\"}"
@@ -156,7 +161,10 @@ load_config() {
             value="${value#\'}"
 
             if [[ -z "$value" ]]; then
-                if [[ $indent -eq 0 ]]; then
+                if [[ "$raw_scalar" == '""' || "$raw_scalar" == "''" ]]; then
+                    # Explicit empty placeholder — not a nested map header.
+                    current_parent=""
+                elif [[ $indent -eq 0 ]]; then
                     current_parent="$key"
                 fi
             else

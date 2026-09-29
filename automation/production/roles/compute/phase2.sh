@@ -49,7 +49,7 @@ rancher_hostname:    "${rancher_host}"
 node_ip:             "$(cfg 'compute_private_ip')"
 
 rancher:
-  version:  "$(cfg 'rancher_version' '2.12.3')"
+  version:  "$(cfg 'rancher_version' '2.15.1')"
   replicas: $(cfg 'rancher_replicas' '1')
 
 # Observability — Grafana Loki log store + its dedicated MinIO object store.
@@ -218,13 +218,15 @@ compute_bootstrap_rancher() {
     local probe_code
     probe_code=$(curl -sk -o /dev/null --max-time 10 -w '%{http_code}' \
                  "${rancher_url}/v3-public" 2>/dev/null) || probe_code="000"
+    # Rancher commonly returns 307 Temporary Redirect from /v3-public → /v3-public/
+    # (and occasionally 308). Treat those like 301/302 — connectivity succeeded.
     case "$probe_code" in
-        200|301|302|401|403) log_success "Rancher API reachable (HTTP ${probe_code})." ;;
+        200|301|302|307|308|401|403) log_success "Rancher API reachable (HTTP ${probe_code})." ;;
         *)
             log_error "Cannot reach Rancher at ${rancher_url} (HTTP '${probe_code}')" \
-                      "DNS resolution or TCP connect to ${rancher_url} failed from the compute node" \
+                      "Unexpected response from ${rancher_url} on the compute node (000 = DNS/TCP failure)" \
                       "Check /etc/hosts maps ${rancher_host} to the RP private IP and that RP nginx routes 443 to compute:30080" \
-                      "getent hosts ${rancher_host}; curl -kv ${rancher_url}/ping"
+                      "getent hosts ${rancher_host}; curl -skI ${rancher_url}/v3-public"
             exit 1
             ;;
     esac

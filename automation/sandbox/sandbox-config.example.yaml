@@ -1,0 +1,238 @@
+# =============================================================================
+# OpenG2P Sandbox Configuration
+# =============================================================================
+# Copy this file to sandbox-config.yaml and fill in your values:
+#   cp sandbox-config.example.yaml sandbox-config.yaml
+#
+# Preferred — run from your laptop (orchestrator SSHes into the VM):
+#   ./openg2p-sandbox.sh --config sandbox-config.yaml
+#
+# Optional AWS path (laptop):
+#   cd aws && ./openg2p-aws-provision.sh --config aws-config.yaml
+#   # writes ../provision-output.yaml — auto-loaded as an overlay so
+#   # [AWS] fields below (node_ip, wireguard.endpoint, ssh_*) are filled.
+#
+# Advanced — run on-box directly:
+#   sudo bash roles/infra/run.sh --config sandbox-config.yaml
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Node and cluster configuration
+# ---------------------------------------------------------------------------
+# Internal/private IP address of this VM (used for NFS, Nginx, K8s).
+# [AWS] — auto-filled from provision-output.yaml when present; leave blank then.
+node_ip: ""
+
+# A short name for this K8s node (used in RKE2 node-name, visible in kubectl get nodes).
+# [AWS] — auto-filled from provision-output.yaml (instance Name tag) when present.
+node_name: "node1"
+
+# Display name for the Rancher cluster (shown in the Rancher UI).
+# Also used as the NFS export path prefix (/srv/nfs/<cluster_name>).
+cluster_name: "openg2p"
+
+# ---------------------------------------------------------------------------
+# Domain & TLS                                    [REQUIRED — read before running]
+# ---------------------------------------------------------------------------
+# The sandbox uses REAL, browser-trusted certificates from Let's Encrypt.
+# Self-signed certificates are NOT supported: services inside the cluster call
+# each other over HTTPS and fail when the issuing CA is not publicly trusted.
+#
+# That means you need a REAL, publicly-registered domain name. Reserved TLDs
+# (.test, .local, .internal, .localhost) can NEVER receive a public certificate
+# — this is a CA/Browser Forum rule binding on every public CA, not a
+# Let's Encrypt policy — so they are rejected by the preflight check.
+#
+# You do NOT need to expose this machine to the internet, and you do NOT need
+# to touch your organisation's DNS. Certificates are obtained with the ACME
+# DNS-01 challenge: the automation writes one TXT record via your DNS
+# provider's API and Let's Encrypt reads it. All traffic is outbound only.
+#
+# ── QUICK START (free, ~2 minutes, no domain purchase) ──────────────────────
+#   1. Sign up at https://desec.io/          (email + captcha)
+#   2. Create a free domain, e.g.            mydept.dedyn.io
+#   3. Create an API token at https://desec.io/tokens
+#   4. Set `domain` and `tls.api_token` below.
+#
+# Hostnames are derived automatically:
+#   Infra:    rancher.<domain>
+#   Per-env:  keycloak.<env>.<domain>, superset.<env>.<domain>, ...
+domain: ""                       # REQUIRED, e.g. "mydept.dedyn.io"
+
+tls:
+  # Contact address registered with Let's Encrypt (expiry / problem notices).
+  email: ""                      # REQUIRED, e.g. "admin@dept.gov.et"
+
+  # DNS provider hosting `domain` above. Used ONLY to write the ACME
+  # `_acme-challenge` TXT records and (optionally) the A records below.
+  #   desec      — free dedyn.io domain — the quick-start path
+  #   cloudflare — you own the domain, DNS hosted on Cloudflare
+  #   route53    — you own the domain, DNS hosted on AWS Route 53
+  #   acmedns    — self-hosted acme-dns via CNAME delegation (advanced)
+  dns_provider: "desec"
+
+  # ── Credentials ─────────────────────────────────────────────────────────
+  # You only need the ONE set matching your dns_provider above.
+  # For the default (desec) that is a single token — nothing else applies.
+
+  #   desec: an API token from https://desec.io/tokens
+  #   cloudflare: a Cloudflare API token with DNS:Edit on the zone
+  api_token: ""
+
+  # Only if you change dns_provider — uncomment the matching lines:
+  #
+  #   cloudflare
+  # cf_account_id: ""
+  #
+  #   route53  (leave both blank to use the EC2 instance role instead)
+  # aws_access_key_id: ""
+  # aws_secret_access_key: ""
+  #
+  #   acmedns  (self-hosted acme-dns CNAME delegation — advanced)
+  # acmedns_base_url:  "https://auth.acme-dns.io"
+  # acmedns_username:  ""
+  # acmedns_password:  ""
+  # acmedns_subdomain: ""
+
+  # Publish A records for the sandbox hostnames into the public DNS zone,
+  # pointing at node_ip. This is what makes the names resolve on laptops and
+  # inside pods with NO local DNS server and NO /etc/hosts entries.
+  #
+  # node_ip is normally a private RFC1918 address. Publishing it grants nobody
+  # access — the address is unroutable from the internet — but it does disclose
+  # your hostname and internal IP layout to anyone who queries the zone. Set
+  # this to false if that is unacceptable, and manage DNS yourself.
+  # Supported for: desec, cloudflare, route53.
+  publish_a_records: true
+
+  # Seconds to wait after writing the ACME challenge TXT record before letting
+  # Let's Encrypt validate it. A freshly created name needs time to reach both
+  # deSEC nameservers and clear any short-lived negative cache; validating too
+  # early fails with "No TXT record found" and burns a validation attempt
+  # (Let's Encrypt allows only 5 failures per hostname per hour).
+  # Set to 0 to use acme.sh's adaptive DNS-over-HTTPS check instead.
+  dns_propagation_seconds: 120
+
+  # Let's Encrypt STAGING: untrusted certificates, but very generous rate
+  # limits. Use it while testing repeated installs, then set false and re-run
+  # with --force to obtain real certificates.
+  staging: false
+
+# ---------------------------------------------------------------------------
+# Public access (security-sensitive)
+# ---------------------------------------------------------------------------
+# Controls who can reach the web UIs (Rancher + environment services on 80/443).
+#
+#   false (default) — PRIVATE. Even if this VM has a public IP, the sandbox is
+#                     reachable only over Wireguard or from inside the VPC. The
+#                     firewall blocks 80/443 from the public Internet. This is
+#                     the recommended, safe default.
+#
+#   true            — Opens 80/443 to 0.0.0.0/0 at the FIREWALL. On its own this
+#                     exposes nothing extra: Nginx still answers the Rancher
+#                     hostname only to Wireguard/VPC clients, and each
+#                     environment stays private unless it sets `public: true`
+#                     in its own environment-config.yaml.
+#                     Set this to true when you want at least one environment
+#                     reachable without the VPN.
+#
+#   ⚠️  SECURITY WARNING: a valid TLS certificate encrypts the connection — it
+#       does NOT restrict who may connect. Any environment you mark `public`
+#       is reachable by anyone, protected only by that application's own
+#       authentication. Prefer restricting source IPs (ufw / cloud security
+#       group) to the addresses that need access.
+#       On AWS you must ALSO open 80/443 in the security group (see the docs).
+public_access: false
+
+# ---------------------------------------------------------------------------
+# RKE2 Kubernetes
+# ---------------------------------------------------------------------------
+# RKE2 version to install (see: https://github.com/rancher/rke2/releases)
+rke2_version: "v1.35.8+rke2r1"
+
+# RKE2 cluster token (auto-generated if left empty)
+rke2_token: ""
+
+# ---------------------------------------------------------------------------
+# Wireguard VPN
+# ---------------------------------------------------------------------------
+wireguard:
+  # Public IP or hostname that VPN clients use to connect.
+  # If your VM has a public IP different from node_ip, set it here.
+  # Leave empty to use node_ip (works when clients are on the same network).
+  # [AWS] — auto-filled from provision-output.yaml (EIP / public IP) when present.
+  endpoint: ""
+  subnet: "10.15.0.0/16"
+  port: "51820"
+  peers: "254"
+
+# ---------------------------------------------------------------------------
+# SSH — laptop orchestrator (openg2p-sandbox.sh)
+# ---------------------------------------------------------------------------
+# Used only by the laptop orchestrator to reach the VM. The on-box
+# roles/infra/run.sh ignores these keys.
+# [AWS] — all three auto-filled from provision-output.yaml when present.
+ssh_host: ""                 # Public IP or hostname reachable from your laptop
+ssh_user: "ubuntu"
+ssh_key:  ""                 # Path to .pem (e.g. ./aws/keys/openg2p-sandbox.pem)
+
+
+# ---------------------------------------------------------------------------
+# Environment stage
+# ---------------------------------------------------------------------------
+# An *environment* is a namespace on this sandbox with its own sub-domain and
+# the OpenG2P commons stack. Creating one also does host-level work that only
+# this sandbox can do: publish DNS records, obtain a Let's Encrypt wildcard for
+# *.<environment>.<domain>, and add the matching Nginx server block.
+#
+#   true (default)  — after infra, also install the environment named in
+#                     environment-config.yaml (default: "dev")
+#   false           — stop after infra. Add an environment later with:
+#                       ./openg2p-sandbox.sh --config sandbox-config.yaml \
+#                           --stage environment
+#
+# CLI --skip-environment skips it for a single run.
+install_environment: true
+
+# ---------------------------------------------------------------------------
+# Rancher
+# ---------------------------------------------------------------------------
+rancher:
+  version: "2.15.1"
+  replicas: "1"
+  # Admin password is auto-managed — do not set here.
+  # On fresh install: auto-generated and saved to K8s secret cattle-system/rancher-secret
+  # On re-run: read from the K8s secret
+  # Override: RANCHER_ADMIN_PASSWORD=xxx sudo bash roles/infra/run.sh ...
+
+# Note: Keycloak is NOT installed at the infra level. Rancher uses local
+# authentication. The OpenG2P apps' Keycloak is deployed per-environment by
+# automation/environment/ (at keycloak.<environment domain>), not here.
+
+# ---------------------------------------------------------------------------
+# Observability — OpenTelemetry + Grafana Loki (replaces Fluentd/OpenSearch)
+# ---------------------------------------------------------------------------
+# Cluster logs are collected by an OpenTelemetry agent (DaemonSet), shipped to
+# a Grafana Loki store, and viewed in the existing Grafana. PII is redacted in
+# the OTel pipeline before storage. Loki uses its own dedicated MinIO.
+loki_retention_hours:     "168"   # log retention; 168h = 7 days
+loki_minio_root_user:     "loki"  # internal-only object store for Loki
+loki_minio_root_password: ""      # auto-generated if blank (saved under /etc/openg2p/secrets)
+loki_minio_size:          "50Gi"  # PVC size for Loki's MinIO
+
+# Alerting — critical log/infra alerts route through the existing Alertmanager.
+# Leave a channel blank to keep it inactive; fill in to enable it later.
+alert_slack_webhook_url:  ""        # Slack / Mattermost / Rocket.Chat webhook
+alert_slack_channel:      "#alerts"
+alert_smtp_smarthost:     ""        # e.g. "smtp.example.org:587"
+alert_smtp_from:          ""        # e.g. "alerts@openg2p.org"
+alert_smtp_username:      ""        # SMTP auth user (blank = no auth)
+alert_smtp_password:      ""
+alert_smtp_to:            ""        # recipient, e.g. "ops@openg2p.org"
+alert_telegram_bot_token: ""
+alert_telegram_chat_id:   ""        # numeric chat/group id
+
+# AI layer (optional, OFF by default). Disabling leaves observability working.
+ai_enabled:           "false"
+ai_openrouter_api_key: ""
+ai_model:             "openrouter/qwen/qwen-2.5-72b-instruct"

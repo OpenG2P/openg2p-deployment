@@ -259,9 +259,9 @@ No containers, no Kubernetes. Grows only with nginx access/error logs.
 | Ubuntu 24.04 cloud rootfs (fresh) | 1.6 | 2.0 | 2.8 |
 | OS overhead (apt cache + kernels + snaps + logs) | 0.8 | 1.5 | 2.5 |
 | CLI tools: `kubectl`, `helm 3.17.3`, `istioctl 1.24.1`, `helmfile 1.1.0`, helm-diff | 0.30 | 0.40 | 0.60 |
-| RKE2 `v1.33.6+rke2r1` runtime + bundled system images (etcd, coredns, metrics-server, kube-proxy, pause, runtime) | 1.5 | 2.2 | 3.0 |
+| RKE2 `v1.35.8+rke2r1` runtime + bundled system images (etcd, coredns, metrics-server, kube-proxy, pause, runtime) | 1.5 | 2.2 | 3.0 |
 | etcd database (CRDs + objects from Rancher/monitoring/logging) | 0.05 | 0.10 | 0.20 |
-| Images — **Rancher 2.12.3** (rancher, webhook, fleet, gitjob, shell) | 1.0 | 1.3 | 1.8 |
+| Images — **Rancher 2.15.1** (rancher, webhook, fleet, gitjob, shell) | 1.0 | 1.3 | 1.8 |
 | Images — **Istio 1.24.1** (istiod, ingressgateway/proxyv2) | 0.4 | 0.5 | 0.8 |
 | Images — **rancher-monitoring** (Prometheus, Grafana, Alertmanager, node-exporter, kube-state-metrics, prometheus-operator, config-reloader) | 1.4 | 1.8 | 2.4 |
 | Images — **Loki** + dedicated **MinIO** + `mc` | 0.6 | 0.9 | 1.3 |
@@ -374,7 +374,8 @@ are **not** included in the figures above.
 
 ## How to validate against a live node
 
-On each node, after infra and **before** the environment stage:
+On each node, after infra is up and **before Commons** is installed
+(environment scaffolding does not install Commons):
 
 ```bash
 sudo ./storage-estimate.sh --measure --role compute

@@ -15,7 +15,7 @@
 # After the instance is up, join it to the cluster with:
 #   cd .. && sudo ./openg2p-add-node.sh --config add-node-config.yaml
 #
-# Tear down ONLY this instance (never SGs / VPC / production nodes):
+# Tear down ONLY this instance (never SGs / VPC / other cluster nodes):
 #   ./openg2p-aws-destroy.sh --config aws-config.yaml
 #
 # Re-run after a failed launch (replace the partial instance):
@@ -26,8 +26,8 @@
 # Project / region
 # ---------------------------------------------------------------------------
 # Used as the Project tag on the new instance (and as a name prefix default).
-# Keep it short, lowercase, hyphenated. Prefer matching the value used by
-# production/aws so resources stay grouped together.
+# Keep it short, lowercase, hyphenated. Prefer matching the Project tag on
+# your existing cluster resources so they stay grouped together.
 project: "openg2p-prod"
 
 # AWS region. Can also be set via AWS_REGION env var; this takes precedence.

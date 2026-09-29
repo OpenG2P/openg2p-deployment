@@ -41,6 +41,6 @@ get_rancher_hostname()    { _resolve_admin_hostname rancher; }
 # Call this once after load_config "$CONFIG_FILE".
 hostnames_bridge_config_keys() {
     if [[ -z "${CONFIG[rancher.version]:-}" ]]; then
-        CONFIG[rancher.version]="$(cfg 'rancher_version' '2.12.3')"
+        CONFIG[rancher.version]="$(cfg 'rancher_version' '2.15.1')"
     fi
 }

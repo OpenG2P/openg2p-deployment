@@ -3,8 +3,8 @@
 # OpenG2P AWS Add-Node — helpers
 # =============================================================================
 # Sourced by openg2p-aws-provision.sh and openg2p-aws-destroy.sh.
-# Reuses production/aws/lib/aws-utils.sh for credentials, VPC/subnet/key
-# pickers, AMI resolution, run-instances, waits, and YAML writers.
+# Shared AWS helpers cover credentials, VPC/subnet/key pickers, AMI
+# resolution, run-instances, waits, and YAML writers.
 # Adds add-node-specific interactive pickers (instance type, disk, AZ, SG,
 # instance name) and a confirmation summary.
 # =============================================================================
@@ -214,7 +214,7 @@ aws_pick_az() {
 
 # ---------------------------------------------------------------------------
 # Subnet in a specific VPC + AZ
-# Prefers MapPublicIpOnLaunch=true (same rationale as production provisioner).
+# Prefers MapPublicIpOnLaunch=true so the instance is reachable over SSH.
 # ---------------------------------------------------------------------------
 aws_pick_subnet_in_az() {
     local vpc_id="$1"
@@ -348,7 +348,7 @@ aws_pick_security_group() {
     if [[ -z "$lines" ]]; then
         log_error "No security groups in VPC ${vpc_id}" \
                   "Cannot launch without an existing SG" \
-                  "Create one (or reuse a production SG) and re-run"
+                  "Create one (or reuse an existing cluster SG) and re-run"
         return 1
     fi
 
@@ -462,9 +462,9 @@ aws_validate_instance_name() {
 # ---------------------------------------------------------------------------
 # Key pair — resolve + ensure, re-prompting for a missing local .pem
 # ---------------------------------------------------------------------------
-# Production aws_ensure_key_pair hard-fails when key_mode=existing and the
-# configured key_path is absent. That blocks re-runs after a first interactive
-# pick saved a default path the operator never copied the .pem to.
+# aws_ensure_key_pair hard-fails when key_mode=existing and the configured
+# key_path is absent. That blocks re-runs after a first interactive pick
+# saved a default path the operator never copied the .pem to.
 #
 # This wrapper:
 #   1. Runs the normal pick (honours config / interactive menu)
@@ -611,8 +611,8 @@ aws_describe_instance_details() {
 }
 
 # ---------------------------------------------------------------------------
-# Add-node identity — distinct ManagedBy tag so destroy never touches the
-# production 3-node fleet (which uses ManagedBy=openg2p-aws-provision).
+# Add-node identity — distinct ManagedBy tag so destroy never touches
+# instances tagged ManagedBy=openg2p-aws-provision.
 # ---------------------------------------------------------------------------
 ADD_NODE_MANAGED_BY="openg2p-aws-add-node"
 
@@ -654,8 +654,8 @@ aws_run_add_node_instance() {
 }
 
 # Find a non-terminated add-node instance by Name + Project + ManagedBy.
-# Also accepts instances listed in provision-output (covers the first launch
-# that used the shared production ManagedBy tag before this helper existed).
+# Also accepts instances listed in provision-output (covers an earlier launch
+# that used ManagedBy=openg2p-aws-provision before this helper existed).
 aws_find_add_node_instance() {
     local name="$1"
     local project="$2"
@@ -860,4 +860,3 @@ aws_resolve_destroy_target() {
         echo "  Invalid selection, try again." >&2
     done
 }
-

@@ -49,10 +49,12 @@ RANCHER_BACKUP_PV="openg2p-rancher-backup-store"
 rancher_install() {
     # rancher-charts publishes rancher-backup with the Rancher chart-version
     # scheme <chartVersion>+up<appVersion> — there is NO plain "7.0.0" chart, so
-    # helm --version must be given a real chart version (e.g. 107.1.5+up8.1.5),
-    # NOT the operator app version. The pinned default targets Rancher 2.12.x /
-    # k8s 1.31–1.33; override per-cluster via versions.rancher_backup_chart.
-    local chart_version="$(cfg versions.rancher_backup_chart 107.1.5+up8.1.5)"
+    # helm --version must be given a real chart version (e.g. 110.0.1+up11.0.2),
+    # NOT the operator app version. Pin matches Rancher 2.15.x / RKE2 1.35
+    # (OpenG2P default); older 107.x ships kuberlr-kubectl v5 which fails the
+    # post-upgrade patch-sa Job on newer apiservers. Override via
+    # versions.rancher_backup_chart.
+    local chart_version="$(cfg versions.rancher_backup_chart 110.0.1+up11.0.2)"
     local resourceset_file="${BACKUPS_ROOT_DIR}/manifests/rancher-backup-resourceset.yaml"
     local schedule_file="${BACKUPS_ROOT_DIR}/manifests/rancher-backup-schedule.yaml"
     # Operator-mounted backup PVC: bound to a STATIC NFS PV (stable name, no
@@ -152,7 +154,7 @@ EOF
     log_info "Installing rancher-backup operator (chart ${chart_version}) on compute..."
     ssh_run "compute" "set -euo pipefail
         export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
-        export PATH=\$PATH:/var/lib/rancher/rke2/bin
+        export PATH=\$PATH:/var/lib/rancher/rke2/bin:/usr/local/bin
 
         # Ensure the rancher-charts repo is added (production install adds
         # rancher-stable for Rancher itself, not necessarily rancher-charts).
@@ -186,20 +188,42 @@ spec:
     path: ${backup_path}
 EOP
 
+        # Clear a stuck post-upgrade hook from a prior failed attempt so Helm
+        # can recreate it (hook-delete-policy does not remove failed Jobs).
+        kubectl -n ${RANCHER_BACKUP_NS} delete job ${RANCHER_BACKUP_RELEASE}-patch-sa --ignore-not-found >/dev/null 2>&1 || true
+
         helm upgrade --install rancher-backup-crd rancher-charts/rancher-backup-crd \
-            --namespace ${RANCHER_BACKUP_NS} --version ${chart_version} --wait
+            --namespace ${RANCHER_BACKUP_NS} --version ${chart_version} --wait --timeout 10m
+
         # persistence.enabled + volumeName binds the operator PVC to our static
         # PV (stable name); storageClass='-' disables dynamic provisioning so the
         # chart does NOT create a per-revision '<release>-<revision>' PVC. Backup
         # CRs omit storageLocation and thus write to /var/lib/backups → our PV.
         # (Do NOT also set s3.enabled — the chart fails if both are configured.)
-        helm upgrade --install rancher-backup rancher-charts/rancher-backup \
-            --namespace ${RANCHER_BACKUP_NS} --version ${chart_version} \
-            --set persistence.enabled=true \
-            --set persistence.storageClass=- \
-            --set persistence.volumeName=${RANCHER_BACKUP_PV} \
-            --set persistence.size=${pvc_size} \
-            --wait
+        # global.cattle.psp.enabled=false: PSP is gone on modern RKE2.
+        helm_common=(
+            upgrade --install rancher-backup rancher-charts/rancher-backup
+            --namespace ${RANCHER_BACKUP_NS} --version ${chart_version}
+            --set persistence.enabled=true
+            --set persistence.storageClass=-
+            --set persistence.volumeName=${RANCHER_BACKUP_PV}
+            --set persistence.size=${pvc_size}
+            --set global.cattle.psp.enabled=false
+            --timeout 10m
+        )
+
+        if ! helm \"\${helm_common[@]}\" --wait; then
+            echo '--- rancher-backup-patch-sa diagnosis ---' >&2
+            kubectl -n ${RANCHER_BACKUP_NS} describe job ${RANCHER_BACKUP_RELEASE}-patch-sa >&2 || true
+            kubectl -n ${RANCHER_BACKUP_NS} logs -l job-name=${RANCHER_BACKUP_RELEASE}-patch-sa --tail=80 >&2 || true
+            kubectl -n ${RANCHER_BACKUP_NS} get pods -l job-name=${RANCHER_BACKUP_RELEASE}-patch-sa -o wide >&2 || true
+
+            echo 'WARN: post-upgrade hook failed — applying SA patch manually and retrying helm --no-hooks' >&2
+            kubectl -n ${RANCHER_BACKUP_NS} patch serviceaccount default \
+                --type=merge -p '{\"automountServiceAccountToken\":false}' >/dev/null 2>&1 || true
+            kubectl -n ${RANCHER_BACKUP_NS} delete job ${RANCHER_BACKUP_RELEASE}-patch-sa --ignore-not-found >/dev/null 2>&1 || true
+            helm \"\${helm_common[@]}\" --wait --no-hooks
+        fi
 
         kubectl apply -f /tmp/openg2p-rancher-backup/resourceset.yaml
         kubectl apply -f /tmp/openg2p-rancher-backup/schedule.yaml"
@@ -216,7 +240,12 @@ EOP
 # ---------------------------------------------------------------------------
 rancher_validate_resourceset() {
     local known
-    known=$(ssh_run "compute" "kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml api-resources --no-headers 2>/dev/null | awk '{print \$NF}' | sort -u" 2>/dev/null) || {
+    # Prefer API group column. Fall back to parsing APIVERSION (group/version).
+    known=$(ssh_run "compute" "kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml api-resources -o wide --no-headers 2>/dev/null \
+        | awk '{
+            # columns vary when SHORTNAMES empty; APIVERSION is the field containing '/'
+            for (i=1;i<=NF;i++) if (\$i ~ /\//) { split(\$i,a,\"/\"); print a[1]; break }
+          }' | sort -u" 2>/dev/null) || {
         log_warn "Could not query api-resources from compute — skipping validation."
         return 0
     }
@@ -243,6 +272,36 @@ rancher_validate_resourceset() {
 rancher_run() {
     local started; started="$(ts_utc)"
     local rc=0
+    local resourceset_file="${BACKUPS_ROOT_DIR}/manifests/rancher-backup-resourceset.yaml"
+
+    # Rancher / rancher-backup-crd upgrades often wipe custom ResourceSets
+    # (CRD reinstall). Re-apply ours before every on-demand Backup so we don't
+    # burn 10 minutes retrying "openg2p-resource-set not found".
+    if [[ ! -f "$resourceset_file" ]]; then
+        log_error "Missing ${resourceset_file}" "" ""
+        return 1
+    fi
+    log_info "Ensuring ResourceSet openg2p-resource-set is present..."
+    local stage; stage=$(mktemp -d -t openg2p-rancher-rs.XXXXXX)
+    trap "rm -rf '$stage'" RETURN
+    cp "$resourceset_file" "$stage/resourceset.yaml"
+    ssh_push "compute" "${stage}/" "/tmp/openg2p-rancher-backup/"
+    if ! ssh_run "compute" "set -euo pipefail
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        export PATH=\$PATH:/var/lib/rancher/rke2/bin:/usr/local/bin
+        # api-resources prints NAME + APIVERSION as separate columns — do not
+        # grep for the full CRD name. Prefer get crd.
+        if ! kubectl get crd resourcesets.resources.cattle.io >/dev/null 2>&1; then
+            echo 'CRD resourcesets.resources.cattle.io missing — re-run: openg2p-backup.sh install --component rancher' >&2
+            exit 1
+        fi
+        kubectl apply -f /tmp/openg2p-rancher-backup/resourceset.yaml
+        kubectl get resourceset.resources.cattle.io openg2p-resource-set -o name"; then
+        log_error "Could not apply ResourceSet openg2p-resource-set" \
+                  "Common after Rancher/rancher-backup chart upgrades" \
+                  "Re-run: ./openg2p-backup.sh install --config backup-config.yaml --component rancher --force"
+        return 1
+    fi
 
     local backup_name="openg2p-ondemand-$(date -u +%Y%m%d%H%M%S)"
     log_info "Triggering on-demand Backup: ${backup_name}"
@@ -258,18 +317,22 @@ spec:
   resourceSetName: openg2p-resource-set
   encryptionConfigSecretName: ${RANCHER_BACKUP_ENC_SECRET}
 EOC
-        # Wait up to 10 min. The operator reports success/failure on the Ready
-        # condition (status True/False + message). Break early on False rather
-        # than blocking the full window, and always surface the operator's own
-        # message + pod logs so the real cause isn't swallowed by the caller.
-        ready='' msg=''
+        # Wait up to 10 min. Break early on Ready=False OR a permanent
+        # Reconciling error (e.g. ResourceSet missing) so we don't spin on Unknown/Retrying.
+        ready='' msg='' recon_msg=''
         for i in \$(seq 1 60); do
             ready=\$(kubectl get backup.resources.cattle.io ${backup_name} \
                 -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' 2>/dev/null || true)
             msg=\$(kubectl get backup.resources.cattle.io ${backup_name} \
                 -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].message}' 2>/dev/null || true)
+            recon_msg=\$(kubectl get backup.resources.cattle.io ${backup_name} \
+                -o jsonpath='{.status.conditions[?(@.type==\"Reconciling\")].message}' 2>/dev/null || true)
             [[ \$ready == 'True' ]] && { echo \"rancher-backup Ready: \${msg:-ok}\"; exit 0; }
             [[ \$ready == 'False' ]] && break
+            if [[ \$recon_msg == *'not found'* || \$recon_msg == *'Error'* ]]; then
+                msg=\$recon_msg
+                break
+            fi
             sleep 10
         done
         echo \"rancher-backup not Ready (status='\${ready:-<none>}'): \${msg:-<no message>}\" >&2

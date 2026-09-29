@@ -16,6 +16,9 @@
 #     custom charts, etc.)
 #   - Cleans orphaned hook resources (Jobs, ServiceAccounts, Roles, etc.)
 #   - Deletes all Secrets and PVCs (including backing PVs) in the namespace
+#   - Deletes chart-owned ConfigMaps (Helm-labelled, or named <release>-*).
+#     Hand-created ConfigMaps are KEPT and listed; cluster/mesh ones
+#     (kube-root-ca.crt, istio-*) are never touched.
 #   - PRESERVES: namespace, Istio Gateway, Rancher Project, Nginx config,
 #                DNS records, TLS certificates
 #
@@ -182,6 +185,30 @@ show_preview() {
         echo -e "${YELLOW}║${NC}    (none)"
     fi
 
+    # ConfigMaps — split into chart-owned (deleted) vs preserved, so the
+    # operator sees exactly what survives BEFORE confirming.
+    local cm_owned cm_kept
+    cm_owned=$(list_chart_owned_configmaps)
+    cm_kept=$(list_preserved_configmaps)
+
+    echo -e "${YELLOW}║${NC}"
+    echo -e "${YELLOW}║${NC}  ${BOLD}ConfigMaps — chart-owned, will be deleted${NC}:"
+    if [[ -n "$cm_owned" ]]; then
+        while IFS= read -r c; do
+            [[ -n "$c" ]] && echo -e "${YELLOW}║${NC}    - ${c}"
+        done <<< "$cm_owned"
+    else
+        echo -e "${YELLOW}║${NC}    (none)"
+    fi
+
+    if [[ -n "$cm_kept" ]]; then
+        echo -e "${YELLOW}║${NC}"
+        echo -e "${YELLOW}║${NC}  ${BOLD}ConfigMaps — NOT chart-owned, will be KEPT${NC}:"
+        while IFS= read -r c; do
+            [[ -n "$c" ]] && echo -e "${YELLOW}║${NC}    - ${c}"
+        done <<< "$cm_kept"
+    fi
+
     if [[ "$FULL_MODE" == "true" ]]; then
         echo -e "${YELLOW}║${NC}"
         echo -e "${YELLOW}║${NC}  ${BOLD}Istio Gateways${NC}:"
@@ -323,30 +350,120 @@ step_uninstall_helm_releases() {
 }
 
 # ---------------------------------------------------------------------------
-# Step 2: Clean orphaned hook resources
+# Step 2: Clean orphaned hook resources and chart ConfigMaps
 # ---------------------------------------------------------------------------
 # Helm hooks (postgres-init, keycloak-init, client-secrets-sync, etc.) may
 # leave behind Jobs, ServiceAccounts, ConfigMaps, Roles, and RoleBindings
 # depending on their delete-policy. We scrub these by iterating over the
 # release names captured BEFORE step 1 ran (RELEASES_BEFORE).
+
+# ConfigMaps owned by the cluster or the service mesh. Never ours to delete:
+# kube-root-ca.crt is re-created by Kubernetes immediately, and the istio-*
+# ones are managed by istiod for the whole namespace.
+CONFIGMAP_PROTECTED_RE='^(kube-root-ca\.crt|istio-.*)$'
+
+# Deletes the ConfigMaps that belong to the charts — and only those.
+#
+# A ConfigMap counts as chart-owned when it is labelled managed-by=Helm, has a
+# meta.helm.sh/release-name annotation, or is named <release>-* for a release
+# that was in the namespace. Everything else (hand-applied seed data, migration
+# payloads, debug patches) is preserved and listed, because a blanket
+# `delete configmap --all` on a shared namespace silently destroys operator
+# artifacts that no chart will ever recreate.
+#
+# The Helm-labelled ConfigMaps that lack a release-name annotation are the real
+# target: `helm uninstall` cannot associate them with any release, so they
+# survive and later cause "invalid ownership metadata" failures on reinstall.
+# Emits the names of ConfigMaps considered chart-owned, one per line.
+# Shared by the preview and the actual cleanup so the two can never disagree
+# about what is going to be deleted.
+list_chart_owned_configmaps() {
+    local all_json chart_owned
+    all_json=$(kubectl get configmap -n "$NAMESPACE" -o json 2>/dev/null || echo '{"items":[]}')
+
+    chart_owned=$(echo "$all_json" | jq -r --arg releases "$RELEASES_BEFORE" '
+        ($releases | split("\n") | map(select(length > 0))) as $rel
+        | .items[]
+        | .metadata.name as $name
+        | select(
+            ((.metadata.labels // {})["app.kubernetes.io/managed-by"] == "Helm")
+            or (((.metadata.annotations // {})["meta.helm.sh/release-name"] // "") != "")
+            or ( $rel | map(. as $r | ($name | startswith($r + "-"))) | any )
+          )
+        | $name' 2>/dev/null || true)
+
+    # Never touch cluster/mesh-owned ConfigMaps, even if something mislabels them.
+    if [[ -n "$chart_owned" ]]; then
+        chart_owned=$(echo "$chart_owned" | grep -vE "$CONFIGMAP_PROTECTED_RE" || true)
+    fi
+    echo "$chart_owned"
+}
+
+# Emits the names of ConfigMaps that will be left alone (excluding the
+# protected cluster/mesh ones, which are never in scope at all).
+list_preserved_configmaps() {
+    local chart_owned preserved="" cm
+    chart_owned=$(list_chart_owned_configmaps)
+    while IFS= read -r cm; do
+        [[ -z "$cm" ]] && continue
+        echo "$cm" | grep -qE "$CONFIGMAP_PROTECTED_RE" && continue
+        if ! echo "$chart_owned" | grep -qxF "$cm"; then
+            preserved+="${cm}"$'\n'
+        fi
+    done <<< "$(kubectl get configmap -n "$NAMESPACE" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
+    echo "$preserved" | grep -v '^$' || true
+}
+
+clean_chart_configmaps() {
+    local chart_owned
+    chart_owned=$(list_chart_owned_configmaps)
+
+    if [[ -n "$chart_owned" ]]; then
+        log_info "Deleting chart-owned ConfigMaps:"
+        while IFS= read -r cm; do
+            [[ -z "$cm" ]] && continue
+            echo "    - ${cm}"
+            run_cmd "kubectl delete configmap '${cm}' -n '${NAMESPACE}' --ignore-not-found > /dev/null 2>&1 || true"
+        done <<< "$chart_owned"
+    else
+        log_info "No chart-owned ConfigMaps found."
+    fi
+
+    # Report what survived, so nothing disappears silently and the operator can
+    # remove leftovers by hand if they are no longer wanted.
+    local preserved cm
+    preserved=$(list_preserved_configmaps)
+
+    if [[ -n "$preserved" ]]; then
+        log_warn "Preserved ConfigMaps (not chart-owned — delete by hand if unwanted):"
+        while IFS= read -r cm; do
+            [[ -z "$cm" ]] && continue
+            echo "    - ${cm}"
+        done <<< "$preserved"
+    fi
+}
+
 step_clean_hook_resources() {
     log_step "2" "Cleaning orphaned hook resources in '${NAMESPACE}'"
 
     # Jobs — wholesale delete is safe; hooks have already run.
     run_cmd "kubectl delete jobs -n '${NAMESPACE}' --all --ignore-not-found"
 
-    # Per-release hook resources. Suffixes cover the known hook patterns.
+    # Per-release hook RBAC / ServiceAccounts. The fixed suffix list still
+    # applies here; ConfigMaps are handled by the broader sweep below.
     if [[ -n "$RELEASES_BEFORE" ]]; then
         while IFS= read -r release; do
             [[ -z "$release" ]] && continue
             for suffix in postgres-init keycloak-init client-secrets-sync iam-pg-init audit-pg-init master-data-postgres-init; do
                 run_cmd "kubectl delete serviceaccount '${release}-${suffix}' -n '${NAMESPACE}' --ignore-not-found > /dev/null 2>&1 || true"
-                run_cmd "kubectl delete configmap '${release}-${suffix}' -n '${NAMESPACE}' --ignore-not-found > /dev/null 2>&1 || true"
                 run_cmd "kubectl delete rolebinding '${release}-${suffix}' -n '${NAMESPACE}' --ignore-not-found > /dev/null 2>&1 || true"
                 run_cmd "kubectl delete role '${release}-${suffix}' -n '${NAMESPACE}' --ignore-not-found > /dev/null 2>&1 || true"
             done
         done <<< "$RELEASES_BEFORE"
     fi
+
+    # ConfigMaps get an ownership-based sweep rather than the fixed name list.
+    clean_chart_configmaps
 
     log_success "Hook resources cleaned."
 }

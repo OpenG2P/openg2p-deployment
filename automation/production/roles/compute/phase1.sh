@@ -31,7 +31,7 @@ robust_curl() {
 }
 
 install_kubectl() {
-    local version="${1:-v1.33.6}"
+    local version="${1:-v1.35.8}"
     if kubectl version --client &>/dev/null; then
         log_success "kubectl already installed."
         return 0
@@ -129,7 +129,7 @@ compute_install_tools() {
         apt-transport-https gnupg software-properties-common \
         ufw nfs-common
 
-    install_kubectl   "v$(echo "$(cfg rke2_version v1.33.6+rke2r1)" | sed 's/+rke2r.*//;s/^v//')"
+    install_kubectl   "v$(echo "$(cfg rke2_version v1.35.8+rke2r1)" | sed 's/+rke2r.*//;s/^v//')"
     install_helm      "3.17.3"
     install_istioctl  "1.24.1"
     install_helmfile  "1.1.0"
@@ -287,7 +287,7 @@ compute_install_rke2() {
 
     log_step "C1.6" "Install RKE2 single control-plane"
 
-    local rke2_version=$(cfg "rke2_version" "v1.33.6+rke2r1")
+    local rke2_version=$(cfg "rke2_version" "v1.35.8+rke2r1")
     local node_name=$(cfg "compute_node_name" "compute-1")
     local node_ip=$(cfg "compute_private_ip")
     local token=$(cfg "rke2_token")

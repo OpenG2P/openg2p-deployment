@@ -139,6 +139,13 @@ releases:
     values:
       - global:
           cattle:
+            # Required when installing rancher-monitoring via Helm (not Rancher Apps).
+            # Without clusterId=local, Grafana's nginx sidecar sets the wrong
+            # appSubUrl, so Monitoring → Grafana lands on "Page not found" until
+            # you click Home. See rancher/rancher#40687 and #50634.
+            clusterId: local
+            clusterName: local
+            url: {{ printf "https://%s" .Values.rancher_hostname | quote }}
             psp:
               enabled: false
         # Register Loki as a Grafana datasource so the existing Grafana becomes
@@ -148,16 +155,35 @@ releases:
           additionalDataSources:
             - name: Loki
               type: loki
+              # Must match dashboards (uid: loki). Grafana generates a random
+              # uid when this is omitted, so every Loki panel shows "No data".
+              uid: loki
               access: proxy
-              url: http://loki-gateway.observability.svc
+              # Query Loki directly. The nginx gateway is fine for OTLP ingest
+              # but its query routes can 502 in SingleBinary (no query-frontend
+              # service), which makes every Grafana Loki panel show "No data".
+              url: http://loki.observability.svc:3100
               isDefault: false
               jsonData:
                 maxLines: 1000
+                httpHeaderName1: X-Scope-OrgID
+              secureJsonData:
+                # Loki auth_enabled=false still stores everything under tenant "fake".
+                httpHeaderValue1: fake
           # Grafana is reached through the Rancher proxy as an anonymous user.
           # Default anonymous role is Viewer, which CANNOT use Explore / pick a
           # datasource — so logs are invisible. Rancher already gates access, so
           # promote the anonymous role to Editor to enable Explore + Loki.
           grafana.ini:
+            # Rancher opens Grafana at .../proxy/ (kube-apiserver already strips
+            # that prefix before it hits Grafana). root_url still must include the
+            # proxy path so Grafana's boot data appSubUrl matches the browser URL;
+            # otherwise Grafana 10 renders the shell and then "Page not found"
+            # until you click Home. Do NOT set serve_from_sub_path — the API
+            # proxy already stripped the prefix.
+            server:
+              domain: {{ .Values.rancher_hostname | quote }}
+              root_url: {{ printf "https://%s/api/v1/namespaces/cattle-monitoring-system/services/http:rancher-monitoring-grafana:80/proxy/" .Values.rancher_hostname | quote }}
             auth:
               # Hide the "Sign in" button — access is via the Rancher proxy
               # (anonymous Editor above), and the login form can't complete its
@@ -360,6 +386,21 @@ releases:
             ingestion_burst_size_mb: 20
             max_query_series: 5000
             allow_structured_metadata: true
+            # Promote k8s resource attributes to Loki index labels so dashboard
+            # LogQL ({k8s_namespace_name=~".+"}) matches streams, not only
+            # structured metadata (which would look like "No data").
+            otlp_config:
+              resource_attributes:
+                attributes_config:
+                  - action: index_label
+                    attributes:
+                      - service.name
+                      - service.namespace
+                      - k8s.namespace.name
+                      - k8s.pod.name
+                      - k8s.container.name
+                      - k8s.node.name
+                      - k8s.cluster.name
           compactor:
             retention_enabled: true
             delete_request_store: s3
@@ -402,6 +443,11 @@ releases:
           extraVolumeMounts:
             - name: loki-alerting-rules
               mountPath: /rules/fake
+        # Default rules sidecar is unused (we mount rules ourselves) and is
+        # easy to confuse with the main Loki container when collecting logs.
+        sidecar:
+          rules:
+            enabled: false
         # SingleBinary mode — the SSD targets must be scaled to zero.
         backend:
           replicas: 0
@@ -479,7 +525,12 @@ releases:
                   restartPolicy: OnFailure
                   containers:
                     - name: mc
-                      image: minio/mc
+                      # docker.io/minio/mc is no longer publicly pullable;
+                      # use the same quay.io image the Loki MinIO chart uses.
+                      image: quay.io/minio/mc:RELEASE.2024-04-18T16-45-29Z
+                      env:
+                        - name: HOME
+                          value: /tmp
                       command: ["sh", "-c"]
                       args:
                         - >
@@ -500,7 +551,7 @@ releases:
       - observability/loki
     values:
       - mode: deployment
-        replicaCount: 2
+        replicaCount: 1
         image:
           repository: otel/opentelemetry-collector-contrib
         # Disable the chart's default metrics/traces pipelines — logs only.
@@ -525,6 +576,8 @@ releases:
               endpoint: http://loki-gateway.observability.svc/otlp
               tls:
                 insecure: true
+              headers:
+                X-Scope-OrgID: fake
           service:
             pipelines:
               logs:
@@ -578,6 +631,17 @@ releases:
                     - replace_pattern(body, "\\b\\d{12}\\b", "[REDACTED_ID]")
                     # Bearer tokens / passwords / secrets in key=value or key: value form
                     - replace_pattern(body, "(?i)(password|passwd|token|secret|authorization|bearer|api[_-]?key)\\s*[=:]\\s*\\S+", "[REDACTED_SECRET]")
+            # filelog puts k8s.* on the log record; Loki OTLP only indexes
+            # *resource* attributes. Copy them up so {k8s_namespace_name=...} works.
+            transform/promote_k8s:
+              error_mode: ignore
+              log_statements:
+                - context: log
+                  statements:
+                    - set(resource.attributes["k8s.namespace.name"], attributes["k8s.namespace.name"]) where resource.attributes["k8s.namespace.name"] == nil
+                    - set(resource.attributes["k8s.pod.name"], attributes["k8s.pod.name"]) where resource.attributes["k8s.pod.name"] == nil
+                    - set(resource.attributes["k8s.container.name"], attributes["k8s.container.name"]) where resource.attributes["k8s.container.name"] == nil
+                    - set(resource.attributes["service.name"], attributes["k8s.container.name"]) where resource.attributes["service.name"] == nil
             batch:
               send_batch_size: 1024
               timeout: 5s
@@ -590,7 +654,7 @@ releases:
             pipelines:
               logs:
                 receivers: [filelog]
-                processors: [k8sattributes, transform/redact_pii, batch]
+                processors: [k8sattributes, transform/redact_pii, transform/promote_k8s, batch]
                 exporters: [otlp]
               # Logs-only — disable the chart's default metrics/traces pipelines
               # (otherwise the agent scrapes its own metrics to a debug exporter

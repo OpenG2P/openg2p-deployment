@@ -111,4 +111,3 @@ command: ["/startup.sh"]
 args: []
 {{- end }}
 {{- end -}}
-

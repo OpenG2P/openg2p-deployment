@@ -1,0 +1,131 @@
+# =============================================================================
+# OpenG2P AWS Sandbox Provisioning Configuration
+# =============================================================================
+# Copy to aws-config.yaml and edit:
+#   cp aws-config.example.yaml aws-config.yaml
+#
+# Then run from this directory:
+#   ./openg2p-aws-provision.sh --config aws-config.yaml
+#
+# This creates: 1 key pair, 1 security group, 1 Elastic IP (preferred),
+# and 1 EC2 instance (Ubuntu 24.04 LTS, m5a.4xlarge by default).
+# It then writes ../provision-output.yaml so you can run from the laptop:
+#   cd .. && ./openg2p-sandbox.sh --config sandbox-config.yaml
+#
+# All AWS resources are tagged with Project=<project> and
+# ManagedBy=openg2p-aws-single-node for later teardown by
+# openg2p-aws-destroy.sh (only resources with ManagedBy=openg2p-aws-single-node).
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Project / region
+# ---------------------------------------------------------------------------
+# Used as a prefix for every resource name and as the Project tag.
+# Keep it short, lowercase, hyphenated (e.g. openg2p-sandbox).
+project: "openg2p-sandbox"
+
+# AWS region. Can also be set via AWS_REGION env var; this takes precedence.
+region: "ap-south-1"
+
+# ---------------------------------------------------------------------------
+# VPC and subnet
+# ---------------------------------------------------------------------------
+# Both blank? The script queries AWS:
+#   • exactly one match  → auto-picks
+#   • multiple matches   → presents a numbered menu (TTY only)
+#   • non-interactive    → fails with a clear list, asking you to set the value
+#
+# Either way, the script writes the resolved IDs back to THIS file so the
+# next run is fully non-interactive.
+vpc_id:    ""
+subnet_id: ""
+
+# ---------------------------------------------------------------------------
+# Network ingress
+# ---------------------------------------------------------------------------
+# CIDR allowed to SSH/ping the instance over the public internet.
+#
+# Special values:
+#   ""            — default to 0.0.0.0/0 (SSH works across IP changes)
+#   "0.0.0.0/0"   — same as blank; open to the world (lab / early install)
+#   custom CIDR   — office or VPN egress range, e.g. "203.0.113.0/24"
+#
+# The security group ALSO always allows all traffic from the VPC CIDR
+# for Wireguard-decapsulated / intra-VPC access.
+admin_cidr: ""
+
+# ---------------------------------------------------------------------------
+# Public web access (security-sensitive)
+# ---------------------------------------------------------------------------
+# Controls whether TCP 80/443 are open to the Internet on the security group.
+#
+#   false (default) — PRIVATE. 80/443 only from the VPC CIDR. Reach the
+#                     sandbox over Wireguard or from inside the VPC.
+#   true            — PUBLIC. Opens 80/443 to 0.0.0.0/0. Pair with
+#                     public_access: true in sandbox-config.yaml.
+#
+# Independent of admin_cidr (which only governs SSH/ICMP).
+public_web: false
+
+# ---------------------------------------------------------------------------
+# SSH key pair
+# ---------------------------------------------------------------------------
+# Modes:
+#   "create"     — create a new key pair in AWS, save the .pem locally
+#   "existing"   — reference an already-imported AWS key pair by name
+#   ""  (blank)  — interactive: lists existing keys + offers "create new"
+key_mode: ""
+
+# Name of the key pair in AWS.
+# Leave blank to auto-derive: "<project>-key"
+key_name: ""
+
+# Local path for the .pem file.
+# Default: ./keys/<key_name>.pem
+#   • A leading ~ is expanded to your home directory.
+#   • Relative paths resolve against this aws/ directory.
+key_path: ""
+
+# ---------------------------------------------------------------------------
+# AMI
+# ---------------------------------------------------------------------------
+# Leave blank to auto-resolve the latest Ubuntu Server 24.04 LTS amd64 AMI
+# in the configured region (Canonical owner ID 099720109477).
+ubuntu_ami: ""
+
+# ---------------------------------------------------------------------------
+# Instance sizing  (defaults match OpenG2P sandbox resource minimums)
+# ---------------------------------------------------------------------------
+# m5a.4xlarge = 16 vCPU / 64 GB — matches check_prerequisites in roles/infra/run.sh
+instance_type: "m5a.4xlarge"
+disk_gb: 128
+disk_iops: 3000
+disk_throughput: 125
+
+# ---------------------------------------------------------------------------
+# Instance Name tag / security group name
+# ---------------------------------------------------------------------------
+# Leave blank to auto-derive from `project`:
+#   instance_name → <project>
+#   sg_name       → <project>-sandbox
+#
+# NOTE: both resources are looked up BY NAME for idempotent re-runs. If you
+# change a name after provisioning, the existing instance / SG is no longer
+# found and a second one is created — set the old value here instead.
+instance_name: ""
+sg_name: ""
+
+# ---------------------------------------------------------------------------
+# Wireguard port
+# ---------------------------------------------------------------------------
+# Must match wireguard.port in sandbox-config.yaml (default 51820).
+# The security group opens this UDP port to 0.0.0.0/0 so VPN clients can connect.
+wg_port: 51820
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+# Path to the provision-output.yaml that this script writes.
+# Default ("../provision-output.yaml") puts the file next to sandbox-config.yaml.
+# The install scripts auto-load it as an overlay when present.
+provision_output_file: "../provision-output.yaml"

@@ -83,6 +83,22 @@ configs_run() {
     restic_pass_file="$(ensure_passphrase_file restic_passphrase_file restic false)"
     local restic_pass; restic_pass="$(< "$restic_pass_file")"
 
+    # Self-heal: repo may be missing after a fresh backup node or wiped disk.
+    # Same idempotent init as configs_install (never overwrite an existing repo).
+    run_on_backup "set -euo pipefail
+        if ! command -v restic >/dev/null 2>&1; then
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq restic
+        fi
+        install -d -m 0700 ${repo_root}/restic
+        if ! RESTIC_REPOSITORY=${repo_root}/restic/configs \
+             RESTIC_PASSWORD='$(printf '%q' "$restic_pass")' \
+             restic cat config >/dev/null 2>&1; then
+            echo 'Initialising configs restic repo...'
+            RESTIC_REPOSITORY=${repo_root}/restic/configs \
+            RESTIC_PASSWORD='$(printf '%q' "$restic_pass")' \
+                restic init
+        fi"
+
     local entry
     local rc=0
     for entry in "${_CONFIGS_SOURCES[@]}"; do
