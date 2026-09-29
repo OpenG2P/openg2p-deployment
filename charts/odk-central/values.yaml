@@ -15,11 +15,11 @@ serviceAccount:
 
 postgresqlInstallationName: '{{ .Release.Name }}-postgresql'
 mailInstallationName: '{{ .Release.Name }}-mail'
-minioInstallationName: '{{ .Release.Name }}-minio'
+garageInstallationName: 'commons-garage'
 
-s3BlobsEnabled: false
-s3ServerUrl: 'http://{{ tpl .Values.minioInstallationName $ }}:3000'
-s3BucketName: 'odk-central-blobs'
+s3BlobsEnabled: true
+s3ServerUrl: 'http://{{ tpl .Values.garageInstallationName $ }}:3900'
+s3BucketName: 'odk-central'
 
 odk-central-pyxform:
   enabled: true
@@ -141,13 +141,13 @@ backend:
     S3_ACCESS_KEY:
       enabled: '{{ .Values.s3BlobsEnabled }}'
       secretKeyRef:
-        name: '{{ tpl .Values.minioInstallationName $ }}'
-        key: root-user
+        name: commons-garage-s3
+        key: accessKey
     S3_SECRET_KEY:
       enabled: '{{ .Values.s3BlobsEnabled }}'
       secretKeyRef:
-        name: '{{ tpl .Values.minioInstallationName $ }}'
-        key: root-password
+        name: commons-garage-s3
+        key: secretKey
     DB_PASSWORD:
       secretKeyRef:
         name: '{{ tpl .Values.postgresqlInstallationName $ }}'
