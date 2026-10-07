@@ -57,6 +57,10 @@ node_name: "node2"
 # Role: "server" (control-plane) or "worker" (agent). Leave empty to prompt.
 node_role: ""
 
+# Worker only — written as node-label in /etc/rancher/rke2/config.yaml.
+# Set to "" to omit the label.
+node_label: "shouldInstallIstioIngress=true"
+
 # ---------------------------------------------------------------------------
 # Network
 # ---------------------------------------------------------------------------

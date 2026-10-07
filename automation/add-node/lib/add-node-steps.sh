@@ -219,18 +219,73 @@ step3_firewall() {
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 4: Install RKE2 (server or agent) and join the existing cluster
 # ─────────────────────────────────────────────────────────────────────────────
-step4_rke2() {
-    local step_id="add-node.rke2"
-    skip_if_done "$step_id" "RKE2 install and join" && return 0
-
-    log_step "4" "Installing RKE2 and joining the existing cluster"
-
-    local role;         role=$(cfg "node_role")
+# Echo the desired /etc/rancher/rke2/config.yaml for this node.
+rke2_render_config() {
+    local rke2_type="$1"
     local server_url;   server_url=$(cfg "server_url")
     local rke2_token;   rke2_token=$(cfg "rke2_token")
-    local rke2_version; rke2_version=$(cfg "rke2_version" "v1.35.8+rke2r1")
     local node_name;    node_name=$(cfg "node_name")
     local node_ip;      node_ip=$(cfg "node_ip")
+    local node_label;   node_label=$(cfg "node_label" "shouldInstallIstioIngress=true")
+
+    if [[ "$rke2_type" == "agent" ]]; then
+        echo "token: ${rke2_token}"
+        echo "server: ${server_url}"
+        echo "node-name: ${node_name}"
+        echo "node-ip: ${node_ip}"
+        if [[ -n "$node_label" ]]; then
+            echo "node-label: \"${node_label}\""
+        fi
+        echo "disable:"
+        echo "  - rke2-ingress-nginx"
+        echo "kubelet-arg:"
+        echo "  - --allowed-unsafe-sysctls=net.ipv4.conf.all.src_valid_mark,net.ipv4.ip_forward"
+    else
+        # Ingress gateway label is intentionally NOT set on servers — see
+        # README (keep ingress pinned unless Istio config adds anti-affinity).
+        echo "server: ${server_url}"
+        echo "token: ${rke2_token}"
+        echo "node-name: ${node_name}"
+        echo "node-ip: ${node_ip}"
+        echo "disable:"
+        echo "  - rke2-ingress-nginx"
+        echo "kubelet-arg:"
+        echo "  - --allowed-unsafe-sysctls=net.ipv4.conf.all.src_valid_mark,net.ipv4.ip_forward"
+        echo "  - --container-log-max-size=50Mi"
+        echo "  - --container-log-max-files=5"
+    fi
+}
+
+# Write config.yaml when it differs from the desired content.
+# Returns 0 if the file was changed, 1 if it was already up to date.
+rke2_sync_config() {
+    local rke2_type="$1"
+    local config_file="/etc/rancher/rke2/config.yaml"
+    local desired
+    desired=$(rke2_render_config "$rke2_type")
+
+    mkdir -p /etc/rancher/rke2
+    if [[ -f "$config_file" ]] && [[ "$(cat "$config_file")" == "$desired" ]]; then
+        log_info "RKE2 config already up to date (${config_file})."
+        return 1
+    fi
+
+    if [[ -f "$config_file" ]]; then
+        cp "$config_file" "${config_file}.bak.$(date '+%Y%m%d-%H%M%S')"
+        log_info "Updating RKE2 config (previous version backed up)..."
+    else
+        log_info "Creating RKE2 configuration (role=${rke2_type})..."
+    fi
+    printf '%s\n' "$desired" > "$config_file"
+    chmod 0600 "$config_file"
+    return 0
+}
+
+step4_rke2() {
+    local step_id="add-node.rke2"
+
+    local role;         role=$(cfg "node_role")
+    local rke2_version; rke2_version=$(cfg "rke2_version" "v1.35.8+rke2r1")
 
     # RKE2 distinguishes server vs agent via the INSTALL_RKE2_TYPE env var.
     # Both use /etc/rancher/rke2/config.yaml — the join fields ('server' and
@@ -240,36 +295,29 @@ step4_rke2() {
     [[ "$role" == "server" ]] && rke2_type="server"
     local service_name="rke2-${rke2_type}"
 
-    # Idempotency: if the target service is already up, just verify and exit.
-    if systemctl is-active --quiet "$service_name" 2>/dev/null; then
-        log_success "${service_name} is already running on this node."
+    # Already joined (step marker or running service): keep config.yaml in
+    # sync with add-node-config.yaml and restart only if it changed.
+    if is_step_done "$step_id" || systemctl is-active --quiet "$service_name" 2>/dev/null; then
+        log_step "4" "Syncing RKE2 configuration on an already-joined node"
+        if rke2_sync_config "$rke2_type"; then
+            log_info "Restarting ${service_name} to apply the new config..."
+            systemctl restart "$service_name" || {
+                log_error "${service_name} failed to restart" \
+                          "The updated /etc/rancher/rke2/config.yaml may be invalid" \
+                          "Review RKE2 logs; a backup of the old config is next to it" \
+                          "journalctl -u ${service_name} -n 50 --no-pager"
+                return 1
+            }
+            log_success "${service_name} restarted with the updated config."
+        else
+            log_success "${service_name} is already running with the expected config."
+        fi
         mark_step_done "$step_id"
         return 0
     fi
 
-    log_info "Creating RKE2 configuration (role=${rke2_type})..."
-    mkdir -p /etc/rancher/rke2
-    {
-        echo "server: ${server_url}"
-        echo "token: ${rke2_token}"
-        echo "node-name: ${node_name}"
-        echo "node-ip: ${node_ip}"
-        if [[ "$rke2_type" == "server" ]]; then
-            # Match primary's settings. Ingress gateway label is intentionally
-            # NOT set here — see README for why (keep ingress pinned to primary
-            # unless the Istio operator config adds anti-affinity).
-            echo "disable:"
-            echo "  - rke2-ingress-nginx"
-            echo "kubelet-arg:"
-            echo "  - --allowed-unsafe-sysctls=net.ipv4.conf.all.src_valid_mark,net.ipv4.ip_forward"
-            echo "  - --container-log-max-size=50Mi"
-            echo "  - --container-log-max-files=5"
-        else
-            echo "kubelet-arg:"
-            echo "  - --container-log-max-size=50Mi"
-            echo "  - --container-log-max-files=5"
-        fi
-    } > /etc/rancher/rke2/config.yaml
+    log_step "4" "Installing RKE2 and joining the existing cluster"
+    rke2_sync_config "$rke2_type" || true
 
     log_info "Downloading and installing RKE2 ${rke2_version} (type=${rke2_type})..."
     export INSTALL_RKE2_VERSION="${rke2_version}"
