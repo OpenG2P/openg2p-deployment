@@ -4,6 +4,12 @@ questions:
   type: string
   label: WebSub Hostname
 
+- variable: securityOn
+  description: Require a MOSIP auth-manager cookie on register, publish, and subscribe. Leave off unless MOSIP_AUTH_BASE_URL is configured and callers send Cookie Authorization.
+  type: boolean
+  default: false
+  label: WebSub MOSIP auth
+
 - variable: global.keycloakBaseUrl
   description: Required for API auth validation.
   type: string

@@ -596,12 +596,17 @@ envVarsFrom:
       name: '{{ (not .Values.existingSecret) | ternary (include "common.names.fullname" .) .Values.existingSecret }}'
       key: encryption-key
 
+# MOSIP auth-manager cookie check (Cookie: Authorization=<token>).
+# The registry publishes as a service and does not obtain that cookie.
+# hub.secret on subscribe is separate and is still required.
+securityOn: false
+
 configTomlMountPath: /etc/config.template.toml
 
 configToml: |-
   [kafkaHub.config]
   # Flag to check whether to enable/disable security
-  SECURITY_ON = true
+  SECURITY_ON = {{ .Values.securityOn }}
 
   # Server ID is is used to uniquely identify each server
   # Each server must have a unique ID
