@@ -725,13 +725,8 @@ phase1_step9_nginx() {
     # what the firewall allows — a public client presenting a forged
     # "Host: rancher.<domain>" still arrives with its real source IP and is
     # rejected with 403.
-    local wg_subnet_cidr vpc_cidr admin_allow
-    wg_subnet_cidr=$(cfg "wireguard.subnet" "10.15.0.0/16")
-    vpc_cidr=$(echo "$node_ip" | awk -F. '{printf "%s.%s.0.0/16", $1, $2}')
-    admin_allow="    allow ${wg_subnet_cidr};
-    allow ${vpc_cidr};
-    allow 127.0.0.1;
-    deny all;"
+    local admin_allow
+    admin_allow=$(nginx_private_allowlist)
 
     install_if_missing "nginx" \
         "nginx -v" \

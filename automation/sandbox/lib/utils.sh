@@ -491,6 +491,33 @@ get_cert_path() {
 }
 
 # ---------------------------------------------------------------------------
+# Nginx private-access allowlist
+# ---------------------------------------------------------------------------
+# Pod network CIDR, read from the RKE2 config (`cluster-cidr`, first entry if
+# dual-stack), falling back to the RKE2 default when it is not set.
+get_pod_cidr() {
+    local cidr
+    cidr=$(grep -hE '^[[:space:]]*cluster-cidr:' \
+               /etc/rancher/rke2/config.yaml /etc/rancher/rke2/config.yaml.d/*.yaml 2>/dev/null \
+           | tail -1 | sed -E "s/^[[:space:]]*cluster-cidr:[[:space:]]*//; s/[\"']//g; s/,.*//; s/[[:space:]]+$//") || true
+    echo "${cidr:-10.42.0.0/16}"
+}
+
+# Nginx allow/deny lines for hostnames that must stay private: Wireguard
+# peers, the VPC, and pods. Nginx runs on the K8s node itself, so a pod calling
+# a public hostname (e.g. an API fetching Keycloak's OIDC config) loops back
+# here with its pod IP and would otherwise get 403.
+nginx_private_allowlist() {
+    local node_ip wg_subnet_cidr vpc_cidr pod_cidr
+    node_ip=$(cfg "node_ip")
+    wg_subnet_cidr=$(cfg "wireguard.subnet" "10.15.0.0/16")
+    vpc_cidr=$(echo "$node_ip" | awk -F. '{printf "%s.%s.0.0/16", $1, $2}')
+    pod_cidr=$(get_pod_cidr)
+    printf '    allow %s;\n    allow %s;\n    allow %s;\n    allow 127.0.0.1;\n    deny all;' \
+        "$wg_subnet_cidr" "$vpc_cidr" "$pod_cidr"
+}
+
+# ---------------------------------------------------------------------------
 # Kubernetes helpers
 # ---------------------------------------------------------------------------
 ensure_kubeconfig() {

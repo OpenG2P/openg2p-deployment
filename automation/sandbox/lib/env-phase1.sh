@@ -161,13 +161,7 @@ env_phase1_step3_nginx() {
         log_warn "  Every service under *.${base_domain} becomes publicly reachable."
         log_warn "  This also requires public_access: true in the sandbox config."
     else
-        local wg_subnet_cidr vpc_cidr
-        wg_subnet_cidr=$(cfg "wireguard.subnet" "10.15.0.0/16")
-        vpc_cidr=$(echo "$node_ip" | awk -F. '{printf "%s.%s.0.0/16", $1, $2}')
-        env_allow="    allow ${wg_subnet_cidr};
-    allow ${vpc_cidr};
-    allow 127.0.0.1;
-    deny all;"
+        env_allow=$(nginx_private_allowlist)
     fi
 
     local env_cert env_key
