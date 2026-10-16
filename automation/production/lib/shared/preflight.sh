@@ -223,7 +223,15 @@ check_ports() {
     case "$ROLE" in
         storage) ports=(2049 "$(cfg postgres_port 5432)") ;;
         compute) ports=(6443 9345 10250 30080) ;;
-        rp)      ports=(80 443 53 "$(cfg wg_port 51820)") ;;
+        rp)
+            ports=(80 443 53)
+            # Only probe the Wireguard UDP port when OpenG2P Wireguard is enabled.
+            local _wg_val
+            _wg_val="$(cfg wireguard true)"
+            if [[ "$_wg_val" == "true" || "$_wg_val" == "yes" || "$_wg_val" == "1" ]]; then
+                ports+=("$(cfg wg_port 51820)")
+            fi
+            ;;
     esac
 
     for p in "${ports[@]}"; do

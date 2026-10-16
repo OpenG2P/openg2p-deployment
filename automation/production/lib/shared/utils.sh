@@ -191,6 +191,15 @@ cfg_bool() {
     [[ "$val" == "true" || "$val" == "yes" || "$val" == "1" ]]
 }
 
+# Wireguard admin VPN — default ON for backwards compatibility.
+# Set wireguard: false in prod-config.yaml when the customer uses their own VPN
+# to reach the private subnet (skip OpenG2P Wireguard install on the RP).
+wireguard_enabled() {
+    local val
+    val="$(cfg "wireguard" "true")"
+    [[ "$val" == "true" || "$val" == "yes" || "$val" == "1" ]]
+}
+
 # ---------------------------------------------------------------------------
 # Config validation — caller provides required keys list
 # ---------------------------------------------------------------------------

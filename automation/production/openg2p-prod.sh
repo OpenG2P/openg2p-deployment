@@ -209,11 +209,13 @@ validate_orchestrator_config() {
         compute_private_ip compute_node_name
         storage_private_ip storage_node_name
         private_subnet
-        wg_subnet wg_port
         rke2_version rancher_version
         postgres_version postgres_port
         nfs_export_path nfs_mount_path
     )
+    if wireguard_enabled; then
+        required+=(wg_subnet wg_port)
+    fi
     validate_config "${required[@]}"
 
     # Kubernetes node names must be RFC 1123 DNS subdomains (lowercase
@@ -256,21 +258,27 @@ validate_orchestrator_config() {
     # must be set, AND the referenced files must exist on the laptop.
     _validate_tls_cert_paths
 
-    check_subnet_overlap
+    if wireguard_enabled; then
+        check_subnet_overlap
 
-    # Wireguard DNS push — warn (don't fail) when not set. The admin hostname
-    # (rancher) and environment hostnames resolve only via the customer's / VPC
-    # DNS, reachable only THROUGH the tunnel. Without wg_peer_dns the generated
-    # peer configs carry no `DNS =` line, so admins can't resolve the hostnames
-    # over the VPN unless they hand-edit /etc/hosts. On AWS, provisioning
-    # auto-fills this (VPC DNS), so the warning only surfaces for on-prem.
-    if [[ -z "$(cfg wg_peer_dns)" ]]; then
-        log_warn "wg_peer_dns is not set — Wireguard peers will get NO DNS resolver."
-        log_warn "  The Rancher hostname (and env hostnames) won't resolve over the VPN by default."
-        log_warn "  Set wg_peer_dns in prod-config.yaml to a resolver INSIDE private_subnet/wg_subnet:"
-        log_warn "    • on-prem: your internal DNS server's IP"
-        log_warn "    • AWS:     the VPC DNS (<vpc-cidr-base>.2) — normally auto-filled by provisioning"
-        log_warn "  Otherwise each admin must add a one-time /etc/hosts entry (printed in the summary)."
+        # Wireguard DNS push — warn (don't fail) when not set. The admin hostname
+        # (rancher) and environment hostnames resolve only via the customer's / VPC
+        # DNS, reachable only THROUGH the tunnel. Without wg_peer_dns the generated
+        # peer configs carry no `DNS =` line, so admins can't resolve the hostnames
+        # over the VPN unless they hand-edit /etc/hosts. On AWS, provisioning
+        # auto-fills this (VPC DNS), so the warning only surfaces for on-prem.
+        if [[ -z "$(cfg wg_peer_dns)" ]]; then
+            log_warn "wg_peer_dns is not set — Wireguard peers will get NO DNS resolver."
+            log_warn "  The Rancher hostname (and env hostnames) won't resolve over the VPN by default."
+            log_warn "  Set wg_peer_dns in prod-config.yaml to a resolver INSIDE private_subnet/wg_subnet:"
+            log_warn "    • on-prem: your internal DNS server's IP"
+            log_warn "    • AWS:     the VPC DNS (<vpc-cidr-base>.2) — normally auto-filled by provisioning"
+            log_warn "  Otherwise each admin must add a one-time /etc/hosts entry (printed in the summary)."
+        fi
+    else
+        log_info "wireguard: false — OpenG2P Wireguard will NOT be installed."
+        log_info "  Admin access (Rancher / kubectl) must use the customer's own VPN into private_subnet."
+        check_subnet_overlap
     fi
 }
 
@@ -470,20 +478,22 @@ validate_certs_deep() {
 # ---------------------------------------------------------------------------
 check_subnet_overlap() {
     local priv=$(cfg private_subnet)
-    local wg=$(cfg wg_subnet)
 
     # Strip masks for a coarse first-octet comparison — good enough to catch
     # the common mistake of using the same /16 for both.
     local priv_base="${priv%%/*}"
-    local wg_base="${wg%%/*}"
     local priv_2="${priv_base%.*.*}"
-    local wg_2="${wg_base%.*.*}"
 
-    if [[ "$priv_2" == "$wg_2" ]]; then
-        log_error "Subnet overlap: private_subnet (${priv}) and wg_subnet (${wg}) share a prefix" \
-                  "Wireguard peers will collide with private IPs" \
-                  "Pick a different wg_subnet (e.g. 10.15.0.0/16 if private is 10.0.0.0/16)"
-        exit 1
+    if wireguard_enabled; then
+        local wg=$(cfg wg_subnet)
+        local wg_base="${wg%%/*}"
+        local wg_2="${wg_base%.*.*}"
+        if [[ "$priv_2" == "$wg_2" ]]; then
+            log_error "Subnet overlap: private_subnet (${priv}) and wg_subnet (${wg}) share a prefix" \
+                      "Wireguard peers will collide with private IPs" \
+                      "Pick a different wg_subnet (e.g. 10.15.0.0/16 if private is 10.0.0.0/16)"
+            exit 1
+        fi
     fi
 
     # Verify each configured private IP falls inside private_subnet (first
@@ -897,18 +907,27 @@ pull_install_artifacts() {
     mkdir -p "$artifacts_dir"
     chmod 700 "$artifacts_dir" 2>/dev/null || true
 
-    log_step "ARTIFACTS" "Pulling peer1.conf and rke2.yaml into ${artifacts_dir}"
+    if wireguard_enabled; then
+        log_step "ARTIFACTS" "Pulling peer1.conf and rke2.yaml into ${artifacts_dir}"
+    else
+        log_step "ARTIFACTS" "Pulling rke2.yaml into ${artifacts_dir} (Wireguard disabled — no peer1.conf)"
+    fi
 
-    # peer1.conf — reachable over SSH to the RP public endpoint (no WG needed).
-    if ssh_pull rp "/etc/wireguard/peers/peer1/peer1.conf" \
-            "${artifacts_dir}/peer1.conf" 2>/dev/null \
-            && [[ -s "${artifacts_dir}/peer1.conf" ]]; then
-        chmod 0600 "${artifacts_dir}/peer1.conf"
-        log_success "Saved ${artifacts_dir}/peer1.conf"
+    # peer1.conf — only when OpenG2P Wireguard was installed.
+    if wireguard_enabled; then
+        if ssh_pull rp "/etc/wireguard/peers/peer1/peer1.conf" \
+                "${artifacts_dir}/peer1.conf" 2>/dev/null \
+                && [[ -s "${artifacts_dir}/peer1.conf" ]]; then
+            chmod 0600 "${artifacts_dir}/peer1.conf"
+            log_success "Saved ${artifacts_dir}/peer1.conf"
+        else
+            rm -f "${artifacts_dir}/peer1.conf"
+            log_warn "Could not pull peer1.conf — RP Wireguard peers may not be ready yet."
+            log_warn "  Manual: ssh <rp> 'sudo cat /etc/wireguard/peers/peer1/peer1.conf' > ${artifacts_dir}/peer1.conf"
+        fi
     else
         rm -f "${artifacts_dir}/peer1.conf"
-        log_warn "Could not pull peer1.conf — RP Wireguard peers may not be ready yet."
-        log_warn "  Manual: ssh <rp> 'sudo cat /etc/wireguard/peers/peer1/peer1.conf' > ${artifacts_dir}/peer1.conf"
+        log_info "Skipped peer1.conf (wireguard: false — use customer VPN for admin access)."
     fi
 
     # Prefer rke2-remote.yaml (server URL already rewritten to compute private IP).
@@ -1011,6 +1030,53 @@ show_summary() {
     mkdir -p "$summary_dir"
     chmod 700 "$summary_dir" 2>/dev/null || true
 
+    local admin_access_line="ADMIN URL (reachable only via Wireguard)"
+    local step1_block
+    local artifacts_block
+    local kubectl_note="OPTIONAL — kubectl from your laptop (Wireguard must be active)"
+    local pg_note="OPTIONAL — connect to host PostgreSQL from your laptop (Wireguard active)"
+    local saved_artifacts_block
+
+    if wireguard_enabled; then
+        artifacts_block="    ${artifacts_dir}/peer1.conf   — Wireguard peer config
+    ${artifacts_dir}/rke2.yaml    — kubeconfig (API at compute private IP)"
+        step1_block="  STEP 1.  Connect Wireguard
+
+      Import ${artifacts_dir}/peer1.conf into the Wireguard app and activate.
+      Verify: ping ${wg_server_ip}    (should respond)"
+        saved_artifacts_block="     Artifacts (VPN + kubeconfig):
+       ${artifacts_dir}/peer1.conf
+       ${artifacts_dir}/rke2.yaml"
+    else
+        admin_access_line="ADMIN URL (reachable via customer VPN into private_subnet)"
+        artifacts_block="    ${artifacts_dir}/rke2.yaml    — kubeconfig (API at compute private IP)
+    (no peer1.conf — wireguard: false; use customer VPN)"
+        step1_block="  STEP 1.  Connect customer VPN
+
+      OpenG2P Wireguard was NOT installed (wireguard: false).
+      Connect your organisation's VPN so your laptop can reach
+      ${rp_private} (RP private IP) and the private subnet."
+        kubectl_note="OPTIONAL — kubectl from your laptop (customer VPN must be active)"
+        pg_note="OPTIONAL — connect to host PostgreSQL from your laptop (customer VPN active)"
+        saved_artifacts_block="     Artifacts (kubeconfig):
+       ${artifacts_dir}/rke2.yaml"
+    fi
+
+    local dns_wg_hint=""
+    if wireguard_enabled; then
+        dns_wg_hint="
+      If wg_peer_dns was set, your Wireguard peer config already carries a
+      \"DNS = ...\" line and resolution works automatically once the tunnel
+      is up — nothing to do here.
+
+      Otherwise (wg_peer_dns blank), add a one-time /etc/hosts entry on your
+      laptop:"
+    else
+        dns_wg_hint="
+      With the customer VPN up, either use internal DNS or add a one-time
+      /etc/hosts entry on your laptop:"
+    fi
+
     cat > "$summary_file" <<EOF
 
 
@@ -1020,7 +1086,7 @@ show_summary() {
 ║                                                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
-  ADMIN URL (reachable only via Wireguard)
+  ${admin_access_line}
 
     Rancher:    https://${rancher_host}
 
@@ -1056,8 +1122,7 @@ show_summary() {
 
   Folder mode 700; files mode 0600:
 
-    ${artifacts_dir}/peer1.conf   — Wireguard peer config
-    ${artifacts_dir}/rke2.yaml    — kubeconfig (API at compute private IP)
+${artifacts_block}
 
   Also keep secure for future ops (see README.md):
     provision-output.yaml, prod-config.yaml, aws/keys/*.pem,
@@ -1068,10 +1133,7 @@ show_summary() {
   WHAT TO DO NEXT — on your laptop
 ══════════════════════════════════════════════════════════════════════════════
 
-  STEP 1.  Connect Wireguard
-
-      Import ${artifacts_dir}/peer1.conf into the Wireguard app and activate.
-      Verify: ping ${wg_server_ip}    (should respond)
+${step1_block}
 
   STEP 2.  (Skipped — no local CA)
 
@@ -1083,13 +1145,7 @@ show_summary() {
 
       Your customer's DNS should already resolve the admin hostnames
       to ${rp_private} (RP's private IP).
-
-      If wg_peer_dns was set, your Wireguard peer config already carries a
-      "DNS = ..." line and resolution works automatically once the tunnel
-      is up — nothing to do here.
-
-      Otherwise (wg_peer_dns blank), add a one-time /etc/hosts entry on your
-      laptop:
+${dns_wg_hint}
 
         ${rp_private}  ${rancher_host}
 
@@ -1122,7 +1178,7 @@ show_summary() {
 
 
 ══════════════════════════════════════════════════════════════════════════════
-  OPTIONAL — kubectl from your laptop (Wireguard must be active)
+  ${kubectl_note}
 ══════════════════════════════════════════════════════════════════════════════
 
       export KUBECONFIG=${artifacts_dir}/rke2.yaml
@@ -1133,12 +1189,12 @@ show_summary() {
 
 
 ══════════════════════════════════════════════════════════════════════════════
-  OPTIONAL — connect to host PostgreSQL from your laptop (Wireguard active)
+  ${pg_note}
 ══════════════════════════════════════════════════════════════════════════════
 
   Port 5432 on the storage node is firewalled to the compute node only, so
   reach it via an SSH tunnel — do NOT expect ${pg_host}:${pg_port} to be
-  directly reachable just because you are on Wireguard.
+  directly reachable from the VPN alone.
 
       ssh -i ${rp_key} ${storage_user}@${storage_host} -L ${pg_port}:localhost:${pg_port}
       # then, in another terminal on your laptop:
@@ -1161,9 +1217,7 @@ EOF
 ══════════════════════════════════════════════════════════════════════════════
   📄 SAVED — credentials + next steps:
        ${summary_file}
-     Artifacts (VPN + kubeconfig):
-       ${artifacts_dir}/peer1.conf
-       ${artifacts_dir}/rke2.yaml
+${saved_artifacts_block}
      (folders mode 700, files mode 600 — readable only by the install user)
      Copy secrets into your vault; keep provision-output.yaml and artifacts
      for future operations — see README.md.

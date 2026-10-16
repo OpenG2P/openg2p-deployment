@@ -588,18 +588,24 @@ aws_add_ingress() {
 # server blocks. The ENVIRONMENT automation opens public 80/443 later, when
 # citizen-facing services actually exist; admin keeps its nginx allowlist so it
 # stays unreachable from the internet even then.
+# $5 (optional): wireguard enabled — "true" (default) opens UDP wg_port; "false" skips it.
 aws_apply_sg_rules_rp() {
     local sg_id="$1"
     local admin_cidr="$2"
     local vpc_cidr="$3"
     local wg_port="$4"
+    local wg_enabled="${5:-true}"
 
     aws_add_ingress "$sg_id" "TCP/22  from ${admin_cidr}" \
         --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=${admin_cidr},Description=admin SSH}]"
     aws_add_ingress "$sg_id" "ICMP    from ${admin_cidr}" \
         --ip-permissions "IpProtocol=icmp,FromPort=-1,ToPort=-1,IpRanges=[{CidrIp=${admin_cidr},Description=admin ping}]"
-    aws_add_ingress "$sg_id" "UDP/${wg_port} (Wireguard) from 0.0.0.0/0" \
-        --ip-permissions "IpProtocol=udp,FromPort=${wg_port},ToPort=${wg_port},IpRanges=[{CidrIp=0.0.0.0/0,Description=Wireguard}]"
+    if [[ "$wg_enabled" == "true" || "$wg_enabled" == "yes" || "$wg_enabled" == "1" ]]; then
+        aws_add_ingress "$sg_id" "UDP/${wg_port} (Wireguard) from 0.0.0.0/0" \
+            --ip-permissions "IpProtocol=udp,FromPort=${wg_port},ToPort=${wg_port},IpRanges=[{CidrIp=0.0.0.0/0,Description=Wireguard}]"
+    else
+        log_info "Skipping Wireguard UDP/${wg_port} on RP SG (wireguard: false)." >&2
+    fi
     aws_add_ingress "$sg_id" "ALL     from ${vpc_cidr} (intra-VPC; covers admin 80/443 from compute/storage and WG-decapsulated egress)" \
         --ip-permissions "IpProtocol=-1,IpRanges=[{CidrIp=${vpc_cidr},Description=intra-VPC}]"
 }
