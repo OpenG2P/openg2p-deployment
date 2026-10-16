@@ -161,10 +161,12 @@ compute_sg_name: ""
 storage_sg_name: ""
 
 # ---------------------------------------------------------------------------
-# Wireguard port
+# Wireguard (admin VPN endpoint on the RP)
 # ---------------------------------------------------------------------------
-# Must match wg_port in prod-config.yaml. The RP security group opens this
-# UDP port to 0.0.0.0/0 so admin laptops can connect.
+# Must stay in sync with prod-config.yaml → wireguard / wg_port.
+# wireguard: true  — open UDP wg_port on the RP security group (default).
+# wireguard: false — skip that rule when the customer uses their own VPN.
+wireguard: true
 wg_port: 51820
 
 # ---------------------------------------------------------------------------

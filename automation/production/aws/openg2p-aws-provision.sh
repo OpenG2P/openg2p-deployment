@@ -214,7 +214,9 @@ main() {
         "$rp_sg_name" "OpenG2P reverse-proxy - WG endpoint + admin + public services" \
         "$vpc_id" "$project" "reverse-proxy")
     aws_require_nonempty "RP security group" "$rp_sg"
-    aws_apply_sg_rules_rp "$rp_sg" "$admin_cidr" "$vpc_cidr" "$wg_port"
+    local wg_enabled
+    wg_enabled=$(cfg wireguard "true")
+    aws_apply_sg_rules_rp "$rp_sg" "$admin_cidr" "$vpc_cidr" "$wg_port" "$wg_enabled"
     log_success "  RP SG:      ${rp_sg_name} (${rp_sg})"
 
     compute_sg=$(aws_ensure_security_group \

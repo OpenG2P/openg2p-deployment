@@ -150,7 +150,11 @@ compute_configure_ufw() {
     local step="compute.phase1.ufw"
     if skip_if_done "$step" "ufw rules"; then return 0; fi
 
-    log_step "C1.3" "Configure ufw — K8s ports from private + WG subnets"
+    if wireguard_enabled; then
+        log_step "C1.3" "Configure ufw — K8s ports from private + WG subnets"
+    else
+        log_step "C1.3" "Configure ufw — K8s ports from private subnet (Wireguard disabled)"
+    fi
 
     local admin_cidr=$(cfg "admin_cidr" "0.0.0.0/0")
     local private_subnet=$(cfg "private_subnet")
@@ -171,9 +175,14 @@ compute_configure_ufw() {
     ufw allow from "$private_subnet" to any port 22 proto tcp
 
     # Cluster-internal ports — allow from private subnet (covers single-node compute,
-    # plus future worker nodes joining), and from WG subnet so admin laptops on VPN
-    # can reach the K8s API directly.
-    for cidr in "$private_subnet" "$wg_subnet"; do
+    # plus future worker nodes joining). When OpenG2P Wireguard is enabled, also
+    # allow the WG subnet so admin laptops on that VPN can reach the K8s API.
+    local -a ufw_cidrs=("$private_subnet")
+    if wireguard_enabled; then
+        ufw_cidrs+=("$wg_subnet")
+    fi
+    local cidr
+    for cidr in "${ufw_cidrs[@]}"; do
         ufw allow from "$cidr" to any port 6443  proto tcp comment "K8s API"
         ufw allow from "$cidr" to any port 9345  proto tcp comment "RKE2 supervisor"
         ufw allow from "$cidr" to any port 10250 proto tcp comment "kubelet"

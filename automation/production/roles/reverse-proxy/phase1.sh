@@ -69,15 +69,21 @@ rp_install_basics() {
     local step="rp.phase1.basics"
     if skip_if_done "$step" "apt basics"; then return 0; fi
 
-    log_step "R1.1" "Install apt basics, Wireguard, Nginx"
+    local -a pkgs=(
+        curl wget jq openssl dnsutils ca-certificates
+        ufw
+        nginx
+    )
+    if wireguard_enabled; then
+        log_step "R1.1" "Install apt basics, Wireguard, Nginx"
+        pkgs+=(wireguard-tools)
+    else
+        log_step "R1.1" "Install apt basics, Nginx (Wireguard disabled — customer VPN)"
+    fi
 
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -y
-    apt-get install -y --no-install-recommends \
-        curl wget jq openssl dnsutils ca-certificates \
-        ufw \
-        wireguard-tools \
-        nginx
+    apt-get install -y --no-install-recommends "${pkgs[@]}"
 
     mark_step_done "$step"
 }
@@ -113,11 +119,15 @@ rp_verify_nic() {
         exit 1
     fi
 
-    log_info "  rp_public_ip:   ${pub}   (Wireguard endpoint; may be NAT'd / EIP)"
+    if wireguard_enabled; then
+        log_info "  rp_public_ip:   ${pub}   (Wireguard endpoint; may be NAT'd / EIP)"
+    else
+        log_info "  rp_public_ip:   ${pub}   (SSH / public reachability; Wireguard disabled)"
+    fi
 
     if ! ip -4 addr 2>/dev/null | grep -q "inet ${priv}/"; then
         log_error "Configured rp_private_ip ${priv} is not bound to any interface on this host" \
-                  "The RP needs its primary NIC to have this IP for Nginx + WG-decapsulated traffic" \
+                  "The RP needs its primary NIC to have this IP for Nginx (+ WG-decapsulated traffic when Wireguard is enabled)" \
                   "Verify the ENI/NIC is attached and the IP is bound (netplan/cloud-init)" \
                   "ip -4 addr; ip route" \
                   "${DOCS_URL_BASE}#prerequisites"
@@ -135,7 +145,11 @@ rp_configure_ufw() {
     local step="rp.phase1.ufw"
     if skip_if_done "$step" "ufw rules"; then return 0; fi
 
-    log_step "R1.3" "Configure ufw — public SSH/WG, internal trusted"
+    if wireguard_enabled; then
+        log_step "R1.3" "Configure ufw — public SSH/WG, internal trusted"
+    else
+        log_step "R1.3" "Configure ufw — public SSH, private subnet (Wireguard disabled)"
+    fi
 
     local admin_cidr=$(cfg "admin_cidr" "0.0.0.0/0")
     local wg_port=$(cfg "wg_port" "51820")
@@ -148,13 +162,17 @@ rp_configure_ufw() {
 
     # Public
     ufw allow from "$admin_cidr" to any port 22 proto tcp
-    ufw allow "${wg_port}/udp" comment "Wireguard"
+    if wireguard_enabled; then
+        ufw allow "${wg_port}/udp" comment "Wireguard"
+    fi
 
     # Trusted networks
     if [[ -n "$private_subnet" ]]; then
         ufw allow from "$private_subnet"
     fi
-    ufw allow from "$wg_subnet"
+    if wireguard_enabled; then
+        ufw allow from "$wg_subnet"
+    fi
 
     ufw --force enable
 
@@ -166,6 +184,11 @@ rp_configure_ufw() {
 # ─────────────────────────────────────────────────────────────────────────
 rp_setup_wireguard() {
     local step="rp.phase1.wireguard"
+    if ! wireguard_enabled; then
+        log_info "wireguard: false — skipping OpenG2P Wireguard install (customer VPN)."
+        mark_step_done "$step"
+        return 0
+    fi
     if skip_if_done "$step" "Wireguard server"; then return 0; fi
 
     log_step "R1.4" "Configure Wireguard server (listens on the WG UDP port; SG gates external reachability)"
@@ -547,17 +570,24 @@ rp_setup_nginx() {
 
     rm -f /etc/nginx/sites-enabled/default
 
-    # Build the admin source-allowlist. Admin server blocks accept clients ONLY
-    # from the Wireguard subnet (admins over the VPN) and the private subnet
-    # (in-cluster / in-network admin access). This
-    # is the DURABLE channel-separation layer: it holds even after env
-    # automation opens public 80/443 for citizen services, because the cloud
-    # NAT/EIP preserves the client's real source IP, so a citizen hitting the
-    # public IP with a forged Host header for rancher.<domain> is rejected here.
+    # Build the admin source-allowlist. Admin server blocks accept clients from
+    # the private subnet (in-cluster / customer VPN into VPC) and, when OpenG2P
+    # Wireguard is enabled, the Wireguard subnet. This is the DURABLE
+    # channel-separation layer: it holds even after env automation opens public
+    # 80/443 for citizen services, because the cloud NAT/EIP preserves the
+    # client's real source IP, so a citizen hitting the public IP with a forged
+    # Host header for rancher.<domain> is rejected here.
     # (Firewall layers — cloud SG + host ufw — are the other two layers.)
-    local admin_allow="    allow ${wg_subnet};"
+    local admin_allow=""
+    if wireguard_enabled; then
+        admin_allow="    allow ${wg_subnet};"
+    fi
     if [[ -n "$private_subnet" ]]; then
-        admin_allow="${admin_allow}"$'\n'"    allow ${private_subnet};"
+        if [[ -n "$admin_allow" ]]; then
+            admin_allow="${admin_allow}"$'\n'"    allow ${private_subnet};"
+        else
+            admin_allow="    allow ${private_subnet};"
+        fi
     fi
     admin_allow="${admin_allow}"$'\n'"    deny all;"
 
@@ -570,9 +600,9 @@ rp_setup_nginx() {
     local conf=/etc/nginx/sites-available/openg2p-admin.conf
     cat > "$conf" <<EOF
 # OpenG2P admin reverse proxy — managed by openg2p-prod orchestrator.
-# Bound to ${rp_private}:443; reachable only via Wireguard or from within the
-# private network. Admin server blocks additionally allow only the WG +
-# private subnets at the nginx layer (see allow/deny in each block).
+# Bound to ${rp_private}:443; reachable from the private network (and Wireguard
+# subnet when wireguard: true). Admin server blocks enforce the allowlist at
+# the nginx layer (see allow/deny in each block).
 
 upstream istio_ingress {
     server ${compute_private}:30080;

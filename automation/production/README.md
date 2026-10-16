@@ -13,14 +13,27 @@ Commons from the **Rancher UI only**.
 |-------|---------------|-----------------|
 | Storage phase 1 | storage node (SSH) | NFS server, host PostgreSQL |
 | Compute phase 1 | compute node (SSH) | RKE2, NFS client, `/etc/hosts` for Rancher hostname |
-| Reverse-proxy phase 1 | RP node (SSH) | Wireguard server, Nginx, TLS certs |
+| Reverse-proxy phase 1 | RP node (SSH) | Wireguard server (if `wireguard: true`), Nginx, TLS certs |
 | Compute phase 2 | compute node (SSH) | Istio, Rancher, monitoring, logging (helmfile) |
 | Environment phase 1 | laptop → cluster | Namespace, Rancher project, Istio gateway, PG secret, Helm ClusterRepos |
 
 Environment kubectl access uses an **SSH tunnel** to the compute API
 (`localhost → compute:127.0.0.1:6443`). **Wireguard is not required** for
-environment scaffolding. Connect Wireguard later for Rancher UI and day-2
-`kubectl` over the private network.
+environment scaffolding. For day-2 Rancher UI / `kubectl`, connect Wireguard
+(default) or the **customer VPN** when `wireguard: false`.
+
+### Skip OpenG2P Wireguard (`wireguard: false`)
+
+When the customer already has a VPN into the private subnet, set in
+`prod-config.yaml` (and `aws/aws-config.yaml` if using AWS provisioning):
+
+```yaml
+wireguard: false
+```
+
+Then the install **does not** install Wireguard packages, peers, or open UDP
+51820. Admin Nginx allowlists and compute ufw use `private_subnet` only.
+Day-2 access must go through the customer VPN. Default remains `wireguard: true`.
 
 ## Quick start
 

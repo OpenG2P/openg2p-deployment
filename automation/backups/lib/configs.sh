@@ -101,11 +101,21 @@ configs_run() {
 
     local entry
     local rc=0
+    # Skip /etc/wireguard when prod-config has wireguard: false (customer VPN).
+    local wg_val
+    wg_val="$(cfg wireguard true)"
     for entry in "${_CONFIGS_SOURCES[@]}"; do
         local source_role="${entry%%|*}"
         local rest="${entry#*|}"
         local tag="${rest%%|*}"
         local paths="${rest#*|}"
+
+        if [[ "$tag" == "wireguard" ]]; then
+            if [[ "$wg_val" != "true" && "$wg_val" != "yes" && "$wg_val" != "1" ]]; then
+                log_info "Skipping wireguard config backup (wireguard: false in prod-config)."
+                continue
+            fi
+        fi
 
         log_info "Streaming ${source_role}:${paths} → configs repo (tag=${tag})"
 
@@ -323,9 +333,15 @@ configs_restore() {
 
     case "$target" in
         wireguard)
-            log_info "Restarting WireGuard on RP..."
-            ssh_run "rp" "sudo systemctl restart wg-quick@wg0 2>/dev/null || sudo systemctl restart wg-quick@wg0.service 2>/dev/null || true
-                sudo wg show 2>/dev/null | head -20 || true" || true
+            local _wg
+            _wg="$(cfg wireguard true)"
+            if [[ "$_wg" != "true" && "$_wg" != "yes" && "$_wg" != "1" ]]; then
+                log_info "Skipping WireGuard restart (wireguard: false in prod-config)."
+            else
+                log_info "Restarting WireGuard on RP..."
+                ssh_run "rp" "sudo systemctl restart wg-quick@wg0 2>/dev/null || sudo systemctl restart wg-quick@wg0.service 2>/dev/null || true
+                    sudo wg show 2>/dev/null | head -20 || true" || true
+            fi
             ;;
         nginx)
             log_info "Reloading nginx on RP..."
